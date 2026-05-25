@@ -38,6 +38,13 @@ tasks:
     # `task watch` works because the `watch:` field below opts in to polling.
     # Use `task --watch watch` if your terminal supports the flag instead.
 
+  sim:
+    desc: Run a scripted bot game against a running server. Start `task run` in another shell first.
+    # Bots open WebSockets to ${ADDR:-:8080}, so the same env var that
+    # `run` and `stop` honour applies here too.
+    cmds:
+      - go run ./cmd/sim -addr "http://localhost${ADDR:-:8080}" {{.CLI_ARGS}}
+
   stop:
     desc: Stop the dev server (ADDR=:8080 by default). Sends SIGTERM, then SIGKILL after 5s.
     # We target the listening socket rather than a process name so this

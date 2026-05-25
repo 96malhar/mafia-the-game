@@ -34,15 +34,17 @@ ADDR=:9000 task run
 
 ## Common tasks
 
-| Command           | What it does                              |
-| ----------------- | ----------------------------------------- |
-| `task run`        | Start the dev server                      |
-| `task build`      | Build release binary to `bin/server`      |
-| `task test`       | Run tests with race detector              |
-| `task test:cover` | Tests + open HTML coverage report         |
-| `task check`      | fmt + vet + lint + test (pre-commit gate) |
-| `task tools`      | Install dev tools (goimports, lint)       |
-| `task clean`      | Remove build artifacts                    |
+| Command           | What it does                                                  |
+| ----------------- | ------------------------------------------------------------- |
+| `task run`        | Start the dev server                                          |
+| `task build`      | Build release binary to `bin/server`                          |
+| `task test`       | Run tests with race detector                                  |
+| `task test:cover` | Tests + open HTML coverage report                             |
+| `task check`      | fmt + vet + lint + test (fast pre-commit gate, offline)       |
+| `task vuln`       | Scan dependencies via `govulncheck` (needs network)           |
+| `task ci`         | Full CI pipeline: `check` + `vuln`                            |
+| `task tools`      | Install dev tools (`goimports`, `golangci-lint`, `govulncheck`) |
+| `task clean`      | Remove build artifacts                                        |
 
 ## Project layout
 

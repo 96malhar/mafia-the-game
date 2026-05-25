@@ -96,19 +96,39 @@ tasks:
         fi
         golangci-lint run
 
+  vuln:
+    desc: Scan dependencies for known vulnerabilities via govulncheck.
+    # Requires network access to fetch the vuln DB from vuln.go.dev.
+    # Kept out of `task check` so the fast local loop stays offline-
+    # friendly; included in `task ci` for merge-gate scans.
+    cmds:
+      - |
+        if ! command -v govulncheck >/dev/null 2>&1; then
+          echo "govulncheck not found. Run 'task tools' to install it."
+          exit 1
+        fi
+        govulncheck ./...
+
   check:
-    desc: Pre-commit gate — fmt, vet, lint, test.
+    desc: Fast pre-commit gate — fmt, vet, lint, test. Offline-friendly.
     cmds:
       - task: fmt
       - task: vet
       - task: lint
       - task: test
 
+  ci:
+    desc: Full CI pipeline — everything in `check` plus a vulnerability scan.
+    cmds:
+      - task: check
+      - task: vuln
+
   tools:
-    desc: Install/refresh dev tools (goimports, golangci-lint).
+    desc: Install/refresh dev tools (goimports, golangci-lint, govulncheck).
     cmds:
       - go install golang.org/x/tools/cmd/goimports@latest
       - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - go install golang.org/x/vuln/cmd/govulncheck@latest
 
   clean:
     desc: Remove build and coverage artifacts.

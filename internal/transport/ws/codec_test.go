@@ -1,0 +1,211 @@
+package ws
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/malhar/mafia-the-game/internal/room"
+)
+
+// --- Inbound (client -> server) decoding ---------------------------------
+
+func TestDecodeClientMessage_Variants(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantTag  clientMsgType
+		wantData any
+	}{
+		{
+			name:     "join with name",
+			raw:      `{"type":"join","data":{"name":"Alice"}}`,
+			wantTag:  clientMsgJoin,
+			wantData: clientJoinData{Name: "Alice"},
+		},
+		{
+			name:     "nightAction with target",
+			raw:      `{"type":"nightAction","data":{"target":"p2"}}`,
+			wantTag:  clientMsgNightAction,
+			wantData: clientNightActionData{Target: "p2"},
+		},
+		{
+			name:     "vote with target",
+			raw:      `{"type":"vote","data":{"target":"p3"}}`,
+			wantTag:  clientMsgVote,
+			wantData: clientVoteData{Target: "p3"},
+		},
+		{
+			name:    "startGame no data",
+			raw:     `{"type":"startGame"}`,
+			wantTag: clientMsgStartGame,
+		},
+		{
+			name:    "advancePhase null data",
+			raw:     `{"type":"advancePhase","data":null}`,
+			wantTag: clientMsgAdvancePhase,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tag, payload, err := decodeClientMessage([]byte(tc.raw))
+			require.NoError(t, err)
+			require.Equal(t, tc.wantTag, tag)
+			if tc.wantData != nil {
+				require.Equal(t, tc.wantData, payload)
+			}
+		})
+	}
+}
+
+func TestDecodeClientMessage_Rejects(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"empty", ``},
+		{"not json", `garbage`},
+		{"missing type", `{"data":{}}`},
+		{"unknown type", `{"type":"deleteUniverse"}`},
+		{"bad data shape", `{"type":"nightAction","data":"not an object"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := decodeClientMessage([]byte(tc.raw))
+			require.Error(t, err)
+		})
+	}
+}
+
+// --- Outbound (server -> client) encoding --------------------------------
+
+func TestEncodeOutbound_Joined(t *testing.T) {
+	raw, ok, err := encodeOutbound(room.OutJoined{
+		PlayerID: "p1", Secret: "shh", RoomCode: "ABCD", IsHost: true,
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	got := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "joined", got.Type)
+
+	var data serverJoinedData
+	require.NoError(t, json.Unmarshal(got.Data, &data))
+	require.Equal(t, "p1", data.PlayerID)
+	require.Equal(t, "shh", data.Secret)
+	require.Equal(t, "ABCD", data.RoomCode)
+	require.True(t, data.IsHost)
+}
+
+func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
+	events := []game.Event{
+		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
+		game.GameStarted{},
+		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight, Day: 0},
+	}
+	raw, ok, err := encodeOutbound(room.OutRejoined{
+		PlayerID: "p1", RoomCode: "ABCD", IsHost: true, Events: events,
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	got := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "rejoined", got.Type)
+
+	var data serverRejoinedData
+	require.NoError(t, json.Unmarshal(got.Data, &data))
+	require.Equal(t, "p1", data.PlayerID)
+	require.Len(t, data.Events, 3)
+	require.Equal(t, eventTagPlayerJoined, data.Events[0].Type)
+	require.Equal(t, eventTagGameStarted, data.Events[1].Type)
+	require.Equal(t, eventTagPhaseChanged, data.Events[2].Type)
+}
+
+func TestEncodeOutbound_AllEventTypes(t *testing.T) {
+	// One representative event of each engine kind. If a new event is
+	// added to the engine, this test fails until codec.go is updated —
+	// the desired forcing function.
+	all := []game.Event{
+		game.GameCreated{GameID: "g", Roles: []game.Role{game.RoleMafia}, Seed: 1},
+		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
+		game.GameStarted{},
+		game.RoleAssigned{PlayerID: "p1", Role: game.RoleMafia},
+		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
+		game.NightActionRecorded{Actor: "p1", Target: "p2", Faction: game.FactionMafia},
+		game.PlayerKilled{PlayerID: "p2"},
+		game.PlayerSaved{PlayerID: "p2", Doctor: "p3"},
+		game.DetectiveResult{Detective: "p4", Target: "p1", IsMafia: true},
+		game.VoteCast{Voter: "p1", Target: "p2"},
+		game.VoteChanged{Voter: "p1", From: "p2", To: "p3"},
+		game.VoteRetracted{Voter: "p1", Was: "p2"},
+		game.VoteExtended{Day: 1},
+		game.PlayerLynched{PlayerID: "p2"},
+		game.GameEnded{Winner: game.FactionTown, FinalRoles: map[game.PlayerID]game.Role{"p1": game.RoleMafia}},
+	}
+	for _, ev := range all {
+		t.Run(eventTypeName(ev), func(t *testing.T) {
+			raw, ok, err := encodeOutbound(room.OutEvent{Event: ev})
+			require.NoError(t, err)
+			require.True(t, ok)
+			env := mustUnmarshalEnvelope(t, raw)
+			require.Equal(t, "event", env.Type)
+		})
+	}
+}
+
+func TestEncodeOutbound_Error(t *testing.T) {
+	raw, ok, err := encodeOutbound(room.OutError{Code: "bad_message", Message: "nope"})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	got := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "error", got.Type)
+
+	var data serverErrorData
+	require.NoError(t, json.Unmarshal(got.Data, &data))
+	require.Equal(t, "bad_message", data.Code)
+	require.Equal(t, "nope", data.Message)
+}
+
+// --- commandFromClient ----------------------------------------------------
+
+func TestCommandFromClient(t *testing.T) {
+	cmd, ok := commandFromClient(clientMsgNightAction, clientNightActionData{Target: "p2"})
+	require.True(t, ok)
+	require.Equal(t, game.NightAction{Target: "p2"}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgVote, clientVoteData{Target: ""})
+	require.True(t, ok)
+	require.Equal(t, game.DayVote{Target: ""}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgStartGame, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.StartGame{}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgAdvancePhase, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.AdvancePhase{}, cmd)
+
+	// "join" isn't a command in the engine sense.
+	_, ok = commandFromClient(clientMsgJoin, clientJoinData{Name: "x"})
+	require.False(t, ok)
+}
+
+// --- helpers --------------------------------------------------------------
+
+func mustUnmarshalEnvelope(t *testing.T, raw []byte) envelope {
+	t.Helper()
+	var env envelope
+	require.NoError(t, json.Unmarshal(raw, &env))
+	return env
+}
+
+func eventTypeName(e game.Event) string {
+	env, err := encodeEvent(e)
+	if err != nil {
+		return "unknown"
+	}
+	return env.Type
+}

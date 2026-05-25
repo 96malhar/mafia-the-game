@@ -38,6 +38,32 @@ tasks:
     # `task watch` works because the `watch:` field below opts in to polling.
     # Use `task --watch watch` if your terminal supports the flag instead.
 
+  stop:
+    desc: Stop the dev server (ADDR=:8080 by default). Sends SIGTERM, then SIGKILL after 5s.
+    # We target the listening socket rather than a process name so this
+    # works whether the server was started via `task run`, `task watch`,
+    # or `./bin/server`. Respects $ADDR like `run` does.
+    cmds:
+      - |
+        addr="${ADDR:-:8080}"
+        port="${addr#*:}"
+        pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
+        if [ -z "$pids" ]; then
+          echo "no process listening on port $port"
+          exit 0
+        fi
+        echo "stopping server on port $port (pids: $pids)"
+        kill $pids 2>/dev/null || true
+        # Wait up to 5s for graceful shutdown; main.go has its own 10s
+        # window but we don't want to block the dev loop that long.
+        for i in 1 2 3 4 5; do
+          sleep 1
+          still=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
+          [ -z "$still" ] && exit 0
+        done
+        echo "graceful stop timed out; sending SIGKILL"
+        kill -9 $still 2>/dev/null || true
+
   build:
     desc: Build a release binary to bin/server.
     cmds:

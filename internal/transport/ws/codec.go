@@ -1,0 +1,275 @@
+package ws
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/malhar/mafia-the-game/internal/room"
+)
+
+// Stable wire tags for each engine event. These must match what the
+// client expects; adding a new engine event means adding an entry here.
+// We use lowerCamelCase to match the JSON field convention.
+const (
+	eventTagGameCreated         = "gameCreated"
+	eventTagPlayerJoined        = "playerJoined"
+	eventTagGameStarted         = "gameStarted"
+	eventTagRoleAssigned        = "roleAssigned"
+	eventTagPhaseChanged        = "phaseChanged"
+	eventTagNightActionRecorded = "nightActionRecorded"
+	eventTagPlayerKilled        = "playerKilled"
+	eventTagPlayerSaved         = "playerSaved"
+	eventTagDetectiveResult     = "detectiveResult"
+	eventTagVoteCast            = "voteCast"
+	eventTagVoteChanged         = "voteChanged"
+	eventTagVoteRetracted       = "voteRetracted"
+	eventTagVoteExtended        = "voteExtended"
+	eventTagPlayerLynched       = "playerLynched"
+	eventTagGameEnded           = "gameEnded"
+)
+
+// encodeEvent translates an engine game.Event into the wire-shape
+// eventEnvelope. The shape of each `data` block is defined inline here
+// to insulate the wire format from refactors of the Go event types.
+//
+// Unknown event types return an error rather than panicking: we'd
+// rather log + drop than crash on a future engine change.
+func encodeEvent(e game.Event) (eventEnvelope, error) {
+	type kv map[string]any
+	var (
+		tag  string
+		data any
+	)
+	switch v := e.(type) {
+	case game.GameCreated:
+		tag = eventTagGameCreated
+		data = kv{"gameId": string(v.GameID), "roles": rolesToStrings(v.Roles), "seed": v.Seed}
+	case game.PlayerJoined:
+		tag = eventTagPlayerJoined
+		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
+	case game.GameStarted:
+		tag = eventTagGameStarted
+		data = kv{}
+	case game.RoleAssigned:
+		tag = eventTagRoleAssigned
+		data = kv{"playerId": string(v.PlayerID), "role": string(v.Role)}
+	case game.PhaseChanged:
+		tag = eventTagPhaseChanged
+		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
+	case game.NightActionRecorded:
+		tag = eventTagNightActionRecorded
+		data = kv{"actor": string(v.Actor), "target": string(v.Target), "faction": string(v.Faction)}
+	case game.PlayerKilled:
+		tag = eventTagPlayerKilled
+		data = kv{"playerId": string(v.PlayerID)}
+	case game.PlayerSaved:
+		tag = eventTagPlayerSaved
+		data = kv{"playerId": string(v.PlayerID), "doctor": string(v.Doctor)}
+	case game.DetectiveResult:
+		tag = eventTagDetectiveResult
+		data = kv{"detective": string(v.Detective), "target": string(v.Target), "isMafia": v.IsMafia}
+	case game.VoteCast:
+		tag = eventTagVoteCast
+		data = kv{"voter": string(v.Voter), "target": string(v.Target)}
+	case game.VoteChanged:
+		tag = eventTagVoteChanged
+		data = kv{"voter": string(v.Voter), "from": string(v.From), "to": string(v.To)}
+	case game.VoteRetracted:
+		tag = eventTagVoteRetracted
+		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
+	case game.VoteExtended:
+		tag = eventTagVoteExtended
+		data = kv{"day": v.Day}
+	case game.PlayerLynched:
+		tag = eventTagPlayerLynched
+		data = kv{"playerId": string(v.PlayerID)}
+	case game.GameEnded:
+		tag = eventTagGameEnded
+		data = kv{"winner": string(v.Winner), "finalRoles": rolesMapToStrings(v.FinalRoles)}
+	default:
+		return eventEnvelope{}, fmt.Errorf("ws: unknown event type %T", e)
+	}
+
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return eventEnvelope{}, fmt.Errorf("ws: marshal event %s: %w", tag, err)
+	}
+	return eventEnvelope{Type: tag, Data: raw}, nil
+}
+
+// encodeOutbound translates a room.Outbound value into a wire-format
+// JSON envelope. Returns the encoded bytes plus a boolean indicating
+// whether the value was a known shape; unknown shapes return ok=false
+// so the caller can log + drop without sending malformed JSON.
+func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
+	switch m := msg.(type) {
+	case room.OutJoined:
+		raw, err := marshalEnvelope(string(serverMsgJoined), serverJoinedData{
+			PlayerID: string(m.PlayerID),
+			Secret:   m.Secret,
+			RoomCode: m.RoomCode,
+			IsHost:   m.IsHost,
+		})
+		return raw, true, err
+
+	case room.OutRejoined:
+		evs, errs := encodeEventsBatch(m.Events)
+		if len(errs) > 0 {
+			return nil, true, errs[0]
+		}
+		raw, err := marshalEnvelope(string(serverMsgRejoined), serverRejoinedData{
+			PlayerID: string(m.PlayerID),
+			RoomCode: m.RoomCode,
+			IsHost:   m.IsHost,
+			Events:   evs,
+		})
+		return raw, true, err
+
+	case room.OutEvent:
+		envev, err := encodeEvent(m.Event)
+		if err != nil {
+			return nil, true, err
+		}
+		raw, err := marshalEnvelope(string(serverMsgEvent), serverEventData{Event: envev})
+		return raw, true, err
+
+	case room.OutError:
+		raw, err := marshalEnvelope(string(serverMsgError), serverErrorData{
+			Code:    m.Code,
+			Message: m.Message,
+		})
+		return raw, true, err
+
+	default:
+		return nil, false, fmt.Errorf("ws: unknown outbound type %T", msg)
+	}
+}
+
+func marshalEnvelope(tag string, data any) ([]byte, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("ws: marshal %s: %w", tag, err)
+	}
+	return json.Marshal(envelope{Type: tag, Data: raw})
+}
+
+// --- Inbound decoding ----------------------------------------------------
+
+// decodeClientMessage parses a raw JSON frame from the client into a
+// well-typed clientMsg* value plus its tag, returning errBadEnvelope on
+// any shape mismatch. The handler then builds the right room.inbound.
+//
+// Unknown tags return errBadEnvelope so the caller can send a typed
+// error frame back to the client without disconnecting.
+func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return "", nil, badEnvelopef("invalid JSON: %v", err)
+	}
+	if env.Type == "" {
+		return "", nil, badEnvelopef("missing type")
+	}
+
+	switch clientMsgType(env.Type) {
+	case clientMsgJoin:
+		var d clientJoinData
+		if err := unmarshalData(env.Data, &d); err != nil {
+			return "", nil, err
+		}
+		return clientMsgJoin, d, nil
+
+	case clientMsgNightAction:
+		var d clientNightActionData
+		if err := unmarshalData(env.Data, &d); err != nil {
+			return "", nil, err
+		}
+		return clientMsgNightAction, d, nil
+
+	case clientMsgVote:
+		var d clientVoteData
+		if err := unmarshalData(env.Data, &d); err != nil {
+			return "", nil, err
+		}
+		return clientMsgVote, d, nil
+
+	case clientMsgStartGame:
+		return clientMsgStartGame, struct{}{}, nil
+
+	case clientMsgAdvancePhase:
+		return clientMsgAdvancePhase, struct{}{}, nil
+
+	default:
+		return "", nil, badEnvelopef("unknown type %q", env.Type)
+	}
+}
+
+// unmarshalData is a small helper that treats a missing/null `data`
+// field as an empty object — clients often omit it when there's no
+// payload.
+func unmarshalData(raw json.RawMessage, into any) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		return badEnvelopef("invalid data: %v", err)
+	}
+	return nil
+}
+
+// commandFromClient turns a decoded client message into a game.Command
+// suitable for room.SubmitCommand. Returns (nil, false) for messages
+// that aren't commands at the engine level (e.g. clientMsgJoin, which
+// the handler treats specially).
+//
+// The room rewrites identity fields server-side; we leave them blank.
+func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
+	switch tag {
+	case clientMsgNightAction:
+		d := data.(clientNightActionData)
+		return game.NightAction{Target: game.PlayerID(d.Target)}, true
+	case clientMsgVote:
+		d := data.(clientVoteData)
+		return game.DayVote{Target: game.PlayerID(d.Target)}, true
+	case clientMsgStartGame:
+		return game.StartGame{}, true
+	case clientMsgAdvancePhase:
+		return game.AdvancePhase{}, true
+	default:
+		return nil, false
+	}
+}
+
+// --- Small utility shims --------------------------------------------------
+
+func rolesToStrings(roles []game.Role) []string {
+	out := make([]string, len(roles))
+	for i, r := range roles {
+		out[i] = string(r)
+	}
+	return out
+}
+
+func rolesMapToStrings(m map[game.PlayerID]game.Role) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[string(k)] = string(v)
+	}
+	return out
+}
+
+// encodeEventsBatch is used by serverRejoinedData payload assembly.
+// Errors are logged and the offending event is omitted, not fatal.
+func encodeEventsBatch(events []game.Event) ([]eventEnvelope, []error) {
+	out := make([]eventEnvelope, 0, len(events))
+	var errs []error
+	for _, e := range events {
+		env, err := encodeEvent(e)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		out = append(out, env)
+	}
+	return out, errs
+}

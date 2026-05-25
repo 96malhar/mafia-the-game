@@ -7,30 +7,199 @@
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body class="min-h-screen bg-slate-900 text-slate-100 antialiased">
-    <main class="mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-6 text-center">
-      <h1 class="text-5xl font-bold tracking-tight">Mafia</h1>
-      <p class="mt-4 text-slate-400">
-        A social deduction game. Backend is up.
-      </p>
-      <p id="status" class="mt-8 text-sm text-slate-500">checking server…</p>
+    <main class="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-10">
+      <header class="mb-6 flex items-baseline justify-between">
+        <h1 class="text-4xl font-bold tracking-tight">Mafia</h1>
+        <p id="status" class="text-sm text-slate-400">offline</p>
+      </header>
+
+      <!-- Lobby (room create / join) -->
+      <section id="lobby" class="space-y-4 rounded-lg border border-slate-700 bg-slate-800/40 p-6">
+        <div class="flex flex-col gap-2">
+          <label class="text-xs uppercase tracking-wide text-slate-400" for="name">Your name</label>
+          <input id="name" class="rounded border border-slate-700 bg-slate-900 px-3 py-2" placeholder="Alice" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <button id="create" class="rounded bg-emerald-600 px-4 py-2 font-medium hover:bg-emerald-500">
+            Create room
+          </button>
+          <div class="flex gap-2">
+            <input id="code" class="flex-1 rounded border border-slate-700 bg-slate-900 px-3 py-2 uppercase" placeholder="ABCD" maxlength="4" />
+            <button id="join" class="rounded bg-indigo-600 px-4 py-2 font-medium hover:bg-indigo-500">Join</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- In-game view -->
+      <section id="game" class="mt-6 hidden space-y-4">
+        <div class="flex items-center justify-between rounded border border-slate-700 bg-slate-800/40 p-4">
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Room</div>
+            <div id="room-code" class="font-mono text-2xl">----</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">You</div>
+            <div id="me" class="font-mono">—</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Role</div>
+            <div id="my-role" class="font-mono">—</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wide text-slate-400">Phase</div>
+            <div id="phase" class="font-mono">lobby</div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button id="start" class="rounded bg-emerald-600 px-3 py-2 text-sm hover:bg-emerald-500">Start game</button>
+          <button id="advance" class="rounded bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Advance phase</button>
+        </div>
+
+        <div>
+          <h2 class="mb-2 text-xs uppercase tracking-wide text-slate-400">Event log</h2>
+          <ul id="events" class="max-h-96 overflow-auto rounded border border-slate-700 bg-slate-950/40 p-3 font-mono text-sm leading-relaxed"></ul>
+        </div>
+      </section>
     </main>
 
     <script>
-      // Tiny health probe so you can visually confirm the Go server is reachable.
-      // We'll replace this with a real WebSocket client in a later step.
+      // --- minimal client ------------------------------------------------
+      // Stores per-room identity so a reload reconnects via ?playerId&secret.
+      const storageKey = (code) => `mafia.room.${code}`;
+
+      const $ = (id) => document.getElementById(id);
+      const status = $("status");
+      const events = $("events");
+
+      let ws = null;
+      let myId = null;
+      let myRole = null;
+
+      function setStatus(text, klass = "text-slate-400") {
+        status.textContent = text;
+        status.className = `text-sm ${klass}`;
+      }
+
+      function showGame(code) {
+        $("lobby").classList.add("hidden");
+        $("game").classList.remove("hidden");
+        $("room-code").textContent = code;
+      }
+
+      function logEvent(label, data) {
+        const li = document.createElement("li");
+        const time = new Date().toLocaleTimeString();
+        const safe = data ? JSON.stringify(data) : "";
+        li.textContent = `[${time}] ${label} ${safe}`;
+        events.appendChild(li);
+        events.scrollTop = events.scrollHeight;
+      }
+
+      function send(type, data = {}) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type, data }));
+      }
+
+      function handleServerMessage(msg) {
+        switch (msg.type) {
+          case "joined": {
+            const d = msg.data;
+            myId = d.playerId;
+            $("me").textContent = `${d.playerId}${d.isHost ? " (host)" : ""}`;
+            showGame(d.roomCode);
+            localStorage.setItem(storageKey(d.roomCode), JSON.stringify({
+              playerId: d.playerId,
+              secret: d.secret,
+            }));
+            logEvent("joined", { playerId: d.playerId, host: d.isHost });
+            break;
+          }
+          case "rejoined": {
+            const d = msg.data;
+            myId = d.playerId;
+            $("me").textContent = `${d.playerId}${d.isHost ? " (host)" : ""}`;
+            showGame(d.roomCode);
+            logEvent("rejoined", { replaying: d.events.length });
+            for (const env of d.events) handleEvent(env);
+            break;
+          }
+          case "event":
+            handleEvent(msg.data.event);
+            break;
+          case "error":
+            logEvent("error", msg.data);
+            break;
+          default:
+            logEvent("unknown", msg);
+        }
+      }
+
+      function handleEvent(env) {
+        if (env.type === "phaseChanged") {
+          $("phase").textContent = env.data.to;
+        }
+        if (env.type === "roleAssigned" && env.data.playerId === myId) {
+          myRole = env.data.role;
+          $("my-role").textContent = env.data.role;
+        }
+        logEvent(env.type, env.data);
+      }
+
+      function connect(code, creds) {
+        const params = creds
+          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
+          : "";
+        const url = `${location.origin.replace("http", "ws")}/ws/${code}${params}`;
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+          setStatus(`connected to ${code}`, "text-emerald-400");
+          if (!creds) {
+            const name = $("name").value || "Player";
+            send("join", { name });
+          }
+        };
+        ws.onmessage = (ev) => {
+          try { handleServerMessage(JSON.parse(ev.data)); }
+          catch (e) { logEvent("parse-error", { error: String(e) }); }
+        };
+        ws.onclose = () => setStatus("disconnected", "text-rose-400");
+        ws.onerror = () => setStatus("connection error", "text-rose-400");
+      }
+
+      // --- wiring --------------------------------------------------------
+
+      $("create").addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/rooms", { method: "POST" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const { code } = await res.json();
+          connect(code, null);
+        } catch (e) {
+          setStatus(`could not create: ${e.message}`, "text-rose-400");
+        }
+      });
+
+      $("join").addEventListener("click", () => {
+        const code = $("code").value.trim().toUpperCase();
+        if (!code) return;
+        const stored = localStorage.getItem(storageKey(code));
+        const creds = stored ? JSON.parse(stored) : null;
+        connect(code, creds);
+      });
+
+      $("start").addEventListener("click", () => send("startGame"));
+      $("advance").addEventListener("click", () => send("advancePhase"));
+
+      // Quick health probe to confirm the server is up before anyone clicks.
       (async () => {
-        const el = document.getElementById("status");
         try {
           const res = await fetch("/healthz");
-          el.textContent = res.ok
-            ? "server: healthy"
-            : `server: unexpected status ${res.status}`;
-          el.className = res.ok
-            ? "mt-8 text-sm text-emerald-400"
-            : "mt-8 text-sm text-amber-400";
+          setStatus(res.ok ? "server ready" : `server status ${res.status}`,
+            res.ok ? "text-slate-400" : "text-amber-400");
         } catch (err) {
-          el.textContent = `server: unreachable (${err.message})`;
-          el.className = "mt-8 text-sm text-rose-400";
+          setStatus(`server unreachable (${err.message})`, "text-rose-400");
         }
       })();
     </script>

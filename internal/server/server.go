@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/malhar/mafia-the-game/internal/transport/ws"
 )
 
 // Config holds runtime configuration for the server.
@@ -32,6 +34,11 @@ type Config struct {
 	// We accept an fs.FS rather than a path so tests can pass an in-memory FS
 	// and so we can later switch to go:embed without changing this package.
 	WebFS fs.FS
+
+	// WS is the WebSocket handler that owns the room manager. If nil,
+	// the /api/rooms and /ws/* routes are not registered; useful for
+	// tests that only exercise the static-serving paths.
+	WS *ws.Handler
 
 	// Logger is the structured logger used for request and lifecycle logs.
 	Logger *slog.Logger

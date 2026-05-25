@@ -2,35 +2,39 @@ package room
 
 import "github.com/malhar/mafia-the-game/internal/game"
 
-// outbound is the closed sum type of messages a room sends back to a
-// subscriber. The transport layer (3c) will JSON-encode these; tests
-// receive them as Go values.
+// Outbound is the closed sum type of messages a room sends back to a
+// subscriber. The transport layer JSON-encodes these; tests receive
+// them as Go values.
 //
-// The four outbound shapes split along intent:
-//   - outJoined / outRejoined  : one-shot replies to a join attempt.
-//   - outEvent                  : the streaming game-event channel.
-//   - outError                  : per-command rejection sent only to
+// Concrete shapes:
+//   - OutJoined / OutRejoined : one-shot replies to a join attempt.
+//   - OutEvent                : the streaming game-event channel.
+//   - OutError                : per-command rejection sent only to
 //     the originating subscriber.
-type outbound interface {
+//
+// New shapes must be added here AND extend the type switch in
+// transport/ws.encodeOutbound. The closed-interface marker (the
+// unexported isOutbound method) keeps that obligation enforceable.
+type Outbound interface {
 	isOutbound()
 }
 
-// outJoined acknowledges a successful first-time join. The Secret is
+// OutJoined acknowledges a successful first-time join. The Secret is
 // the rejoin credential; the client must remember it (typically in
 // localStorage) to reconnect later. Sent only to the joining subscriber.
-type outJoined struct {
+type OutJoined struct {
 	PlayerID game.PlayerID
 	Secret   string
 	RoomCode string
 	IsHost   bool
 }
 
-func (outJoined) isOutbound() {}
+func (OutJoined) isOutbound() {}
 
-// outRejoined acknowledges a successful rejoin and includes the full
+// OutRejoined acknowledges a successful rejoin and includes the full
 // projected event log so the client can rebuild its view from scratch.
 // Sent only to the rejoining subscriber.
-type outRejoined struct {
+type OutRejoined struct {
 	PlayerID game.PlayerID
 	RoomCode string
 	IsHost   bool
@@ -41,23 +45,23 @@ type outRejoined struct {
 	Events []game.Event
 }
 
-func (outRejoined) isOutbound() {}
+func (OutRejoined) isOutbound() {}
 
-// outEvent carries one engine event, already passed through the
+// OutEvent carries one engine event, already passed through the
 // per-player projection. This is the streaming channel — every state
-// change in the game emits one or more outEvents to each subscriber.
-type outEvent struct {
+// change in the game emits one or more OutEvents to each subscriber.
+type OutEvent struct {
 	Event game.Event
 }
 
-func (outEvent) isOutbound() {}
+func (OutEvent) isOutbound() {}
 
-// outError reports a rejected command back to the originating
+// OutError reports a rejected command back to the originating
 // subscriber only. Code is the sentinel name (e.g. "wrong_phase",
 // "no_change"); Message is a human-readable explanation.
-type outError struct {
+type OutError struct {
 	Code    string
 	Message string
 }
 
-func (outError) isOutbound() {}
+func (OutError) isOutbound() {}

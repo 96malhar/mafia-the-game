@@ -25,7 +25,7 @@ const recvTimeout = 2 * time.Second
 
 // recv pulls one outbound message from a subscriber, failing the test
 // if nothing arrives within recvTimeout.
-func recv(t *testing.T, sub *Subscriber) outbound {
+func recv(t *testing.T, sub *Subscriber) Outbound {
 	t.Helper()
 	select {
 	case msg, ok := <-sub.Outbound():
@@ -39,7 +39,7 @@ func recv(t *testing.T, sub *Subscriber) outbound {
 
 // recvType is recv with a type assertion: the next message must be of
 // type T. Returns the typed value.
-func recvType[T outbound](t *testing.T, sub *Subscriber) T {
+func recvType[T Outbound](t *testing.T, sub *Subscriber) T {
 	t.Helper()
 	msg := recv(t, sub)
 	v, ok := msg.(T)
@@ -52,10 +52,10 @@ func recvType[T outbound](t *testing.T, sub *Subscriber) T {
 // drain reads any pending messages from sub, with a short deadline,
 // returning them all. Used when a test wants to "ignore the broadcast
 // that just happened" without asserting on each one.
-func drain(sub *Subscriber, deadline time.Duration) []outbound {
+func drain(sub *Subscriber, deadline time.Duration) []Outbound {
 	timer := time.NewTimer(deadline)
 	defer timer.Stop()
-	var out []outbound
+	var out []Outbound
 	for {
 		select {
 		case msg, ok := <-sub.Outbound():
@@ -93,13 +93,13 @@ func newTestRoom(t *testing.T) (*Manager, *Room) {
 	return m, r
 }
 
-// connect creates a subscriber, sends inJoin, and waits for outJoined.
+// connect creates a subscriber, sends inJoin, and waits for OutJoined.
 // Returns the subscriber and the join ack.
-func connect(t *testing.T, r *Room, name string) (*Subscriber, outJoined) {
+func connect(t *testing.T, r *Room, name string) (*Subscriber, OutJoined) {
 	t.Helper()
 	sub := NewSubscriber()
-	require.NoError(t, r.Submit(context.Background(), inJoin{From: sub, Name: name}))
-	ack := recvType[outJoined](t, sub)
+	require.NoError(t, r.submit(context.Background(), inJoin{From: sub, Name: name}))
+	ack := recvType[OutJoined](t, sub)
 	require.Equal(t, name, name) // placeholder; assertion below
 	require.NotEmpty(t, ack.PlayerID)
 	require.NotEmpty(t, ack.Secret)
@@ -145,7 +145,7 @@ func TestManager_CloseShutsRoomsDown(t *testing.T) {
 	require.NoError(t, m.Close(ctx))
 
 	// Submit after Close must fail.
-	err = r.Submit(context.Background(), inJoin{From: NewSubscriber(), Name: "x"})
+	err = r.submit(context.Background(), inJoin{From: NewSubscriber(), Name: "x"})
 	require.Error(t, err)
 }
 
@@ -174,14 +174,14 @@ func TestRoom_PlayerJoinedBroadcastsToOthers(t *testing.T) {
 	subB, ackB := connect(t, r, "Bob")
 
 	// subA should see Bob's PlayerJoined.
-	msg := recvType[outEvent](t, subA)
+	msg := recvType[OutEvent](t, subA)
 	pj, ok := msg.Event.(game.PlayerJoined)
 	require.True(t, ok)
 	require.Equal(t, ackB.PlayerID, pj.PlayerID)
 	require.Equal(t, "Bob", pj.Name)
 
 	// subB also sees their own PlayerJoined.
-	msg = recvType[outEvent](t, subB)
+	msg = recvType[OutEvent](t, subB)
 	pj, ok = msg.Event.(game.PlayerJoined)
 	require.True(t, ok)
 	require.Equal(t, ackB.PlayerID, pj.PlayerID)
@@ -198,11 +198,11 @@ func TestRoom_RejoinAcceptsCorrectSecret(t *testing.T) {
 
 	// New connection rejoins as Alice.
 	subA2 := NewSubscriber()
-	require.NoError(t, r.Submit(context.Background(), inRejoin{
+	require.NoError(t, r.submit(context.Background(), inRejoin{
 		From: subA2, PlayerID: ackA.PlayerID, Secret: ackA.Secret,
 	}))
 
-	re := recvType[outRejoined](t, subA2)
+	re := recvType[OutRejoined](t, subA2)
 	require.Equal(t, ackA.PlayerID, re.PlayerID)
 	require.True(t, re.IsHost)
 	require.NotEmpty(t, re.Events, "rejoin should replay events")
@@ -213,11 +213,11 @@ func TestRoom_RejoinRejectsBadSecret(t *testing.T) {
 	_, ackA := connect(t, r, "Alice")
 
 	bad := NewSubscriber()
-	require.NoError(t, r.Submit(context.Background(), inRejoin{
+	require.NoError(t, r.submit(context.Background(), inRejoin{
 		From: bad, PlayerID: ackA.PlayerID, Secret: "definitely-wrong",
 	}))
 
-	errMsg := recvType[outError](t, bad)
+	errMsg := recvType[OutError](t, bad)
 	require.Equal(t, "auth_failed", errMsg.Code)
 }
 
@@ -227,10 +227,10 @@ func TestRoom_RejoinEvictsOldSubscriber(t *testing.T) {
 	_ = drain(subA, 50*time.Millisecond)
 
 	subA2 := NewSubscriber()
-	require.NoError(t, r.Submit(context.Background(), inRejoin{
+	require.NoError(t, r.submit(context.Background(), inRejoin{
 		From: subA2, PlayerID: ackA.PlayerID, Secret: ackA.Secret,
 	}))
-	_ = recvType[outRejoined](t, subA2)
+	_ = recvType[OutRejoined](t, subA2)
 
 	// Old subscriber's outbound channel should now be closed.
 	select {
@@ -248,7 +248,7 @@ func TestRoom_CommandsRewriteActorToSender(t *testing.T) {
 
 	// Fill 5 players (default roster size).
 	subs := make([]*Subscriber, 5)
-	acks := make([]outJoined, 5)
+	acks := make([]OutJoined, 5)
 	for i := range subs {
 		subs[i], acks[i] = connect(t, r, string(rune('A'+i)))
 	}
@@ -258,7 +258,7 @@ func TestRoom_CommandsRewriteActorToSender(t *testing.T) {
 	}
 
 	// Start the game (any player can do this in v1; host-only TODO).
-	require.NoError(t, r.Submit(context.Background(), inCommand{
+	require.NoError(t, r.submit(context.Background(), inCommand{
 		From: subs[0], Cmd: game.StartGame{},
 	}))
 
@@ -270,22 +270,22 @@ func TestRoom_CommandsRewriteActorToSender(t *testing.T) {
 	// Now: pretend subs[0] sends a NightAction claiming to be subs[1].
 	// The room must rewrite Actor to subs[0].PlayerID.
 	bogus := game.NightAction{Actor: acks[1].PlayerID, Target: acks[2].PlayerID}
-	require.NoError(t, r.Submit(context.Background(), inCommand{
+	require.NoError(t, r.submit(context.Background(), inCommand{
 		From: subs[0], Cmd: bogus,
 	}))
 
 	// Whatever the result, subs[0] (the sender) is what the engine sees.
 	// Since subs[0]'s role is random, we may get NightActionRecorded
-	// (if subs[0] happens to have a night-acting role) or outError. In
+	// (if subs[0] happens to have a night-acting role) or OutError. In
 	// EITHER case, no spoofing happened. We just need a message back
 	// to subs[0].
 	got := recv(t, subs[0])
 	switch v := got.(type) {
-	case outError:
+	case OutError:
 		// Most likely: subs[0] is a villager or invalid target. That's
 		// fine — proves the command went through with Actor=subs[0].
 		t.Logf("rejected as expected: %s", v.Message)
-	case outEvent:
+	case OutEvent:
 		nar, ok := v.Event.(game.NightActionRecorded)
 		if ok {
 			require.Equal(t, acks[0].PlayerID, nar.Actor,
@@ -301,7 +301,7 @@ func TestRoom_LeaveClosesChannelButKeepsPlayer(t *testing.T) {
 	subA, ackA := connect(t, r, "Alice")
 	_ = drain(subA, 50*time.Millisecond)
 
-	require.NoError(t, r.Submit(context.Background(), inLeave{From: subA}))
+	require.NoError(t, r.submit(context.Background(), inLeave{From: subA}))
 
 	// Channel closes.
 	select {
@@ -313,10 +313,10 @@ func TestRoom_LeaveClosesChannelButKeepsPlayer(t *testing.T) {
 
 	// Player can rejoin with the same secret.
 	subA2 := NewSubscriber()
-	require.NoError(t, r.Submit(context.Background(), inRejoin{
+	require.NoError(t, r.submit(context.Background(), inRejoin{
 		From: subA2, PlayerID: ackA.PlayerID, Secret: ackA.Secret,
 	}))
-	_ = recvType[outRejoined](t, subA2)
+	_ = recvType[OutRejoined](t, subA2)
 }
 
 // --- Error code mapping --------------------------------------------------
@@ -351,13 +351,72 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 // drain loop starts, the room is still emitting broadcasts and the
 // drainer keeps the buffer below capacity forever.
 
+// --- Phase timers --------------------------------------------------------
+
+func TestRoom_PhaseTimerAdvancesAutomatically(t *testing.T) {
+	// Short durations so the test runs quickly. We only need Night to
+	// fire; Day phases aren't reached.
+	m := newTestManager(t)
+	r, err := m.CreateRoom(Config{
+		Logger: silentLogger(),
+		PhaseDurations: map[game.Phase]time.Duration{
+			game.PhaseNight:         40 * time.Millisecond,
+			game.PhaseDayDiscussion: 40 * time.Millisecond,
+			game.PhaseDayVote:       40 * time.Millisecond,
+		},
+	})
+	require.NoError(t, err)
+
+	subs := make([]*Subscriber, 5)
+	for i := range subs {
+		subs[i], _ = connect(t, r, string(rune('A'+i)))
+	}
+	for _, s := range subs {
+		_ = drain(s, 20*time.Millisecond)
+	}
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: subs[0], Cmd: game.StartGame{},
+	}))
+
+	// Watch subs[0] for at least one PhaseChanged into PhaseNight, then
+	// another PhaseChanged OUT of night within ~150ms (40ms timer + slack).
+	sawNight := false
+	sawAdvance := false
+	deadline := time.After(500 * time.Millisecond)
+	for !sawAdvance {
+		select {
+		case msg, ok := <-subs[0].Outbound():
+			if !ok {
+				t.Fatal("subscriber channel closed early")
+			}
+			ev, isEvent := msg.(OutEvent)
+			if !isEvent {
+				continue
+			}
+			pc, isPC := ev.Event.(game.PhaseChanged)
+			if !isPC {
+				continue
+			}
+			switch {
+			case pc.To == game.PhaseNight:
+				sawNight = true
+			case sawNight && pc.From == game.PhaseNight:
+				sawAdvance = true
+			}
+		case <-deadline:
+			t.Fatalf("phase timer did not advance from night (sawNight=%v)", sawNight)
+		}
+	}
+}
+
 // --- Projection: RoleAssigned is private --------------------------------
 
 func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {
 	_, r := newTestRoom(t)
 
 	subs := make([]*Subscriber, 5)
-	acks := make([]outJoined, 5)
+	acks := make([]OutJoined, 5)
 	for i := range subs {
 		subs[i], acks[i] = connect(t, r, string(rune('A'+i)))
 	}
@@ -365,7 +424,7 @@ func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {
 		_ = drain(s, 50*time.Millisecond)
 	}
 
-	require.NoError(t, r.Submit(context.Background(), inCommand{
+	require.NoError(t, r.submit(context.Background(), inCommand{
 		From: subs[0], Cmd: game.StartGame{},
 	}))
 
@@ -376,7 +435,7 @@ func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {
 		msgs := drain(sub, 200*time.Millisecond)
 		seenOwn := false
 		for _, m := range msgs {
-			ev, ok := m.(outEvent)
+			ev, ok := m.(OutEvent)
 			if !ok {
 				continue
 			}

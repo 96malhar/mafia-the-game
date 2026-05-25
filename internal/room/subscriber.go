@@ -33,14 +33,14 @@ type Subscriber struct {
 	// out is the room->subscriber channel. The room is the only sender;
 	// the subscriber's reader (WebSocket write pump in production, test
 	// goroutine in tests) is the only receiver.
-	out chan outbound
+	out chan Outbound
 }
 
 // NewSubscriber constructs a Subscriber ready to be passed to a room.
 // The PlayerID is empty until the room assigns one.
 func NewSubscriber() *Subscriber {
 	return &Subscriber{
-		out: make(chan outbound, outboundChanCapacity),
+		out: make(chan Outbound, outboundChanCapacity),
 	}
 }
 
@@ -53,11 +53,37 @@ func (s *Subscriber) PlayerID() game.PlayerID {
 // Outbound returns the channel the subscriber should read from.
 // The channel is closed when the room finishes broadcasting to this
 // subscriber (i.e. on Leave or room shutdown).
-func (s *Subscriber) Outbound() <-chan outbound {
+func (s *Subscriber) Outbound() <-chan Outbound {
 	return s.out
 }
 
 // setPlayerID is called by the room when accepting a join/rejoin.
 func (s *Subscriber) setPlayerID(id game.PlayerID) {
 	s.playerID.Store(id)
+}
+
+// TrySend attempts a non-blocking send of msg on the subscriber's
+// outbound channel. Returns true on success, false if the buffer is
+// full or the channel has been closed by the room.
+//
+// This is intended for the TRANSPORT layer to inject transport-level
+// errors (e.g. "bad JSON") that the room itself never saw. Callers
+// must not rely on TrySend for game state — those messages must flow
+// through the room so they're ordered with broadcasts.
+//
+// TrySend is safe to call from any goroutine; the close-vs-send race
+// is handled by an internal recover.
+func (s *Subscriber) TrySend(msg Outbound) (sent bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Channel was closed; treat as "not sent".
+			sent = false
+		}
+	}()
+	select {
+	case s.out <- msg:
+		return true
+	default:
+		return false
+	}
 }

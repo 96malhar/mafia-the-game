@@ -25,7 +25,15 @@ func registerRoutes(r chi.Router, cfg Config) {
 
 	r.Get("/healthz", handleHealth)
 
-	// Static assets are mounted last so API/WS routes (added later) take
-	// precedence. chi's Handle with "/*" matches the remaining tree.
+	// Game routes — only registered when the WebSocket handler is wired
+	// in (Config.WS != nil). Tests that only need static-serving leave
+	// it nil.
+	if cfg.WS != nil {
+		r.Post("/api/rooms", cfg.WS.CreateRoom)
+		r.Get("/ws/{code}", cfg.WS.Connect)
+	}
+
+	// Static assets are mounted last so API/WS routes take precedence.
+	// chi's Handle with "/*" matches the remaining tree.
 	r.Handle("/*", http.FileServer(http.FS(cfg.WebFS)))
 }

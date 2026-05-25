@@ -1,8 +1,15 @@
 // Package server wires HTTP routes and owns the *http.Server lifecycle.
 //
+// The package is split by concern:
+//
+//	server.go      Config, Server, Start/Shutdown — lifecycle only.
+//	routes.go      registerRoutes — the single place routes are declared.
+//	handlers.go    HTTP handler funcs.
+//	middleware.go  Custom middleware.
+//
 // In later steps we'll add WebSocket upgrade handlers and inject a room
-// manager here. For now it only serves static files from the web/ directory
-// and a /healthz endpoint for liveness checks.
+// manager via Config. For now the server only serves static files from the
+// web/ directory and a /healthz endpoint for liveness checks.
 package server
 
 import (
@@ -14,7 +21,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Config holds runtime configuration for the server.
@@ -44,24 +50,7 @@ func New(cfg Config) *Server {
 	}
 
 	r := chi.NewRouter()
-
-	// Middleware order matters: RequestID first so every later log line
-	// can correlate, Recoverer last so it catches panics in everything above
-	// it. We intentionally do NOT use middleware.RealIP — it trusts client-
-	// supplied X-Forwarded-For / X-Real-IP headers, which is spoofable from
-	// the public internet (see chi GHSA-3fxj-6jh8-hvhx). When we deploy
-	// behind a known proxy, we'll add a narrowly-scoped trusted-proxy
-	// middleware instead.
-	r.Use(middleware.RequestID)
-	r.Use(requestLogger(cfg.Logger))
-	r.Use(middleware.Recoverer)
-
-	r.Get("/healthz", handleHealth)
-
-	// Static assets are mounted last so API/WS routes (added later) take
-	// precedence. chi's Handle with "/*" matches the remaining tree.
-	fileServer := http.FileServer(http.FS(cfg.WebFS))
-	r.Handle("/*", fileServer)
+	registerRoutes(r, cfg)
 
 	return &Server{
 		cfg: cfg,
@@ -88,29 +77,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
-func handleHealth(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
-// requestLogger is a chi-compatible access log built on slog. We write our
-// own (rather than using middleware.Logger) so output is structured JSON-
-// friendly and uses the same logger as the rest of the app.
-func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-			next.ServeHTTP(ww, r)
-			logger.Info("http",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", ww.Status(),
-				"bytes", ww.BytesWritten(),
-				"dur_ms", time.Since(start).Milliseconds(),
-				"req_id", middleware.GetReqID(r.Context()),
-				"remote", r.RemoteAddr,
-			)
-		})
-	}
+// handler returns the underlying http.Handler. It is unexported and exists
+// only so tests in this package can drive the server through httptest
+// without binding a real port.
+func (s *Server) handler() http.Handler {
+	return s.http.Handler
 }

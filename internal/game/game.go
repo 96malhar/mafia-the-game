@@ -40,11 +40,11 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 	case StartGame:
 		return g.applyStartGame(c)
 	case NightAction:
-		return nil, fmt.Errorf("game: NightAction not yet implemented")
+		return g.applyNightAction(c)
 	case DayVote:
-		return nil, fmt.Errorf("game: DayVote not yet implemented")
+		return g.applyDayVote(c)
 	case AdvancePhase:
-		return nil, fmt.Errorf("game: AdvancePhase not yet implemented")
+		return g.applyAdvancePhase(c)
 	default:
 		// Unreachable: Command is a closed interface (see command.go),
 		// so the compiler guarantees this switch covers every shape.

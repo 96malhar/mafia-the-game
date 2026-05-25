@@ -37,6 +37,20 @@ type GameState struct {
 	phase   Phase
 	day     int // day number; 0 in Lobby/first Night, 1 after first day starts
 	players []Player
+
+	// pendingNight stores night-action targets keyed by actor. Cleared
+	// each time Night ends. Per-actor commit-once: re-submission is
+	// rejected with ErrAlreadyActed.
+	pendingNight map[PlayerID]PlayerID
+
+	// votes stores the current PhaseDayVote tally as voter -> target.
+	// Unlike night actions, votes are mutable; entries are overwritten
+	// or deleted as players change or retract their vote.
+	votes map[PlayerID]PlayerID
+
+	// dayVoteExtended records whether the current day has already used
+	// its single re-vote extension. Reset each time a fresh day begins.
+	dayVoteExtended bool
 }
 
 // newState constructs an empty state in PhaseLobby. Unexported because
@@ -79,4 +93,25 @@ func (s *GameState) findPlayer(id PlayerID) (*Player, bool) {
 		}
 	}
 	return nil, false
+}
+
+// factionLivingCount returns the number of currently alive members of f.
+func (s *GameState) factionLivingCount(f Faction) int {
+	n := 0
+	for i := range s.players {
+		if s.players[i].alive && s.players[i].role.Faction() == f {
+			n++
+		}
+	}
+	return n
+}
+
+// finalRolesSnapshot copies player -> role for the GameEnded event. Only
+// safe to call at game end since it exposes every role publicly.
+func (s *GameState) finalRolesSnapshot() map[PlayerID]Role {
+	out := make(map[PlayerID]Role, len(s.players))
+	for _, p := range s.players {
+		out[p.id] = p.role
+	}
+	return out
 }

@@ -43,4 +43,16 @@ var (
 	// ErrGameEnded is returned when any command (other than inspection)
 	// is submitted after PhaseEnded.
 	ErrGameEnded = errors.New("game: game has ended")
+
+	// ErrNoChange is returned when a command would not alter state — for
+	// example, re-submitting an identical vote or retracting a vote that
+	// was never cast. We reject rather than silently no-op so that the
+	// event log isn't spammed with non-events.
+	ErrNoChange = errors.New("game: command would not change state")
+
+	// ErrAlreadyActed is returned when a player who has already submitted
+	// a NightAction in the current night tries to submit another. Night
+	// actions are commit-once per night (unlike day votes which are
+	// changeable until the timer expires).
+	ErrAlreadyActed = errors.New("game: night action already submitted this night")
 )

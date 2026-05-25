@@ -54,13 +54,24 @@ type NightAction struct {
 
 func (NightAction) isCommand() {}
 
-// DayVote is a public vote during PhaseDayVote. Each living player may
-// cast one vote (first vote wins; subsequent votes are rejected). The
-// plurality target is lynched when AdvancePhase ends the vote phase. If
-// no strict plurality exists, the day is extended once for a re-vote,
-// then ends with no lynch on a second indecisive tally.
+// DayVote is a public vote during PhaseDayVote. Votes are MUTABLE — a
+// player may change or retract their vote any number of times until the
+// vote phase ends, and the most recent value is what counts toward the
+// final tally.
 //
-// Votes submitted in PhaseDayDiscussion are rejected with ErrWrongPhase.
+//   - Target == "" with an active prior vote   -> retract (VoteRetracted)
+//   - Target == "" with no prior vote          -> ErrNoChange
+//   - Target == priorTarget                    -> ErrNoChange (no-op spam)
+//   - Target != priorTarget, no prior          -> VoteCast
+//   - Target != priorTarget, had prior         -> VoteChanged{From, To}
+//
+// Self-voting is forbidden (ErrSelfTarget). Voter and Target (when set)
+// must be alive. Votes submitted in PhaseDayDiscussion are rejected with
+// ErrWrongPhase.
+//
+// The plurality target at phase end is lynched. If no unique plurality
+// exists, the day is extended once for a re-vote; a second indecisive
+// tally ends the day with no lynch.
 type DayVote struct {
 	Voter  PlayerID
 	Target PlayerID

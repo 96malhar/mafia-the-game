@@ -139,8 +139,9 @@ type DetectiveResult struct {
 func (e DetectiveResult) isEvent()               {}
 func (e DetectiveResult) Visibility() Visibility { return PrivateTo(e.Detective) }
 
-// VoteCast is a public day-vote tally update. Emitted once per vote
-// submission so the UI can show live tallies.
+// VoteCast is emitted when a voter casts their first vote of the current
+// PhaseDayVote. Subsequent changes by the same voter emit VoteChanged;
+// retractions emit VoteRetracted.
 type VoteCast struct {
 	Voter  PlayerID
 	Target PlayerID
@@ -148,6 +149,28 @@ type VoteCast struct {
 
 func (VoteCast) isEvent()               {}
 func (VoteCast) Visibility() Visibility { return Public() }
+
+// VoteChanged is emitted when a voter who already had an active vote
+// switches to a different target. It carries both old and new targets so
+// the UI and replays can describe the move without state reconstruction.
+type VoteChanged struct {
+	Voter PlayerID
+	From  PlayerID
+	To    PlayerID
+}
+
+func (VoteChanged) isEvent()               {}
+func (VoteChanged) Visibility() Visibility { return Public() }
+
+// VoteRetracted is emitted when a voter withdraws their active vote
+// without immediately picking another target (i.e. DayVote{Target: ""}).
+type VoteRetracted struct {
+	Voter PlayerID
+	Was   PlayerID
+}
+
+func (VoteRetracted) isEvent()               {}
+func (VoteRetracted) Visibility() Visibility { return Public() }
 
 // VoteExtended is emitted at the end of PhaseDayVote when the tally has
 // no strict plurality (a tie or no votes at all) and the day has not yet

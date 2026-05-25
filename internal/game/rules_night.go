@@ -2,26 +2,25 @@ package game
 
 // applyNightAction records one role-specific night action.
 //
-// Validation:
+// This handler is now a thin wrapper over the role registry in
+// rolespec.go: generic structural checks live here, and role-specific
+// validation lives in each role's NightAction.Validate hook.
+//
+// Generic validation:
 //   - PhaseNight only.
-//   - Actor and (non-empty) Target must be known players and alive.
-//   - Actor must be a role that has a night action
-//     (mafia, doctor, detective). Villagers and unknown roles are
-//     rejected with ErrNotYourAction.
-//   - Detective cannot investigate self (ErrSelfTarget). The doctor on
-//     night 1 cannot self-save either, but that's a "first night"
-//     special case we handle here by disallowing self-save on day 0;
-//     later nights, the doctor MAY self-save.
-//   - Each actor commits once per night (ErrAlreadyActed); changes are
-//     not allowed (unlike day votes).
-//   - Mafia cannot target their own faction (ErrNotYourAction is the
-//     closest sentinel — a mafia targeting another mafia is treated as
-//     an illegal action, same as a villager calling NightAction).
+//   - Actor and Target must be known and alive.
+//   - Actor must be a role with a NightAction in the registry.
+//     (Villagers, and any future role lacking a night action, are
+//     rejected with ErrNotYourAction.)
+//   - Each actor commits once per night (ErrAlreadyActed).
+//
+// Role-specific validation is delegated to spec.NightAction.Validate
+// (e.g., "mafia cannot kill mafia", "doctor cannot self-save on n1",
+// "detective cannot self-investigate").
 //
 // On success this emits a single NightActionRecorded scoped to the
-// actor's faction. The actual kill/save/investigate effects are NOT
-// emitted here — they are resolved together when AdvancePhase ends
-// Night, so the events arrive in a stable, deterministic order.
+// actor's faction. Effects (kill/save/info) are emitted later by
+// resolveNight when AdvancePhase ends Night.
 func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -38,15 +37,11 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		return nil, ErrPlayerDead
 	}
 
-	// Role must be capable of acting at night.
-	switch actor.role {
-	case RoleMafia, RoleDoctor, RoleDetective:
-		// ok
-	default:
+	spec, ok := roleSpecs[actor.role]
+	if !ok || spec.NightAction == nil {
 		return nil, ErrNotYourAction
 	}
 
-	// Target validation.
 	if c.Target == "" {
 		return nil, ErrUnknownPlayer
 	}
@@ -58,22 +53,9 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		return nil, ErrPlayerDead
 	}
 
-	// Role-specific target rules.
-	switch actor.role {
-	case RoleMafia:
-		// Mafia cannot kill another mafia.
-		if target.role.Faction() == FactionMafia {
-			return nil, ErrNotYourAction
-		}
-	case RoleDetective:
-		if c.Actor == c.Target {
-			return nil, ErrSelfTarget
-		}
-	case RoleDoctor:
-		// On the first night (day 0), the doctor may not self-save.
-		// On subsequent nights, self-save is allowed.
-		if c.Actor == c.Target && g.state.day == 0 {
-			return nil, ErrSelfTarget
+	if spec.NightAction.Validate != nil {
+		if err := spec.NightAction.Validate(g.state, actor, target); err != nil {
+			return nil, err
 		}
 	}
 
@@ -92,83 +74,59 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	}}, nil
 }
 
-// resolveNight computes the effects of all submitted night actions and
-// returns the events to append to the log. Called by AdvancePhase when
-// leaving PhaseNight.
+// resolveNight runs each scheduled night action through its role's
+// Apply hook, in nightPhase order, with an implicit resolve step
+// (kill vs save reconciliation) between Schedule and Reveal.
 //
-// Resolution order (deterministic):
-//  1. Mafia kill target is identified. If multiple mafia voted, the
-//     last-submitted action wins. (V1 simplification — proper mafia-
-//     internal consensus is a future enhancement.)
-//  2. Doctor's save target is identified.
-//  3. If doctor saved the kill target, emit PlayerSaved (private to
-//     doctor) and no kill.
-//  4. Otherwise emit PlayerKilled (public) and mark target dead.
-//  5. Detective result is emitted last (private to detective).
+// This replaces the old hand-rolled switch on role; new roles plug in
+// purely via the registry in rolespec.go.
 //
-// pendingNight is cleared regardless of outcome.
+// The iteration order within a phase is the players' join order, which
+// is stable and deterministic.
 func (g *Game) resolveNight() []Event {
-	var events []Event
-	var killTarget, doctorTarget, detective, detectiveTarget PlayerID
-	var hasKill, hasSave, hasInvestigate bool
+	ctx := &nightContext{state: g.state}
 
-	// Snapshot decisions. Iterate players (deterministic order) so we
-	// can resolve duplicates (multiple mafia actors) by latest action.
-	for _, p := range g.state.players {
-		target, ok := g.state.pendingNight[p.id]
+	// Block: roleblockers nullify other actions. (No role in v1; the
+	// iteration is here so a future spec slots in without touching
+	// this function.)
+	g.runNightPhase(ctx, nightPhaseBlock)
+
+	// Schedule: declare intent without mutating state (mafia kill,
+	// doctor save).
+	g.runNightPhase(ctx, nightPhaseSchedule)
+
+	// Resolve: reconcile kill vs save into at most one mutation.
+	resolvePhase(ctx)
+
+	// Reveal: info roles read the resolved state (Detective, future
+	// Lookout).
+	g.runNightPhase(ctx, nightPhaseReveal)
+
+	g.state.pendingNight = nil
+	return ctx.events
+}
+
+// runNightPhase invokes Apply on every player whose role's spec
+// declares a NightAction in the given phase AND has a pending target
+// for tonight. Iteration order is players' join order for determinism.
+func (g *Game) runNightPhase(ctx *nightContext, phase nightPhase) {
+	for i := range g.state.players {
+		actor := &g.state.players[i]
+		target, ok := g.state.pendingNight[actor.id]
 		if !ok {
 			continue
 		}
-		switch p.role {
-		case RoleMafia:
-			killTarget = target
-			hasKill = true
-		case RoleDoctor:
-			doctorTarget = target
-			hasSave = true
-		case RoleDetective:
-			detective = p.id
-			detectiveTarget = target
-			hasInvestigate = true
+		spec, ok := roleSpecs[actor.role]
+		if !ok || spec.NightAction == nil {
+			continue
 		}
-	}
-
-	if hasKill {
-		if hasSave && doctorTarget == killTarget {
-			// Doctor saved the kill target. Private notification to
-			// the doctor so the village can't deduce the role.
-			var doctorID PlayerID
-			for _, p := range g.state.players {
-				if p.role == RoleDoctor && p.alive {
-					doctorID = p.id
-					break
-				}
-			}
-			events = append(events, PlayerSaved{
-				PlayerID: killTarget,
-				Doctor:   doctorID,
-			})
-		} else {
-			// Apply the kill.
-			if tp, ok := g.state.findPlayer(killTarget); ok {
-				tp.alive = false
-			}
-			events = append(events, PlayerKilled{PlayerID: killTarget})
+		if spec.NightAction.Phase != phase {
+			continue
 		}
-	}
-
-	if hasInvestigate {
-		var isMafia bool
-		if tp, ok := g.state.findPlayer(detectiveTarget); ok {
-			isMafia = tp.role.Faction() == FactionMafia
+		tp, ok := g.state.findPlayer(target)
+		if !ok {
+			continue
 		}
-		events = append(events, DetectiveResult{
-			Detective: detective,
-			Target:    detectiveTarget,
-			IsMafia:   isMafia,
-		})
+		spec.NightAction.Apply(ctx, actor, tp)
 	}
-
-	g.state.pendingNight = nil
-	return events
 }

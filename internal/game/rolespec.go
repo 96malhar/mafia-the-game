@@ -1,0 +1,211 @@
+package game
+
+// This file defines how new roles plug into the engine.
+//
+// To add a new role:
+//  1. Add a new const to role.go and update Faction().
+//  2. Add an entry to the roleSpecs map in this file.
+//  3. If your role has a night action, fill in NightAction with a
+//     Validate, Phase, and Apply.
+//
+// You should NOT have to edit rules_night.go for ordinary role
+// additions. If you find yourself reaching for a switch on actor.role
+// outside this file or role.go, the registry is probably missing an
+// extension point — open a PR to add the hook here.
+
+// nightPhase orders night-action resolution. Roles declare which phase
+// their Apply function runs in; resolveNight iterates phases in order.
+//
+// The split matters because some roles read state set by others. For
+// example, the doctor's save must run AFTER kill intents are recorded
+// but BEFORE they actually mutate alive status — hence the
+// "Schedule" / "Resolve" split below.
+type nightPhase int
+
+const (
+	// nightPhaseBlock runs first. Roleblockers and similar abilities
+	// that cancel other roles' actions live here. (No such role exists
+	// in v1; the phase is reserved for future use.)
+	nightPhaseBlock nightPhase = iota
+
+	// nightPhaseSchedule is where "I intend to kill X" and "I intend to
+	// save X" record their intent into the NightContext. No mutation of
+	// player state yet.
+	nightPhaseSchedule
+
+	// nightPhaseResolve is where the NightContext computes the net
+	// effect of all scheduled intents (one kill, or one save, or
+	// nothing) and applies it to player state.
+	nightPhaseResolve
+
+	// nightPhaseReveal runs last. Roles that produce private info based
+	// on the resolved state (Detective, future Lookout) live here so
+	// they see who actually died.
+	nightPhaseReveal
+)
+
+// nightContext is the scratchpad threaded through every spec's Apply
+// during resolveNight. It holds the in-flight resolution state and
+// accumulates events to emit.
+//
+// Specs read/write fields directly — the API is intentionally small and
+// concrete rather than a deep abstraction. We can grow it as new role
+// shapes demand new fields.
+type nightContext struct {
+	state *GameState
+
+	// killTarget, if set, is the player the mafia (or a future
+	// vigilante) is trying to kill. Last-write wins among multiple
+	// killers (V1 simplification).
+	killTarget PlayerID
+	hasKill    bool
+
+	// saveTarget, if set, is the player the doctor is protecting.
+	saveTarget PlayerID
+	hasSave    bool
+
+	// savingDoctor is the PlayerID of the doctor who issued the save
+	// (used so PlayerSaved can carry the right Visibility). Empty if
+	// hasSave is false.
+	savingDoctor PlayerID
+
+	// died is set during nightPhaseResolve to the player who actually
+	// died this night (empty if nobody died). Reveal-phase roles
+	// (detective, etc.) can read this if they care.
+	died PlayerID
+
+	// events accumulates events to be appended after resolution.
+	events []Event
+}
+
+// NightAction describes the per-role hooks for a night-acting role. A
+// role without a night action leaves this nil in its RoleSpec.
+type nightActionSpec struct {
+	// Phase is the resolution phase this action runs in. See the
+	// nightPhase constants for semantics.
+	Phase nightPhase
+
+	// Validate is called by applyNightAction after generic checks
+	// (actor/target exist and are alive, target is not empty) pass. It
+	// returns a sentinel error to reject the action, or nil to record
+	// it. Validate must be pure — no state mutation.
+	Validate func(s *GameState, actor, target *Player) error
+
+	// Apply runs during resolveNight, in Phase order. The actor and
+	// target args are the *current* (possibly already-mutated) records;
+	// callers MUST NOT mutate state directly — write intent or effects
+	// through ctx.
+	Apply func(ctx *nightContext, actor, target *Player)
+}
+
+// roleSpec is the per-role plugin. Today it carries a Faction (a static
+// fact about the role) and an optional NightAction. As we add more
+// role-shapes (passive roles, day actions, group voting), this struct
+// gains more optional hooks.
+type roleSpec struct {
+	Faction     Faction
+	NightAction *nightActionSpec
+}
+
+// roleSpecs is the registry. Every value in the Role enum MUST have an
+// entry here; a TestEveryRoleHasASpec test enforces this invariant.
+var roleSpecs = map[Role]roleSpec{
+	RoleVillager: {
+		Faction: FactionTown,
+		// No NightAction.
+	},
+
+	RoleMafia: {
+		Faction: FactionMafia,
+		NightAction: &nightActionSpec{
+			Phase: nightPhaseSchedule,
+			Validate: func(_ *GameState, _, target *Player) error {
+				if target.role.Faction() == FactionMafia {
+					// Mafia cannot kill another mafia.
+					return ErrNotYourAction
+				}
+				return nil
+			},
+			Apply: func(ctx *nightContext, _, target *Player) {
+				// V1: last-write wins among multiple mafia killers.
+				ctx.killTarget = target.id
+				ctx.hasKill = true
+			},
+		},
+	},
+
+	RoleDoctor: {
+		Faction: FactionTown,
+		NightAction: &nightActionSpec{
+			Phase: nightPhaseSchedule,
+			Validate: func(s *GameState, actor, target *Player) error {
+				// Self-save is forbidden on night 1 (day == 0) only.
+				if actor.id == target.id && s.day == 0 {
+					return ErrSelfTarget
+				}
+				return nil
+			},
+			Apply: func(ctx *nightContext, actor, target *Player) {
+				ctx.saveTarget = target.id
+				ctx.hasSave = true
+				ctx.savingDoctor = actor.id
+			},
+		},
+	},
+
+	RoleDetective: {
+		Faction: FactionTown,
+		NightAction: &nightActionSpec{
+			Phase: nightPhaseReveal,
+			Validate: func(_ *GameState, actor, target *Player) error {
+				if actor.id == target.id {
+					return ErrSelfTarget
+				}
+				return nil
+			},
+			Apply: func(ctx *nightContext, actor, target *Player) {
+				ctx.events = append(ctx.events, DetectiveResult{
+					Detective: actor.id,
+					Target:    target.id,
+					IsMafia:   target.role.Faction() == FactionMafia,
+				})
+			},
+		},
+	},
+}
+
+// resolvePhase is the implicit nightPhaseResolve handler. It is not a
+// role spec because no role "owns" the resolve step — it's the
+// engine's reconciliation of scheduled intents into actual player-state
+// changes and the public kill/save events.
+//
+// Doctor saves cancel a kill iff they target the same player. The
+// private PlayerSaved is visible only to the doctor (see event.go).
+func resolvePhase(ctx *nightContext) {
+	if !ctx.hasKill {
+		return
+	}
+	if ctx.hasSave && ctx.saveTarget == ctx.killTarget {
+		ctx.events = append(ctx.events, PlayerSaved{
+			PlayerID: ctx.killTarget,
+			Doctor:   ctx.savingDoctor,
+		})
+		return
+	}
+	if tp, ok := ctx.state.findPlayer(ctx.killTarget); ok {
+		tp.alive = false
+		ctx.died = ctx.killTarget
+	}
+	ctx.events = append(ctx.events, PlayerKilled{PlayerID: ctx.killTarget})
+}
+
+// allRoles is the canonical list of every role. Tests use it to assert
+// the registry covers every variant.
+func allRoles() []Role {
+	return []Role{
+		RoleVillager,
+		RoleMafia,
+		RoleDetective,
+		RoleDoctor,
+	}
+}

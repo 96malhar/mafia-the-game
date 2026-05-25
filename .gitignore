@@ -1,0 +1,42 @@
+# Build artifacts
+bin/
+dist/
+*.exe
+*.test
+*.prof
+
+# Test & coverage output
+coverage.out
+coverage.html
+*.out
+
+# Go workspace files (we don't commit these; each dev has their own)
+go.work
+go.work.sum
+
+# Dependency vendoring (we use modules, not vendor/)
+vendor/
+
+# Environment & local config
+.env
+.env.local
+*.local
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# OS detritus
+.DS_Store
+Thumbs.db
+
+# Logs & runtime data
+*.log
+tmp/
+
+# Task runner local cache
+.task/

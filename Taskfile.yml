@@ -1,0 +1,116 @@
+# Taskfile for the Mafia game.
+# https://taskfile.dev
+#
+# Install task: `brew install go-task` (macOS) or see https://taskfile.dev/installation
+# Run `task --list` to see available tasks. Run `task` with no args for the default (run).
+
+version: "3"
+
+vars:
+  BIN_DIR: bin
+  BINARY: "{{.BIN_DIR}}/server"
+  PKG: ./...
+  MAIN: ./cmd/server
+  COVER_FILE: coverage.out
+
+env:
+  CGO_ENABLED: "1" # required for -race
+
+tasks:
+  default:
+    desc: Alias for `run`.
+    cmds:
+      - task: run
+
+  run:
+    desc: Start the dev server (ADDR=:8080 by default).
+    cmds:
+      - go run {{.MAIN}}
+
+  watch:
+    desc: Start the dev server and restart on Go file changes.
+    cmds:
+      - go run {{.MAIN}}
+    sources:
+      - "**/*.go"
+      - web/**/*
+    method: timestamp
+    # `task watch` works because the `watch:` field below opts in to polling.
+    # Use `task --watch watch` if your terminal supports the flag instead.
+
+  build:
+    desc: Build a release binary to bin/server.
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -ldflags="-s -w" -o {{.BINARY}} {{.MAIN}}
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BINARY}}"
+
+  test:
+    desc: Run all tests with the race detector.
+    cmds:
+      - go test -race -count=1 {{.PKG}}
+
+  test:cover:
+    desc: Run tests and open an HTML coverage report.
+    cmds:
+      - go test -race -coverprofile={{.COVER_FILE}} {{.PKG}}
+      - go tool cover -html={{.COVER_FILE}}
+
+  bench:
+    desc: Run benchmarks.
+    cmds:
+      - go test -bench=. -benchmem -run=^$ {{.PKG}}
+
+  tidy:
+    desc: Sync go.mod / go.sum.
+    cmds:
+      - go mod tidy
+
+  fmt:
+    desc: Format Go source. Uses goimports if available, otherwise gofmt.
+    cmds:
+      - |
+        if command -v goimports >/dev/null 2>&1; then
+          goimports -w -local github.com/malhar/mafia-the-game .
+        else
+          gofmt -s -w .
+        fi
+
+  vet:
+    desc: Run `go vet`.
+    cmds:
+      - go vet {{.PKG}}
+
+  lint:
+    desc: Run golangci-lint (install with `task tools` if missing).
+    cmds:
+      - |
+        if ! command -v golangci-lint >/dev/null 2>&1; then
+          echo "golangci-lint not found. Run 'task tools' to install it."
+          exit 1
+        fi
+        golangci-lint run
+
+  check:
+    desc: Pre-commit gate — fmt, vet, lint, test.
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+
+  tools:
+    desc: Install/refresh dev tools (goimports, golangci-lint).
+    cmds:
+      - go install golang.org/x/tools/cmd/goimports@latest
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+  clean:
+    desc: Remove build and coverage artifacts.
+    cmds:
+      - rm -rf {{.BIN_DIR}} {{.COVER_FILE}}

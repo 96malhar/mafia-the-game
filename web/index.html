@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mafia</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-slate-900 text-slate-100 antialiased">
+    <main class="mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-6 text-center">
+      <h1 class="text-5xl font-bold tracking-tight">Mafia</h1>
+      <p class="mt-4 text-slate-400">
+        A social deduction game. Backend is up.
+      </p>
+      <p id="status" class="mt-8 text-sm text-slate-500">checking server…</p>
+    </main>
+
+    <script>
+      // Tiny health probe so you can visually confirm the Go server is reachable.
+      // We'll replace this with a real WebSocket client in a later step.
+      (async () => {
+        const el = document.getElementById("status");
+        try {
+          const res = await fetch("/healthz");
+          el.textContent = res.ok
+            ? "server: healthy"
+            : `server: unexpected status ${res.status}`;
+          el.className = res.ok
+            ? "mt-8 text-sm text-emerald-400"
+            : "mt-8 text-sm text-amber-400";
+        } catch (err) {
+          el.textContent = `server: unreachable (${err.message})`;
+          el.className = "mt-8 text-sm text-rose-400";
+        }
+      })();
+    </script>
+  </body>
+</html>

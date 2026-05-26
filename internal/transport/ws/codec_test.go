@@ -207,7 +207,11 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 }
 
 func TestEncodeOutbound_Error(t *testing.T) {
-	raw, ok, err := encodeOutbound(room.OutError{Code: "bad_message", Message: "nope"})
+	// Producer side uses the typed wire.ErrorCode; wire-format side
+	// (serverErrorData.Code) is a plain JSON string. The codec is the
+	// only place that bridges the two, so we verify both directions
+	// here: typed code in, raw string out.
+	raw, ok, err := encodeOutbound(room.OutError{Code: wire.ErrCodeBadMessage, Message: "nope"})
 	require.NoError(t, err)
 	require.True(t, ok)
 
@@ -216,7 +220,7 @@ func TestEncodeOutbound_Error(t *testing.T) {
 
 	var data serverErrorData
 	require.NoError(t, json.Unmarshal(got.Data, &data))
-	require.Equal(t, "bad_message", data.Code)
+	require.Equal(t, string(wire.ErrCodeBadMessage), data.Code)
 	require.Equal(t, "nope", data.Message)
 }
 

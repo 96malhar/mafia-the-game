@@ -1,6 +1,9 @@
 package room
 
-import "github.com/malhar/mafia-the-game/internal/game"
+import (
+	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/malhar/mafia-the-game/internal/wire"
+)
 
 // Outbound is the closed sum type of messages a room sends back to a
 // subscriber. The transport layer JSON-encodes these; tests receive
@@ -73,10 +76,15 @@ type OutEvent struct {
 func (OutEvent) isOutbound() {}
 
 // OutError reports a rejected command back to the originating
-// subscriber only. Code is the sentinel name (e.g. "wrong_phase",
-// "no_change"); Message is a human-readable explanation.
+// subscriber only.
+//
+// Code is the machine-readable tag the client switches on; its set is
+// closed and lives in internal/wire (wire.ErrorCode). Message is the
+// human-readable explanation rendered as-is by clients — including
+// any per-call-site overrides applied by joinErrorFor for the join
+// handshake.
 type OutError struct {
-	Code    string
+	Code    wire.ErrorCode
 	Message string
 }
 

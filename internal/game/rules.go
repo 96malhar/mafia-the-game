@@ -164,7 +164,13 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	}
 	maxMafia := g.state.maxPlayers - (reservedTownRoles + 1)
 	if c.Count < 1 || c.Count > maxMafia {
-		return nil, fmt.Errorf("game: mafia count %d out of range [1, %d]", c.Count, maxMafia)
+		// Wrap ErrRosterMismatch so room.errorFor maps this to
+		// wire.ErrCodeRosterMismatch (consistent with the matching
+		// rejection in applyStartGame) while still surfacing the
+		// concrete count and bound in the message for logs and the
+		// UI's error banner.
+		return nil, fmt.Errorf("%w: mafia count %d out of range [1, %d]",
+			ErrRosterMismatch, c.Count, maxMafia)
 	}
 	if c.Count == g.state.mafiaCount {
 		return nil, ErrNoChange

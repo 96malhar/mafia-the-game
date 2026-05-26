@@ -125,8 +125,13 @@ func TestWS_JoinReceivesJoinedAndPlayerJoined(t *testing.T) {
 	require.NotEmpty(t, joined.Secret)
 	require.Equal(t, code, joined.RoomCode)
 	require.True(t, joined.IsHost)
-	require.Empty(t, joined.Events,
-		"the first joiner has no prior events to replay")
+	// The first joiner replays one prior event: the GameCreated
+	// emitted by newRoom. This is what tells the web client the
+	// lobby's MinPlayers / MaxPlayers / MafiaCount so it doesn't
+	// have to hardcode them.
+	require.Len(t, joined.Events, 1,
+		"the first joiner should replay GameCreated and nothing else")
+	require.Equal(t, wire.EventGameCreated, joined.Events[0].Type)
 
 	// Second message: PlayerJoined event.
 	got = recvFrame(t, conn)
@@ -160,9 +165,14 @@ func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ack.Data, &joined))
 	require.Equal(t, "Bob", joined.Name)
 	require.False(t, joined.IsHost)
-	require.Len(t, joined.Events, 1,
-		"Bob's join ack should carry exactly Alice's PlayerJoined")
-	require.Equal(t, wire.EventPlayerJoined, joined.Events[0].Type)
+	// Bob replays exactly two events: the room's GameCreated
+	// followed by Alice's PlayerJoined. The order matches r.events
+	// (insertion order), which is the contract the web client's
+	// reducer relies on.
+	require.Len(t, joined.Events, 2,
+		"Bob's join ack should carry GameCreated then Alice's PlayerJoined")
+	require.Equal(t, wire.EventGameCreated, joined.Events[0].Type)
+	require.Equal(t, wire.EventPlayerJoined, joined.Events[1].Type)
 
 	// Bob's own PlayerJoined still arrives separately right after.
 	got := recvFrame(t, connB)
@@ -214,7 +224,7 @@ func TestWS_BadJSONReturnsError(t *testing.T) {
 	require.Equal(t, "error", got.Type)
 	var er serverErrorData
 	require.NoError(t, json.Unmarshal(got.Data, &er))
-	require.Equal(t, "bad_message", er.Code)
+	require.Equal(t, string(wire.ErrCodeBadMessage), er.Code)
 }
 
 func TestWS_StartGameProducesPhaseChange(t *testing.T) {

@@ -254,12 +254,19 @@ func TestSetMafiaCount(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrNoChange)
 	})
 
-	t.Run("out of range is rejected", func(t *testing.T) {
+	t.Run("out of range is rejected with ErrRosterMismatch", func(t *testing.T) {
+		// Below the lower bound (must be ≥ 1) and above the upper
+		// bound (MaxPlayers - reservedTownRoles - 1) both surface
+		// the same sentinel as the equivalent rejection in
+		// applyStartGame. We assert ErrorIs (not just Error) so a
+		// future change that drops the wrapper would fail loudly
+		// rather than silently downgrading these to ErrCodeInternal
+		// on the wire.
 		g := newGame(t) // MaxPlayers=20, so max mafia = 20-2-1 = 17
 		_, err := g.Apply(game.SetMafiaCount{Count: 0})
-		require.Error(t, err)
+		require.ErrorIs(t, err, game.ErrRosterMismatch)
 		_, err = g.Apply(game.SetMafiaCount{Count: 18})
-		require.Error(t, err)
+		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
 	t.Run("rejected outside PhaseLobby", func(t *testing.T) {

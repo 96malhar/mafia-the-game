@@ -4,41 +4,67 @@ import (
 	"errors"
 
 	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
-// errorFor maps an engine sentinel into an OutError with a stable
-// machine-readable Code. Clients render messages keyed off Code, so
-// every sentinel in internal/game/errors.go must have a case here.
-// TestRoom_ErrorForMapsAllSentinels enforces that.
+// sentinelCodes is the single mapping table from a known sentinel
+// (engine or room-level) to its wire-stable ErrorCode. Adding a new
+// sentinel is a one-line addition here; TestErrorCodes_Registry then
+// catches if anyone forgets to expose it in internal/wire.
+//
+// We use a slice of pairs rather than map[error]wire.ErrorCode because
+// errors are not naturally comparable in a hash-stable way (an error
+// implementation could use a custom Error() but still pointer-equal
+// itself); errors.Is on a typed sentinel value is the canonical match.
+var sentinelCodes = []struct {
+	err  error
+	code wire.ErrorCode
+}{
+	// Engine sentinels (internal/game/errors.go).
+	{game.ErrWrongPhase, wire.ErrCodeWrongPhase},
+	{game.ErrUnknownPlayer, wire.ErrCodeUnknownPlayer},
+	{game.ErrDuplicatePlayer, wire.ErrCodeDuplicatePlayer},
+	{game.ErrPlayerDead, wire.ErrCodePlayerDead},
+	{game.ErrNotYourAction, wire.ErrCodeNotYourAction},
+	{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
+	{game.ErrSelfTarget, wire.ErrCodeSelfTarget},
+	{game.ErrRosterMismatch, wire.ErrCodeRosterMismatch},
+	{game.ErrLobbyFull, wire.ErrCodeLobbyFull},
+	{game.ErrGameEnded, wire.ErrCodeGameEnded},
+	{game.ErrNoChange, wire.ErrCodeNoChange},
+	{game.ErrAlreadyActed, wire.ErrCodeAlreadyActed},
+
+	// Room / transport sentinels (sentinels.go).
+	{ErrAuthFailed, wire.ErrCodeAuthFailed},
+	{ErrNotJoined, wire.ErrCodeNotJoined},
+	{ErrForbidden, wire.ErrCodeForbidden},
+	{ErrBadFrame, wire.ErrCodeBadFrame},
+	{ErrBadMessage, wire.ErrCodeBadMessage},
+	{ErrInternal, wire.ErrCodeInternal},
+}
+
+// errorFor maps a known sentinel into an OutError with a typed
+// wire.ErrorCode. The default branch — for any error that isn't one
+// of our sentinels — returns ErrCodeInternal so the client at least
+// gets a coherent code rather than the raw Go error text leaking into
+// the wire `code` field.
+//
+// Callers that need a per-call-site Message (e.g. ErrForbidden, which
+// covers both "non-host command" and "advancePhase is server-internal")
+// should call errorFor first and then overwrite OutError.Message —
+// see room.dispatch.
+//
+// TestRoom_ErrorForMapsAllSentinels enforces that every engine
+// sentinel is present in sentinelCodes. TestErrorCodes_Registry
+// (whole-package) enforces that every wire.ErrorCode has a matching
+// sentinel here.
 func errorFor(err error) OutError {
-	switch {
-	case errors.Is(err, game.ErrWrongPhase):
-		return OutError{Code: "wrong_phase", Message: err.Error()}
-	case errors.Is(err, game.ErrUnknownPlayer):
-		return OutError{Code: "unknown_player", Message: err.Error()}
-	case errors.Is(err, game.ErrDuplicatePlayer):
-		return OutError{Code: "duplicate_player", Message: err.Error()}
-	case errors.Is(err, game.ErrPlayerDead):
-		return OutError{Code: "player_dead", Message: err.Error()}
-	case errors.Is(err, game.ErrNotYourAction):
-		return OutError{Code: "not_your_action", Message: err.Error()}
-	case errors.Is(err, game.ErrNotYourTurn):
-		return OutError{Code: "not_your_turn", Message: err.Error()}
-	case errors.Is(err, game.ErrSelfTarget):
-		return OutError{Code: "self_target", Message: err.Error()}
-	case errors.Is(err, game.ErrRosterMismatch):
-		return OutError{Code: "roster_mismatch", Message: err.Error()}
-	case errors.Is(err, game.ErrLobbyFull):
-		return OutError{Code: "lobby_full", Message: err.Error()}
-	case errors.Is(err, game.ErrGameEnded):
-		return OutError{Code: "game_ended", Message: err.Error()}
-	case errors.Is(err, game.ErrNoChange):
-		return OutError{Code: "no_change", Message: err.Error()}
-	case errors.Is(err, game.ErrAlreadyActed):
-		return OutError{Code: "already_acted", Message: err.Error()}
-	default:
-		return OutError{Code: "internal", Message: err.Error()}
+	for _, m := range sentinelCodes {
+		if errors.Is(err, m.err) {
+			return OutError{Code: m.code, Message: err.Error()}
+		}
 	}
+	return OutError{Code: wire.ErrCodeInternal, Message: err.Error()}
 }
 
 // joinErrorFor is errorFor specialized for the first-time join
@@ -56,15 +82,15 @@ func errorFor(err error) OutError {
 func joinErrorFor(err error) OutError {
 	out := errorFor(err)
 	switch out.Code {
-	case "wrong_phase":
+	case wire.ErrCodeWrongPhase:
 		// AddPlayer is only legal in PhaseLobby with no roles dealt.
 		// Both pre-StartGame phase mismatches and the
 		// "roles already dealt" check in applyAddPlayer surface
 		// here.
 		out.Message = "This game is already in progress. Create a new room to play."
-	case "lobby_full":
+	case wire.ErrCodeLobbyFull:
 		out.Message = "This room is full. Create a new room to play."
-	case "game_ended":
+	case wire.ErrCodeGameEnded:
 		out.Message = "This game has already ended. Create a new room to play."
 	}
 	return out

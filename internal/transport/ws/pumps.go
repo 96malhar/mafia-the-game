@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/malhar/mafia-the-game/internal/room"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // readLimit caps the size of a single inbound JSON frame. 64 KiB is
@@ -58,13 +59,13 @@ func readPump(
 		if mt != websocket.MessageText {
 			// We only speak JSON-over-text in v1. Reject anything else
 			// loudly so a misconfigured client notices.
-			sendErrorViaRoom(ctx, r, sub, "bad_frame", "expected text frame")
+			sendErrorViaRoom(ctx, r, sub, wire.ErrCodeBadFrame, "expected text frame")
 			continue
 		}
 
 		tag, payload, err := decodeClientMessage(data)
 		if err != nil {
-			sendErrorViaRoom(ctx, r, sub, "bad_message", err.Error())
+			sendErrorViaRoom(ctx, r, sub, wire.ErrCodeBadMessage, err.Error())
 			continue
 		}
 
@@ -159,7 +160,7 @@ func dispatchClientMessage(
 			// Should be unreachable — commandFromClient handles every
 			// non-join client message. We send an error frame just in
 			// case a future tag is added without wiring.
-			sendErrorViaRoom(ctx, r, sub, "internal", "unhandled command tag")
+			sendErrorViaRoom(ctx, r, sub, wire.ErrCodeInternal, "unhandled command tag")
 			return nil
 		}
 		return r.SubmitCommand(ctx, sub, cmd)
@@ -167,7 +168,7 @@ func dispatchClientMessage(
 	default:
 		// decodeClientMessage already validates tags, so this branch is
 		// a belt-and-braces guard.
-		sendErrorViaRoom(ctx, r, sub, "bad_message", "unknown type")
+		sendErrorViaRoom(ctx, r, sub, wire.ErrCodeBadMessage, "unknown type")
 		return nil
 	}
 }
@@ -180,7 +181,10 @@ func dispatchClientMessage(
 // If the channel is full or already closed, the error is dropped: the
 // room would also disconnect a slow subscriber in this case, so a lost
 // error is the lesser problem.
-func sendErrorViaRoom(_ context.Context, _ *room.Room, sub *room.Subscriber, code, msg string) {
+//
+// `code` is typed (wire.ErrorCode) so a typo at the call site is a
+// Go compile error rather than a silent wire mismatch.
+func sendErrorViaRoom(_ context.Context, _ *room.Room, sub *room.Subscriber, code wire.ErrorCode, msg string) {
 	_ = sub.TrySend(room.OutError{Code: code, Message: msg})
 }
 

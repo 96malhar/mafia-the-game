@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // --- helpers --------------------------------------------------------------
@@ -107,6 +108,56 @@ func connect(t *testing.T, r *Room, name string) (*Subscriber, OutJoined) {
 	return sub, ack
 }
 
+// --- Join projection includes GameCreated --------------------------------
+
+func TestRoom_FirstJoinerSeesGameCreated(t *testing.T) {
+	// Regression: newRoom calls r.g.Apply(CreateGame{...}) at room
+	// construction time. The resulting GameCreated event must be
+	// appended to r.events so it shows up in the projection sent in
+	// OutJoined.Events to the first (and every subsequent) joiner.
+	//
+	// Without it, the web client has no way to learn the lobby's
+	// MinPlayers / MaxPlayers / MafiaCount — which used to be masked
+	// by the client hardcoding the same defaults, but breaks the
+	// moment the client trusts the server as the single source of
+	// truth.
+	_, r := newTestRoom(t)
+	_, ack := connect(t, r, "Alice")
+
+	var gc *game.GameCreated
+	for i := range ack.Events {
+		if e, ok := ack.Events[i].(game.GameCreated); ok {
+			gc = &e
+			break
+		}
+	}
+	require.NotNil(t, gc, "OutJoined.Events must include GameCreated")
+	// Assert sanity of the fields, NOT specific numbers. The engine
+	// owns the default values; pinning them here would re-create the
+	// "two sources of truth" problem this regression is about.
+	require.Greater(t, gc.MinPlayers, 0)
+	require.GreaterOrEqual(t, gc.MaxPlayers, gc.MinPlayers)
+	require.GreaterOrEqual(t, gc.MafiaCount, 1)
+}
+
+func TestRoom_LateJoinerSeesGameCreated(t *testing.T) {
+	// Same invariant for a non-first joiner — they hit the same
+	// projection path, so this is mostly belt-and-braces. If the
+	// first joiner stops seeing it, so does everyone else.
+	_, r := newTestRoom(t)
+	_, _ = connect(t, r, "Alice")
+	_, ackB := connect(t, r, "Bob")
+
+	hasGC := false
+	for _, e := range ackB.Events {
+		if _, ok := e.(game.GameCreated); ok {
+			hasGC = true
+			break
+		}
+	}
+	require.True(t, hasGC, "second joiner's OutJoined.Events must also include GameCreated")
+}
+
 // --- Manager basics -------------------------------------------------------
 
 func TestManager_CreateAndGet(t *testing.T) {
@@ -194,22 +245,32 @@ func TestRoom_PlayerJoinedBroadcastsToOthers(t *testing.T) {
 // who's already in the room from their OutJoined payload, not just
 // from live events emitted after them. Without this, the second and
 // later joiners would only see players who joined AFTER them.
+//
+// The leading GameCreated event (emitted by newRoom and stored in
+// r.events) is also expected in every joiner's prior-events slice,
+// so each client can learn the lobby's MinPlayers / MaxPlayers /
+// MafiaCount without hardcoding defaults. TestRoom_FirstJoinerSees
+// GameCreated covers that invariant directly; here we just assert
+// the count is right.
 func TestRoom_JoinAckIncludesPriorRoster(t *testing.T) {
 	_, r := newTestRoom(t)
 
 	subA, ackA := connect(t, r, "Alice")
 	_ = drain(subA, 50*time.Millisecond)
 
-	// Bob's join ack should carry Alice's PlayerJoined so the new
-	// player can reconstruct the existing roster.
+	// Bob's join ack should carry GameCreated + Alice's PlayerJoined
+	// so the new player can reconstruct lobby config AND existing
+	// roster.
 	subB := NewSubscriber()
 	require.NoError(t, r.submit(context.Background(), inJoin{From: subB, Name: "Bob"}))
 	ackB := recvType[OutJoined](t, subB)
 
-	require.Len(t, ackB.Events, 1,
-		"Bob's join ack should include exactly the events that happened before him")
-	pj, ok := ackB.Events[0].(game.PlayerJoined)
-	require.True(t, ok, "prior event must be a PlayerJoined")
+	require.Len(t, ackB.Events, 2,
+		"Bob's join ack should include exactly the events that happened before him: GameCreated, then Alice's PlayerJoined")
+	_, ok := ackB.Events[0].(game.GameCreated)
+	require.True(t, ok, "first prior event must be GameCreated")
+	pj, ok := ackB.Events[1].(game.PlayerJoined)
+	require.True(t, ok, "second prior event must be a PlayerJoined")
 	require.Equal(t, ackA.PlayerID, pj.PlayerID, "should reference Alice")
 	require.Equal(t, "Alice", pj.Name)
 
@@ -221,10 +282,13 @@ func TestRoom_JoinAckIncludesPriorRoster(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "Bob", own.Name)
 
-	// And the very first joiner's ack must NOT contain prior events
-	// (there were none).
-	require.Empty(t, ackA.Events,
-		"the first joiner's ack should have no prior events")
+	// The very first joiner's ack contains exactly the events that
+	// existed before them: GameCreated and nothing else (no prior
+	// PlayerJoineds).
+	require.Len(t, ackA.Events, 1,
+		"the first joiner's ack should contain only GameCreated")
+	_, ok = ackA.Events[0].(game.GameCreated)
+	require.True(t, ok, "first joiner's only prior event must be GameCreated")
 }
 
 // --- Rejoin ---------------------------------------------------------------
@@ -257,7 +321,7 @@ func TestRoom_RejoinRejectsBadSecret(t *testing.T) {
 	}))
 
 	errMsg := recvType[OutError](t, bad)
-	require.Equal(t, "auth_failed", errMsg.Code)
+	require.Equal(t, wire.ErrCodeAuthFailed, errMsg.Code)
 }
 
 func TestRoom_RejoinEvictsOldSubscriber(t *testing.T) {
@@ -363,28 +427,75 @@ func TestRoom_LeaveClosesChannelButKeepsPlayer(t *testing.T) {
 // --- Error code mapping --------------------------------------------------
 
 func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
+	// Hand-enumerated so adding a sentinel without listing it here is
+	// a test failure, not a silent fallthrough to ErrCodeInternal.
+	// We assert both directions of the mapping: every sentinel
+	// produces the expected wire code, and conversely
+	// TestErrorCodes_Registry below asserts every wire code has a
+	// sentinel.
 	cases := []struct {
 		err  error
-		code string
+		code wire.ErrorCode
 	}{
-		{game.ErrWrongPhase, "wrong_phase"},
-		{game.ErrUnknownPlayer, "unknown_player"},
-		{game.ErrDuplicatePlayer, "duplicate_player"},
-		{game.ErrPlayerDead, "player_dead"},
-		{game.ErrNotYourAction, "not_your_action"},
-		{game.ErrNotYourTurn, "not_your_turn"},
-		{game.ErrSelfTarget, "self_target"},
-		{game.ErrRosterMismatch, "roster_mismatch"},
-		{game.ErrLobbyFull, "lobby_full"},
-		{game.ErrGameEnded, "game_ended"},
-		{game.ErrNoChange, "no_change"},
-		{game.ErrAlreadyActed, "already_acted"},
+		// Engine sentinels.
+		{game.ErrWrongPhase, wire.ErrCodeWrongPhase},
+		{game.ErrUnknownPlayer, wire.ErrCodeUnknownPlayer},
+		{game.ErrDuplicatePlayer, wire.ErrCodeDuplicatePlayer},
+		{game.ErrPlayerDead, wire.ErrCodePlayerDead},
+		{game.ErrNotYourAction, wire.ErrCodeNotYourAction},
+		{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
+		{game.ErrSelfTarget, wire.ErrCodeSelfTarget},
+		{game.ErrRosterMismatch, wire.ErrCodeRosterMismatch},
+		{game.ErrLobbyFull, wire.ErrCodeLobbyFull},
+		{game.ErrGameEnded, wire.ErrCodeGameEnded},
+		{game.ErrNoChange, wire.ErrCodeNoChange},
+		{game.ErrAlreadyActed, wire.ErrCodeAlreadyActed},
+
+		// Room / transport sentinels.
+		{ErrAuthFailed, wire.ErrCodeAuthFailed},
+		{ErrNotJoined, wire.ErrCodeNotJoined},
+		{ErrForbidden, wire.ErrCodeForbidden},
+		{ErrBadFrame, wire.ErrCodeBadFrame},
+		{ErrBadMessage, wire.ErrCodeBadMessage},
+		{ErrInternal, wire.ErrCodeInternal},
 	}
 	for _, tc := range cases {
-		t.Run(tc.code, func(t *testing.T) {
+		t.Run(string(tc.code), func(t *testing.T) {
 			got := errorFor(tc.err)
 			require.Equal(t, tc.code, got.Code)
 		})
+	}
+}
+
+func TestRoom_ErrorForUnknownErrorFallsBackToInternal(t *testing.T) {
+	// Genuinely unknown errors (e.g. an unwrapped fmt.Errorf from
+	// some future code path) must not panic or lose the message;
+	// they collapse onto ErrCodeInternal and surface the raw text.
+	got := errorFor(io.EOF)
+	require.Equal(t, wire.ErrCodeInternal, got.Code)
+	require.Equal(t, io.EOF.Error(), got.Message)
+}
+
+func TestErrorCodes_Registry(t *testing.T) {
+	// Whole-package drift guard: every constant in wire.ErrorCodes
+	// must have a matching entry in room.sentinelCodes (and thus a
+	// known sentinel that produces it). If this fails, someone
+	// added a wire.ErrCode* without wiring it up — fix by extending
+	// sentinelCodes (and the corresponding sentinel package).
+	produced := make(map[wire.ErrorCode]bool, len(sentinelCodes))
+	for _, m := range sentinelCodes {
+		produced[m.code] = true
+	}
+	// ErrCodeInternal is the default branch in errorFor and may not
+	// have a dedicated sentinel mapped (ErrInternal does in fact
+	// map to it, but we don't want this test to depend on that).
+	produced[wire.ErrCodeInternal] = true
+
+	for _, code := range wire.ErrorCodes {
+		require.Truef(t, produced[code],
+			"wire.ErrorCode %q has no sentinel entry in sentinelCodes; "+
+				"add a mapping in internal/room/errors.go",
+			code)
 	}
 }
 
@@ -396,25 +507,25 @@ func TestRoom_JoinErrorForRewritesLobbyClosedMessages(t *testing.T) {
 	cases := []struct {
 		name        string
 		err         error
-		wantCode    string
+		wantCode    wire.ErrorCode
 		wantMessage string
 	}{
 		{
 			name:        "wrong_phase becomes a join-friendly message",
 			err:         game.ErrWrongPhase,
-			wantCode:    "wrong_phase",
+			wantCode:    wire.ErrCodeWrongPhase,
 			wantMessage: "This game is already in progress. Create a new room to play.",
 		},
 		{
 			name:        "lobby_full becomes a join-friendly message",
 			err:         game.ErrLobbyFull,
-			wantCode:    "lobby_full",
+			wantCode:    wire.ErrCodeLobbyFull,
 			wantMessage: "This room is full. Create a new room to play.",
 		},
 		{
 			name:        "game_ended becomes a join-friendly message",
 			err:         game.ErrGameEnded,
-			wantCode:    "game_ended",
+			wantCode:    wire.ErrCodeGameEnded,
 			wantMessage: "This game has already ended. Create a new room to play.",
 		},
 	}
@@ -432,7 +543,7 @@ func TestRoom_JoinErrorForPassesUnrelatedCodesThrough(t *testing.T) {
 	// new engine sentinel ever fires during a join, we'd rather show
 	// the raw text than silently swallow it.
 	got := joinErrorFor(game.ErrDuplicatePlayer)
-	require.Equal(t, "duplicate_player", got.Code)
+	require.Equal(t, wire.ErrCodeDuplicatePlayer, got.Code)
 	require.Equal(t, game.ErrDuplicatePlayer.Error(), got.Message)
 }
 

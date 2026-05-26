@@ -137,8 +137,14 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 		return raw, true, err
 
 	case room.OutError:
+		// Explicit cast at the wire boundary: serverErrorData.Code is
+		// `string` (the JSON shape), m.Code is wire.ErrorCode (the
+		// in-process typed value). Keeping the cast here documents
+		// the boundary and avoids leaking the typed alias into the
+		// JSON struct, which would force every test that decodes an
+		// error frame to import internal/wire.
 		raw, err := marshalEnvelope(string(serverMsgError), serverErrorData{
-			Code:    m.Code,
+			Code:    string(m.Code),
 			Message: m.Message,
 		})
 		return raw, true, err

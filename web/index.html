@@ -324,13 +324,21 @@
       let rolesDealt = false;
 
       // Lobby configuration mirrored from the server's GameCreated /
-      // MafiaCountChanged events. Defaults are placeholders until the
-      // gameCreated event from the server overwrites them — we keep
-      // them sane (5/20/1) so the UI never flashes nonsense if the
-      // events haven't arrived yet (e.g. brief race on first paint).
-      let lobbyMinPlayers = 5;
-      let lobbyMaxPlayers = 20;
-      let mafiaCount = 1;
+      // MafiaCountChanged events.
+      //
+      // These deliberately start as null rather than hardcoded
+      // defaults (5/20/1). The server is the single source of truth
+      // for the lobby bounds and the planned mafia count; baking
+      // numbers in here too means two places to update if the engine
+      // defaults ever change, and a brief window on first paint where
+      // the UI shows numbers that don't match the server's. Instead
+      // we render placeholders ("…") until the gameCreated event
+      // lands — which happens at the top of every join/rejoin
+      // handshake — and gate the host's Start button on having
+      // received them.
+      let lobbyMinPlayers = null;
+      let lobbyMaxPlayers = null;
+      let mafiaCount = null;
 
       // --- Night turn state (mirrors the engine's currentNightRole) ---
       //
@@ -772,11 +780,13 @@
         myRole = null;
         dayLynchResolved = false;
         rolesDealt = false;
-        // Lobby config is also event-sourced (gameCreated / mafiaCountChanged);
-        // reset to engine defaults so a replay rebuilds it from scratch.
-        lobbyMinPlayers = 5;
-        lobbyMaxPlayers = 20;
-        mafiaCount = 1;
+        // Lobby config is event-sourced (gameCreated / mafiaCountChanged);
+        // null out so the replay rebuilds it from the server's
+        // events and we don't briefly render stale numbers from a
+        // previous session.
+        lobbyMinPlayers = null;
+        lobbyMaxPlayers = null;
+        mafiaCount = null;
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
@@ -842,7 +852,14 @@
         // knows when the room is full. After the game has started the
         // cap is irrelevant — switch to "alive / total".
         if (phase === "lobby") {
-          count.textContent = `${players.size} / ${lobbyMaxPlayers} joined (min ${lobbyMinPlayers})`;
+          // Use "?" for the cap/min until the server's gameCreated
+          // event lands (lobbyMaxPlayers/MinPlayers are null then).
+          // This is a sub-second window in practice — first
+          // paint to first event — but rendering "null" would
+          // look like a bug.
+          const cap = lobbyMaxPlayers ?? "?";
+          const min = lobbyMinPlayers ?? "?";
+          count.textContent = `${players.size} / ${cap} joined (min ${min})`;
         } else {
           count.textContent = `${alive} alive / ${players.size} total`;
         }
@@ -1047,17 +1064,27 @@
           case "lobby": {
             headline.textContent = "Lobby";
             // A valid game needs: total in [min, max] AND mafia in
-            // [1, total - 3] (the engine reserves Det + Doc + ≥1
-            // villager).  We surface both numbers so the host can see
-            // exactly what's stopping Start from being enabled.
+            // [1, total - 3]. The "3" mirrors the engine's
+            // `reservedTownRoles + 1` (Det + Doc + ≥1 villager) in
+            // internal/game/rules.go — keep them in sync. The
+            // server is authoritative for both predicates; this
+            // client-side check only drives the Start button's
+            // enabled/disabled state and the hint text.
+            const configReady =
+              lobbyMinPlayers !== null && lobbyMaxPlayers !== null && mafiaCount !== null;
+
             const minMafia = 1;
             const maxMafiaNow = Math.max(0, total - 3);
-            const tooFew = total < lobbyMinPlayers;
-            const tooMany = total > lobbyMaxPlayers;
-            const mafiaOK = mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;
-            const canStart = !tooFew && !tooMany && mafiaOK;
+            const tooFew = configReady && total < lobbyMinPlayers;
+            const tooMany = configReady && total > lobbyMaxPlayers;
+            const mafiaOK = configReady && mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;
+            const canStart = configReady && !tooFew && !tooMany && mafiaOK;
 
-            if (tooFew) {
+            if (!configReady) {
+              // Sub-second window between WS open and the first
+              // gameCreated event. Don't pretend to know the bounds.
+              hint.textContent = "Connecting…";
+            } else if (tooFew) {
               const need = lobbyMinPlayers - total;
               hint.textContent =
                 `Waiting for ${need} more player${need === 1 ? "" : "s"} ` +
@@ -1253,11 +1280,21 @@
       // Bounds:
       //   minimum:  1 (engine requires ≥1 mafia)
       //   maximum:  MaxPlayers - 3 (Det + Doc + ≥1 villager reserved).
+      //             Mirrors `reservedTownRoles + 1` in
+      //             internal/game/rules.go — keep them in sync.
       //             The "is this valid for the CURRENT player count?"
       //             check lives in the calling switch arm — here we
       //             only enforce the absolute lobby bound so the host
       //             can pre-tune before everyone has joined.
+      //
+      // Returns null if the lobby config (lobbyMaxPlayers / mafiaCount)
+      // hasn't been delivered by the server yet — the caller then
+      // simply omits the picker rather than rendering "Mafia null".
       function renderMafiaPicker() {
+        if (mafiaCount === null || lobbyMaxPlayers === null) {
+          return null;
+        }
+
         const wrapper = document.createElement("div");
         wrapper.className =
           "flex items-center gap-2 rounded bg-slate-700/60 px-3 py-1.5 text-xs";
@@ -1452,9 +1489,13 @@
       function handleEvent(env, { replaying = false } = {}) {
         switch (env.type) {
           case "gameCreated":
-            lobbyMinPlayers = env.data.minPlayers ?? lobbyMinPlayers;
-            lobbyMaxPlayers = env.data.maxPlayers ?? lobbyMaxPlayers;
-            mafiaCount = env.data.mafiaCount ?? mafiaCount;
+            // The server's GameCreated event is authoritative for
+            // these three fields and always populates them; we don't
+            // fall back to a previous value (or a hardcoded default)
+            // because that would just hide a wire-protocol regression.
+            lobbyMinPlayers = env.data.minPlayers;
+            lobbyMaxPlayers = env.data.maxPlayers;
+            mafiaCount = env.data.mafiaCount;
             renderAll();
             break;
 

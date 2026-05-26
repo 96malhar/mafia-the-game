@@ -99,7 +99,7 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	if gid == "" {
 		gid = game.GameID("game-" + code)
 	}
-	_, err := r.g.Apply(game.CreateGame{
+	createdEvents, err := r.g.Apply(game.CreateGame{
 		GameID:     gid,
 		MinPlayers: cfg.MinPlayers,
 		MaxPlayers: cfg.MaxPlayers,
@@ -110,6 +110,18 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 		cancel()
 		return nil, fmt.Errorf("room: CreateGame failed: %w", err)
 	}
+	// The GameCreated event (and any other events CreateGame emits)
+	// must land in r.events so projections sent to joiners and
+	// rejoiners include it. Without this, clients have no way to
+	// learn the lobby's MinPlayers/MaxPlayers/MafiaCount — which
+	// used to be masked by the client hardcoding the same defaults,
+	// but breaks cleanly the moment the client stops doing that.
+	//
+	// We append directly rather than going through appendAndBroadcast
+	// because no subscribers exist yet at this point in newRoom; the
+	// first join's OutJoined will fan these events out via the
+	// projected priorEvents slice.
+	r.events = append(r.events, createdEvents...)
 	// We DON'T append GameCreated to r.events: the event is purely a
 	// room-construction artifact, not interesting to any player view.
 	return r, nil
@@ -277,7 +289,9 @@ func (r *Room) handleJoin(m inJoin) {
 	pid := game.PlayerID(fmt.Sprintf("p%d", r.nextSeq))
 	secret, err := newSecret()
 	if err != nil {
-		r.sendOne(m.From, OutError{Code: "internal", Message: "could not allocate identity"})
+		out := errorFor(ErrInternal)
+		out.Message = "could not allocate identity"
+		r.sendOne(m.From, out)
 		return
 	}
 
@@ -327,7 +341,7 @@ func (r *Room) handleRejoin(m inRejoin) {
 	}
 	slot, ok := r.players[m.PlayerID]
 	if !ok || slot.secret != m.Secret {
-		r.sendOne(m.From, OutError{Code: "auth_failed", Message: "unknown player or bad secret"})
+		r.sendOne(m.From, errorFor(ErrAuthFailed))
 		return
 	}
 
@@ -409,23 +423,25 @@ func (r *Room) handleCommand(m inCommand) {
 	}
 	pid := m.From.PlayerID()
 	if pid == "" {
-		r.sendOne(m.From, OutError{Code: "not_joined", Message: "join first"})
+		r.sendOne(m.From, errorFor(ErrNotJoined))
 		return
 	}
 
 	if _, isAdvance := m.Cmd.(game.AdvancePhase); isAdvance {
-		r.sendOne(m.From, OutError{
-			Code:    "forbidden",
-			Message: "advancePhase is server-internal",
-		})
+		// Both branches use ErrForbidden but with distinct messages
+		// — the user benefits from knowing which privilege they
+		// lack. errorFor gives us the typed Code; we overwrite the
+		// generic Message with a per-site one.
+		out := errorFor(ErrForbidden)
+		out.Message = "advancePhase is server-internal"
+		r.sendOne(m.From, out)
 		return
 	}
 
 	if isHostOnly(m.Cmd) && pid != r.host {
-		r.sendOne(m.From, OutError{
-			Code:    "forbidden",
-			Message: "only the host can issue this command",
-		})
+		out := errorFor(ErrForbidden)
+		out.Message = "only the host can issue this command"
+		r.sendOne(m.From, out)
 		return
 	}
 

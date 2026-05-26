@@ -287,6 +287,16 @@
       let myIsHost = false;
       let myRole = null;
 
+      // hostId is the PlayerID of the room's host, as announced by
+      // the server's HostChanged event. The server is the single
+      // source of truth — myIsHost is derived (hostId === myId) but
+      // we keep both around because some UI paths render the badge
+      // on any row (needs hostId), while others gate host-only
+      // controls on whether *I* am the host (needs myIsHost).
+      // null until the first HostChanged arrives, which is part of
+      // every join's prior-event replay.
+      let hostId = null;
+
       // Client-side roster reducer. Keyed by PlayerID. The server is
       // the source of truth; we just fold the public event stream into
       // a small local model so the UI can render a who's-here list
@@ -780,6 +790,10 @@
         myRole = null;
         dayLynchResolved = false;
         rolesDealt = false;
+        // hostId is rebuilt from the HostChanged event in the
+        // join/rejoin replay; null it so we don't briefly render a
+        // stale Host badge from a previous session.
+        hostId = null;
         // Lobby config is event-sourced (gameCreated / mafiaCountChanged);
         // null out so the replay rebuilds it from the server's
         // events and we don't briefly render stale numbers from a
@@ -905,7 +919,10 @@
         if (btn) right.appendChild(btn);
 
         if (p.id === myId) right.appendChild(badge("You", "bg-emerald-700 text-emerald-100"));
-        if (p.id === myId && myIsHost) right.appendChild(badge("Host", "bg-indigo-700 text-indigo-100"));
+        // Host badge is rendered on the host's row for every viewer,
+        // not just for the host themselves. hostId is set by the
+        // server's HostChanged event (see handleEvent).
+        if (p.id === hostId) right.appendChild(badge("Host", "bg-indigo-700 text-indigo-100"));
 
         li.appendChild(left);
         li.appendChild(right);
@@ -1099,13 +1116,17 @@
               hint.textContent = "Ready to start.";
             }
 
-            // Mafia-count picker: host-only, lobby-only. We show the
-            // current value plus -/+ buttons clamped to the engine's
-            // allowed range against MaxPlayers (so the host can tune
-            // before everyone has even joined). Final validity against
-            // the actual player count is checked above for canStart.
-            const mafiaPicker = renderMafiaPicker();
-            if (mafiaPicker) extras.appendChild(mafiaPicker);
+            // Mafia-count picker: host-only, lobby-only, AND only
+            // before roles are dealt. The engine rejects setMafia
+            // once StartGame has run (see applySetMafiaCount), so
+            // the picker would be a UI lie at that point — the
+            // host clicks +/− and nothing happens because
+            // composeRoster has already committed. Hide it the
+            // moment that boundary is crossed.
+            if (!rolesDealt) {
+              const mafiaPicker = renderMafiaPicker();
+              if (mafiaPicker) extras.appendChild(mafiaPicker);
+            }
 
             if (myIsHost) {
               // Audio enablement now lives in the persistent host
@@ -1509,6 +1530,17 @@
               name: env.data.name,
               alive: true,
             });
+            break;
+
+          case "hostChanged":
+            // The server is authoritative for who the host is.
+            // We keep myIsHost in sync (used to gate host-only
+            // controls) and re-render so the "Host" badge appears
+            // next to the right player for everyone in the room,
+            // not just the host themselves.
+            hostId = env.data.playerId;
+            myIsHost = hostId === myId;
+            renderAll();
             break;
 
           case "playerKilled":

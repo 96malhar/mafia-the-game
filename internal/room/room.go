@@ -313,12 +313,20 @@ func (r *Room) handleJoin(m inJoin) {
 	isHost := r.host == ""
 	if isHost {
 		r.host = pid
+		// Append a HostChanged AFTER the PlayerJoined so the
+		// broadcast order is "p1 exists, then p1 is host". Clients
+		// keying off HostChanged can rely on the referenced player
+		// already being in their roster. HostChanged is Public so
+		// it lands in every projection — including future
+		// late-joiners' priorEvents and rejoin replays.
+		events = append(events, game.HostChanged{PlayerID: pid})
 	}
 
 	// Project the PRIOR event log so the new player can see who's
 	// already in the room. r.events at this point contains everything
-	// that happened before this join; the new PlayerJoined will be
-	// broadcast separately via appendAndBroadcast below.
+	// that happened before this join; the new PlayerJoined (and the
+	// host's HostChanged, if any) will be broadcast separately via
+	// appendAndBroadcast below.
 	priorEvents := game.Project(pid, r.events, r.g.State())
 
 	r.sendOne(m.From, OutJoined{

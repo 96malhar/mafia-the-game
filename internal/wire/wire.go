@@ -59,6 +59,7 @@ const (
 	EventGameCreated         = "gameCreated"
 	EventMafiaCountChanged   = "mafiaCountChanged"
 	EventPlayerJoined        = "playerJoined"
+	EventHostChanged         = "hostChanged"
 	EventGameStarted         = "gameStarted"
 	EventRoleAssigned        = "roleAssigned"
 	EventPhaseChanged        = "phaseChanged"

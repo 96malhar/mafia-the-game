@@ -162,6 +162,16 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	if g.state.phase != PhaseLobby {
 		return nil, ErrWrongPhase
 	}
+	// Locking the picker at StartGame (rather than at BeginNight) is
+	// a deliberate UX choice: once roles have been dealt, tweaking
+	// the planned mafia count would do nothing — composeRoster has
+	// already run and the per-player role assignments are committed.
+	// We reject so the host can't be fooled into thinking a late
+	// adjustment took effect. Same predicate as applyAddPlayer's
+	// post-StartGame block, kept in sync intentionally.
+	if len(g.state.players) > 0 && g.state.players[0].role != "" {
+		return nil, ErrWrongPhase
+	}
 	maxMafia := g.state.maxPlayers - (reservedTownRoles + 1)
 	if c.Count < 1 || c.Count > maxMafia {
 		// Wrap ErrRosterMismatch so room.errorFor maps this to

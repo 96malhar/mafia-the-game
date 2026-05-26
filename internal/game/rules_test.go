@@ -269,14 +269,41 @@ func TestSetMafiaCount(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
-	t.Run("rejected outside PhaseLobby", func(t *testing.T) {
+	t.Run("rejected once roles are dealt (StartGame)", func(t *testing.T) {
+		// The picker locks at StartGame, not at BeginNight: once
+		// composeRoster has assigned roles, tweaking mafia count
+		// would do nothing (it wouldn't re-deal), so we reject
+		// to prevent silent no-ops. Same predicate that blocks
+		// AddPlayer after StartGame.
 		g := newGame(t)
 		for _, n := range []string{"a", "b", "c", "d", "e"} {
 			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
 			require.NoError(t, err)
 		}
-		// Roles get dealt while still in Lobby. We must BeginNight to
-		// leave PhaseLobby before SetMafiaCount is rejected.
+		_, err := g.Apply(game.StartGame{})
+		require.NoError(t, err)
+		// Game is still in PhaseLobby here — verify the
+		// precondition so a future refactor of StartGame doesn't
+		// silently make this test pass for the wrong reason
+		// (i.e. by failing the phase check instead of the
+		// roles-dealt check).
+		require.Equal(t, game.PhaseLobby, g.State().Phase())
+
+		_, err = g.Apply(game.SetMafiaCount{Count: 2})
+		require.ErrorIs(t, err, game.ErrWrongPhase,
+			"SetMafiaCount after roles are dealt must be rejected with wrong_phase")
+	})
+
+	t.Run("rejected outside PhaseLobby (post BeginNight)", func(t *testing.T) {
+		// Belt-and-braces: even if the roles-dealt check above
+		// were removed, the original phase check should still
+		// reject SetMafiaCount once the game has actually
+		// progressed past lobby.
+		g := newGame(t)
+		for _, n := range []string{"a", "b", "c", "d", "e"} {
+			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
+			require.NoError(t, err)
+		}
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})

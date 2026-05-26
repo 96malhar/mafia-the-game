@@ -149,13 +149,17 @@ func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
 	ts, _ := newTestServer(t)
 	code := createRoom(t, ts)
 
-	// Alice joins first.
+	// Alice joins first. She receives: joined ack, then her own
+	// PlayerJoined broadcast, then the HostChanged broadcast that
+	// announces her as host.
 	connA := dialWS(t, ts, "/ws/"+code)
 	sendFrame(t, connA, "join", map[string]string{"name": "Alice"})
 	_ = recvFrame(t, connA) // joined ack
 	_ = recvFrame(t, connA) // own PlayerJoined broadcast
+	_ = recvFrame(t, connA) // HostChanged broadcast
 
-	// Bob joins second; his joined ack must carry Alice's PlayerJoined.
+	// Bob joins second; his joined ack must carry Alice's PlayerJoined
+	// AND the HostChanged that named her host.
 	connB := dialWS(t, ts, "/ws/"+code)
 	sendFrame(t, connB, "join", map[string]string{"name": "Bob"})
 
@@ -165,14 +169,15 @@ func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ack.Data, &joined))
 	require.Equal(t, "Bob", joined.Name)
 	require.False(t, joined.IsHost)
-	// Bob replays exactly two events: the room's GameCreated
-	// followed by Alice's PlayerJoined. The order matches r.events
-	// (insertion order), which is the contract the web client's
-	// reducer relies on.
-	require.Len(t, joined.Events, 2,
-		"Bob's join ack should carry GameCreated then Alice's PlayerJoined")
+	// Bob replays exactly three events: GameCreated, Alice's
+	// PlayerJoined, and HostChanged (Alice -> host). The order
+	// matches r.events (insertion order), which is the contract
+	// the web client's reducer relies on.
+	require.Len(t, joined.Events, 3,
+		"Bob's join ack should carry GameCreated, Alice's PlayerJoined, then HostChanged")
 	require.Equal(t, wire.EventGameCreated, joined.Events[0].Type)
 	require.Equal(t, wire.EventPlayerJoined, joined.Events[1].Type)
+	require.Equal(t, wire.EventHostChanged, joined.Events[2].Type)
 
 	// Bob's own PlayerJoined still arrives separately right after.
 	got := recvFrame(t, connB)
@@ -242,11 +247,13 @@ func TestWS_StartGameProducesPhaseChange(t *testing.T) {
 	}
 
 	// Each connection now has: 1 joined ack + N PlayerJoined broadcasts
-	// where N is (i+1) up through (5). Read exactly that many on the
-	// host's connection so the upcoming StartGame response is the very
-	// next frame. We don't bother draining the others — the connections
-	// remain valid even with buffered data.
-	for i := 0; i < 1+len(conns); i++ {
+	// (one per joiner) + 1 HostChanged broadcast (the host slot
+	// being assigned on the first join — fires exactly once, not
+	// per join). Read exactly that many on the host's connection so
+	// the upcoming StartGame response is the very next frame. We
+	// don't bother draining the others — the connections remain
+	// valid even with buffered data.
+	for i := 0; i < 1+len(conns)+1; i++ {
 		_ = recvFrame(t, conns[0])
 	}
 
@@ -288,7 +295,9 @@ func TestWS_SetMafiaRoundTrip(t *testing.T) {
 	conn := dialWS(t, ts, "/ws/"+code)
 	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
 
-	// Drain join ack + own PlayerJoined broadcast.
+	// Drain join ack + own PlayerJoined broadcast + HostChanged
+	// broadcast (host learns they're host).
+	_ = recvFrame(t, conn)
 	_ = recvFrame(t, conn)
 	_ = recvFrame(t, conn)
 
@@ -318,6 +327,8 @@ func TestWS_SetMafiaOutOfRangeReturnsError(t *testing.T) {
 
 	conn := dialWS(t, ts, "/ws/"+code)
 	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
+	// Drain join ack + own PlayerJoined + HostChanged.
+	_ = recvFrame(t, conn)
 	_ = recvFrame(t, conn)
 	_ = recvFrame(t, conn)
 

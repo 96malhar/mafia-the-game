@@ -37,6 +37,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.PlayerJoined:
 		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
+	case game.HostChanged:
+		tag = wire.EventHostChanged
+		data = kv{"playerId": string(v.PlayerID)}
 	case game.GameStarted:
 		tag = wire.EventGameStarted
 		data = kv{}

@@ -85,6 +85,28 @@ type PlayerJoined struct {
 func (PlayerJoined) isEvent()               {}
 func (PlayerJoined) Visibility() Visibility { return Public() }
 
+// HostChanged announces who the room's host is.
+//
+// "Host" is a ROOM-LAYER concept (the room picks the first joiner; the
+// engine doesn't care who can issue host-only commands — that check
+// lives in room.dispatch). This event type lives in the game package
+// only because game.Event is a closed interface, and HostChanged
+// rides the same event log so it gets the same projection, replay,
+// and wire-encoding for free.
+//
+// Emitted by internal/room when r.host is assigned. The engine never
+// produces HostChanged — searching for it in internal/game/rules*.go
+// would correctly return nothing.
+//
+// Public visibility: every player should see the host badge, and
+// future spectators too.
+type HostChanged struct {
+	PlayerID PlayerID
+}
+
+func (HostChanged) isEvent()               {}
+func (HostChanged) Visibility() Visibility { return Public() }
+
 // GameStarted records the transition from Lobby to the first Night.
 type GameStarted struct{}
 

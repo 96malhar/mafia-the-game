@@ -158,6 +158,75 @@ func TestRoom_LateJoinerSeesGameCreated(t *testing.T) {
 	require.True(t, hasGC, "second joiner's OutJoined.Events must also include GameCreated")
 }
 
+// --- Host visibility -----------------------------------------------------
+
+func TestRoom_HostChangedBroadcastOnFirstJoin(t *testing.T) {
+	// When the first player joins, the room sets r.host to their pid
+	// and must emit a HostChanged event so every observer (including
+	// the host themselves) learns who the host is. Without this, only
+	// the host's own OutJoined.IsHost flag carries the info, and
+	// other players can't render a Host badge.
+	_, r := newTestRoom(t)
+	subA, ackA := connect(t, r, "Alice")
+
+	// After OutJoined, the host should receive a PlayerJoined
+	// broadcast (their own) followed by a HostChanged broadcast.
+	// Order matters: PlayerJoined must come first so HostChanged's
+	// referenced player is already in the client roster.
+	pj := recvType[OutEvent](t, subA)
+	_, ok := pj.Event.(game.PlayerJoined)
+	require.True(t, ok, "first broadcast after first join must be PlayerJoined")
+
+	hc := recvType[OutEvent](t, subA)
+	gotHC, ok := hc.Event.(game.HostChanged)
+	require.True(t, ok, "second broadcast must be HostChanged")
+	require.Equal(t, ackA.PlayerID, gotHC.PlayerID,
+		"HostChanged.PlayerID must match the first joiner's pid")
+}
+
+func TestRoom_HostChangedNotReemittedOnSecondJoin(t *testing.T) {
+	// HostChanged fires exactly once — when the host slot is
+	// assigned, which is "first joiner ever". Subsequent joins
+	// must NOT emit HostChanged (the host hasn't changed).
+	_, r := newTestRoom(t)
+	subA, _ := connect(t, r, "Alice")
+	_ = drain(subA, 50*time.Millisecond)
+
+	subB, _ := connect(t, r, "Bob")
+	_ = drain(subB, 50*time.Millisecond)
+
+	// Alice should see only Bob's PlayerJoined — no second
+	// HostChanged.
+	for _, msg := range drain(subA, 50*time.Millisecond) {
+		ev, ok := msg.(OutEvent)
+		if !ok {
+			continue
+		}
+		_, isHC := ev.Event.(game.HostChanged)
+		require.False(t, isHC, "no HostChanged should fire on a non-first join, got %#v", ev.Event)
+	}
+}
+
+func TestRoom_LateJoinerReplayIncludesHostChanged(t *testing.T) {
+	// Bob joins after Alice. Bob's OutJoined.Events replay must
+	// include the HostChanged event that fired on Alice's join, so
+	// Bob's client can render the Host badge next to Alice without
+	// guessing from event order.
+	_, r := newTestRoom(t)
+	_, ackA := connect(t, r, "Alice")
+	_, ackB := connect(t, r, "Bob")
+
+	var gotHC *game.HostChanged
+	for i := range ackB.Events {
+		if e, ok := ackB.Events[i].(game.HostChanged); ok {
+			gotHC = &e
+			break
+		}
+	}
+	require.NotNil(t, gotHC, "Bob's prior-events must include HostChanged")
+	require.Equal(t, ackA.PlayerID, gotHC.PlayerID, "Host must be Alice")
+}
+
 // --- Manager basics -------------------------------------------------------
 
 func TestManager_CreateAndGet(t *testing.T) {
@@ -259,20 +328,24 @@ func TestRoom_JoinAckIncludesPriorRoster(t *testing.T) {
 	_ = drain(subA, 50*time.Millisecond)
 
 	// Bob's join ack should carry GameCreated + Alice's PlayerJoined
-	// so the new player can reconstruct lobby config AND existing
-	// roster.
+	// + HostChanged so the new player can reconstruct lobby config,
+	// existing roster, AND who the host is. Order in r.events is
+	// preserved.
 	subB := NewSubscriber()
 	require.NoError(t, r.submit(context.Background(), inJoin{From: subB, Name: "Bob"}))
 	ackB := recvType[OutJoined](t, subB)
 
-	require.Len(t, ackB.Events, 2,
-		"Bob's join ack should include exactly the events that happened before him: GameCreated, then Alice's PlayerJoined")
+	require.Len(t, ackB.Events, 3,
+		"Bob's join ack should include exactly the events that happened before him: GameCreated, Alice's PlayerJoined, then HostChanged")
 	_, ok := ackB.Events[0].(game.GameCreated)
 	require.True(t, ok, "first prior event must be GameCreated")
 	pj, ok := ackB.Events[1].(game.PlayerJoined)
 	require.True(t, ok, "second prior event must be a PlayerJoined")
 	require.Equal(t, ackA.PlayerID, pj.PlayerID, "should reference Alice")
 	require.Equal(t, "Alice", pj.Name)
+	hc, ok := ackB.Events[2].(game.HostChanged)
+	require.True(t, ok, "third prior event must be HostChanged")
+	require.Equal(t, ackA.PlayerID, hc.PlayerID, "host should be Alice")
 
 	// Bob's OWN PlayerJoined should still arrive as a separate
 	// broadcast event right after the ack — we did not bundle it

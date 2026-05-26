@@ -33,7 +33,7 @@ type Room struct {
 	inbox chan inbound
 
 	// ctx is cancelled when the room is shutting down (e.g. via
-	// Manager.Close or a future idle reaper).
+	// Manager.Close or the lifetime reaper).
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -57,6 +57,12 @@ type Room struct {
 	// causing the run loop to synthesize an AdvancePhase command. nil
 	// when no phase-timeout is active (lobby, ended, or untimed phases).
 	phaseTimer *time.Timer
+
+	// createdAt is the wall-clock moment newRoom returned. Combined
+	// with cfg.MaxLifetime it determines when the manager's sweeper
+	// reaps this room. Immutable after construction; read-only from
+	// any goroutine.
+	createdAt time.Time
 }
 
 // playerSlot is the room-layer record of a player. It holds the rejoin
@@ -146,6 +152,19 @@ type Config struct {
 	// the doctor kicks in. Default DefaultDetectivePauseDuration.
 	DetectivePauseDuration time.Duration
 
+	// MaxLifetime is the hard upper bound on a room's wall-clock age.
+	// Once a room has existed for this long the manager's sweeper
+	// closes it unconditionally — no matter how many subscribers are
+	// connected, no matter whether the game has ended. This is the
+	// ONLY reap policy: rooms with active connections, idle lobbies,
+	// completed games, and abandoned-but-attached zombies all live
+	// up to this cap and then get cleared.
+	//
+	// Counts from CreateRoom. Default DefaultMaxLifetime. Zero or
+	// negative disables reaping (useful for tests / future
+	// deployments).
+	MaxLifetime time.Duration
+
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -165,6 +184,14 @@ const DefaultNightActionDuration = 45 * time.Second
 // queued role's turn. Tuned to comfortably cover "read the modal +
 // click Got it" without dragging the night out.
 const DefaultDetectivePauseDuration = 3 * time.Second
+
+// DefaultMaxLifetime caps how long any room may live before the
+// manager forcibly closes it. Long enough that no real game session
+// — including breaks, rules debates, and the social postgame — will
+// brush up against it; short enough that abandoned rooms (any
+// flavor: empty, full of zombies, ended) don't accumulate forever
+// on a long-running server.
+const DefaultMaxLifetime = 10 * time.Hour
 
 // DefaultNightTurnGrace returns the per-role audio grace used when
 // Config.NightTurnGrace is nil. The values are tuned to match the
@@ -235,6 +262,9 @@ func (c *Config) applyDefaults() {
 	if c.DetectivePauseDuration == 0 {
 		c.DetectivePauseDuration = DefaultDetectivePauseDuration
 	}
+	if c.MaxLifetime == 0 {
+		c.MaxLifetime = DefaultMaxLifetime
+	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
@@ -259,16 +289,17 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 
 	ctx, cancel := context.WithCancel(parent)
 	r := &Room{
-		code:    code,
-		cfg:     cfg,
-		log:     cfg.Logger.With("room", code),
-		inbox:   make(chan inbound, inboxCapacity),
-		ctx:     ctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
-		g:       game.New(),
-		players: make(map[game.PlayerID]*playerSlot),
-		subs:    make(map[*Subscriber]struct{}),
+		code:      code,
+		cfg:       cfg,
+		log:       cfg.Logger.With("room", code),
+		inbox:     make(chan inbound, inboxCapacity),
+		ctx:       ctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		g:         game.New(),
+		players:   make(map[game.PlayerID]*playerSlot),
+		subs:      make(map[*Subscriber]struct{}),
+		createdAt: time.Now(),
 	}
 
 	gid := cfg.GameID
@@ -321,6 +352,23 @@ func (r *Room) SubmitLeave(ctx context.Context, sub *Subscriber) error {
 // rely on Actor / Voter fields they set themselves.
 func (r *Room) SubmitCommand(ctx context.Context, sub *Subscriber, cmd game.Command) error {
 	return r.submit(ctx, inCommand{From: sub, Cmd: cmd})
+}
+
+// requestLifetimeCheck non-blockingly asks the room to self-evaluate
+// its age against MaxLifetime. Used by Manager's sweeper goroutine.
+// If the inbox is full (a busy room can wait one tick), we
+// skip — the next sweep will retry.
+//
+// Package-private because only the manager should call it; we
+// don't want HTTP handlers nudging rooms toward shutdown.
+func (r *Room) requestLifetimeCheck() {
+	select {
+	case <-r.ctx.Done():
+		return
+	case r.inbox <- inLifetimeCheck{}:
+	default:
+		// Inbox full; next sweep will retry.
+	}
 }
 
 // submit enqueues an inbound message for the run loop. It is the only
@@ -470,6 +518,8 @@ func (r *Room) dispatch(msg inbound) {
 		r.handleLeave(m)
 	case inCommand:
 		r.handleCommand(m)
+	case inLifetimeCheck:
+		r.handleLifetimeCheck()
 	default:
 		r.log.Warn("unknown inbound", "type", fmt.Sprintf("%T", msg))
 	}
@@ -500,7 +550,7 @@ func (r *Room) handleJoin(m inJoin) {
 
 	slot := &playerSlot{id: pid, name: m.Name, secret: secret, sub: m.From}
 	r.players[pid] = slot
-	r.subs[m.From] = struct{}{}
+	r.attachSubscriber(m.From)
 	m.From.setPlayerID(pid)
 
 	// First player to join is the host. This is a room-level concept;
@@ -547,7 +597,7 @@ func (r *Room) handleRejoin(m inRejoin) {
 		close(slot.sub.out)
 	}
 	slot.sub = m.From
-	r.subs[m.From] = struct{}{}
+	r.attachSubscriber(m.From)
 	m.From.setPlayerID(m.PlayerID)
 
 	r.sendOne(m.From, OutRejoined{
@@ -570,10 +620,32 @@ func (r *Room) handleLeave(m inLeave) {
 	if slot, ok := r.players[pid]; ok && slot.sub == m.From {
 		slot.sub = nil
 	}
-	if _, ok := r.subs[m.From]; ok {
-		delete(r.subs, m.From)
-		close(m.From.out)
+	r.detachSubscriber(m.From)
+}
+
+// handleLifetimeCheck evaluates whether the room has exceeded its
+// hard lifetime cap and, if so, self-cancels (which causes Run to
+// exit and the manager's reapWhenDone goroutine to drop it from
+// the registry).
+//
+// Policy: time.Since(createdAt) > cfg.MaxLifetime. That is the only
+// criterion. Subscriber count and game phase are NOT consulted —
+// active games approaching the cap get force-closed too, which is a
+// deliberate tradeoff for predictable resource bounds.
+//
+// MaxLifetime <= 0 disables reaping. Useful for tests and as a
+// future deployment knob.
+func (r *Room) handleLifetimeCheck() {
+	if r.cfg.MaxLifetime <= 0 {
+		return
 	}
+	if time.Since(r.createdAt) < r.cfg.MaxLifetime {
+		return
+	}
+	r.log.Info("reaping room past max lifetime",
+		"created_at", r.createdAt,
+		"max_lifetime", r.cfg.MaxLifetime)
+	r.cancel()
 }
 
 // handleCommand applies an engine command, rewriting any actor-identity
@@ -795,6 +867,24 @@ func (r *Room) disconnectSlow(sub *Subscriber) {
 	pid := sub.PlayerID()
 	if slot, ok := r.players[pid]; ok && slot.sub == sub {
 		slot.sub = nil
+	}
+	r.detachSubscriber(sub)
+}
+
+// attachSubscriber adds a subscriber to r.subs. Helper exists for
+// symmetry with detachSubscriber and as the obvious extension point
+// if we ever bring back subscriber-based reap policies.
+func (r *Room) attachSubscriber(sub *Subscriber) {
+	r.subs[sub] = struct{}{}
+}
+
+// detachSubscriber removes a subscriber from r.subs and closes its
+// outbound channel. The close() is safe to call once and only once
+// per subscriber — both call sites (handleLeave, disconnectSlow)
+// gate on r.subs membership to enforce that.
+func (r *Room) detachSubscriber(sub *Subscriber) {
+	if _, ok := r.subs[sub]; !ok {
+		return
 	}
 	delete(r.subs, sub)
 	close(sub.out)

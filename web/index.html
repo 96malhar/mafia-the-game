@@ -135,6 +135,25 @@
         </div>
 
         <!--
+          Host audio bar. Visible only on the host's device. Two
+          reasons it exists outside the lobby's action panel:
+
+          1. After a page refresh, sessionStorage rejoins the room
+             silently — no user gesture. iOS / desktop browsers gate
+             speechSynthesis behind a gesture, so a refresh during a
+             live game would otherwise leave the host's phone mute
+             with no obvious recovery. This bar gives them a tap
+             target on every page they could land on after a
+             refresh.
+          2. It's also a status indicator: "Audio: on" reassures the
+             host that the gesture took.
+
+          Toggled by renderHostAudioBar(). Hidden for non-hosts and
+          when TTS isn't supported on the device.
+        -->
+        <div id="host-audio-bar" class="hidden"></div>
+
+        <!--
           Phase banner. Color + headline + helper text are all driven
           from the client-side reducer in renderActionPanel(). The
           #action-extras slot is where phase-specific affordances
@@ -354,10 +373,26 @@
 
       // narratorEnabled gates whether THIS device speaks. Only the host
       // narrates — having every player's phone narrate would yield
-      // overlapping audio. Toggled by the "Test audio" button in the
-      // lobby (which also serves as the user-gesture needed by iOS to
+      // overlapping audio. Toggled by the "Test audio" / "Enable audio"
+      // button (which also serves as the user-gesture needed by iOS to
       // unlock speechSynthesis).
+      //
+      // The user's preference persists in sessionStorage so a refresh
+      // mid-game remembers it. BUT a refresh resets the browser's
+      // autoplay-gate too — sessionStorage can't satisfy the
+      // user-gesture requirement. So after a refresh we land here
+      // with narratorEnabled=false even if the host had it on; the
+      // host audio bar (#host-audio-bar) makes re-enabling a single
+      // tap from any phase.
+      const audioPrefKey = "mafia.audio.host";
       let narratorEnabled = false;
+      // narratorPreference is the user's INTENT (persisted), distinct
+      // from narratorEnabled which is the LIVE state after a gesture
+      // this load. After a refresh, preference="on" and enabled=false
+      // until the host taps the audio bar.
+      let narratorPreference =
+        typeof sessionStorage !== "undefined" &&
+        sessionStorage.getItem(audioPrefKey) === "on";
 
       // narrationsSeen is a guard against double-narrating the same
       // event when handleEvent runs over the replay batch on join AND
@@ -585,9 +620,92 @@
           return;
         }
         narratorEnabled = true;
+        narratorPreference = true;
+        try { sessionStorage.setItem(audioPrefKey, "on"); } catch {}
         speak("Audio enabled. Ready when you are.", { rate: 1 });
         showNarratorCard("Audio enabled. The host's phone will narrate the game.");
+        renderHostAudioBar();
         renderActionPanel(); // rerender so the button switches state
+      }
+
+      function disableNarrator() {
+        narratorEnabled = false;
+        narratorPreference = false;
+        try { sessionStorage.removeItem(audioPrefKey); } catch {}
+        // Cancel any in-flight utterances so a tap-to-mute is snappy.
+        if (ttsSupported) {
+          try { window.speechSynthesis.cancel(); } catch {}
+        }
+        renderHostAudioBar();
+        renderActionPanel();
+      }
+
+      // renderHostAudioBar paints the persistent audio toggle / status
+      // pill that lives above the action panel. Visible only for the
+      // host (non-hosts never narrate) AND only after they've joined a
+      // room. Three visual states:
+      //
+      //   - TTS unsupported  -> info chip, no buttons.
+      //   - audio not yet
+      //     unlocked         -> prominent amber "Enable audio" CTA.
+      //                        This is the recovery path after a refresh.
+      //   - audio unlocked   -> green "Audio: on" pill with a small
+      //                        "Mute" affordance.
+      //
+      // Non-hosts and the pre-room (lobby) state hide the bar entirely.
+      function renderHostAudioBar() {
+        const bar = $("host-audio-bar");
+        if (!bar) return;
+        if (!myIsHost || !myId) {
+          bar.classList.add("hidden");
+          bar.innerHTML = "";
+          return;
+        }
+        bar.innerHTML = "";
+        bar.className =
+          "flex items-center justify-between gap-3 rounded border p-3";
+
+        if (!ttsSupported) {
+          bar.classList.add("border-slate-700", "bg-slate-800/40", "text-slate-300");
+          const note = document.createElement("div");
+          note.className = "text-sm";
+          note.textContent =
+            "Audio narration isn't available on this device. The on-screen card will still show every cue.";
+          bar.appendChild(note);
+          return;
+        }
+
+        if (!narratorEnabled) {
+          // Either first load (preference=off) or post-refresh
+          // (preference=on but gesture not yet given). Either way
+          // the CTA is the same: tap to enable.
+          bar.classList.add("border-amber-500/60", "bg-amber-950/40", "text-amber-100");
+          const note = document.createElement("div");
+          note.className = "min-w-0 text-sm";
+          note.textContent = narratorPreference
+            ? "Audio paused after refresh. Tap to re-enable."
+            : "Narrator audio is off. Enable it on the host's phone.";
+          const btn = document.createElement("button");
+          btn.className =
+            "inline-flex min-h-[44px] shrink-0 items-center justify-center rounded bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500";
+          btn.textContent = narratorPreference ? "Re-enable audio" : "Enable audio";
+          btn.addEventListener("click", () => enableNarrator());
+          bar.appendChild(note);
+          bar.appendChild(btn);
+          return;
+        }
+
+        bar.classList.add("border-emerald-700/60", "bg-emerald-950/40", "text-emerald-100");
+        const note = document.createElement("div");
+        note.className = "min-w-0 text-sm";
+        note.textContent = "Audio: on. Narration will play on this device.";
+        const btn = document.createElement("button");
+        btn.className =
+          "inline-flex min-h-[44px] shrink-0 items-center justify-center rounded bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600";
+        btn.textContent = "Mute";
+        btn.addEventListener("click", () => disableNarrator());
+        bar.appendChild(note);
+        bar.appendChild(btn);
       }
 
       // When we kick off a rejoin attempt from stored credentials
@@ -670,6 +788,7 @@
       // changes (cheap: at most every few seconds) so that any UI piece
       // depending on phase + roster + votes stays consistent.
       function renderAll() {
+        renderHostAudioBar();
         renderPlayers();
         renderActionPanel();
       }
@@ -953,21 +1072,11 @@
             if (mafiaPicker) extras.appendChild(mafiaPicker);
 
             if (myIsHost) {
-              // "Test audio" comes first so it gets tapped before
-              // "Start game" — that's the user gesture iOS Safari needs
-              // to unlock speechSynthesis.
-              if (ttsSupported && !narratorEnabled) {
-                extras.appendChild(actionButton(
-                  "Test audio",
-                  "bg-amber-600 hover:bg-amber-500",
-                  () => enableNarrator()
-                ));
-              } else if (narratorEnabled) {
-                extras.appendChild(noteChip("Audio: on", "bg-emerald-800/80"));
-              } else {
-                extras.appendChild(noteChip("Audio: not supported (visual cues only)", "bg-slate-700/80"));
-              }
-
+              // Audio enablement now lives in the persistent host
+              // audio bar above the action panel (#host-audio-bar)
+              // so it's reachable from every phase, including after
+              // a mid-game refresh. We deliberately don't duplicate
+              // it here.
               if (!rolesDealt) {
                 if (canStart) {
                   extras.appendChild(actionButton("Start game", "bg-emerald-600 hover:bg-emerald-500",

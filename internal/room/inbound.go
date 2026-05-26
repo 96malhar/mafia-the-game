@@ -74,3 +74,14 @@ type inCommand struct {
 }
 
 func (inCommand) isInbound() {}
+
+// inLifetimeCheck is sent by the manager's sweeper goroutine to ask
+// the room to self-evaluate its age against cfg.MaxLifetime. The
+// room receives this on its inbox so the check happens inside the
+// run loop (no concurrent reads of run-loop-only state). If the
+// room decides it's past the cap, it cancels its own context and
+// exits; the manager's reapWhenDone goroutine then removes it from
+// the registry.
+type inLifetimeCheck struct{}
+
+func (inLifetimeCheck) isInbound() {}

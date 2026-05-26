@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // codeAlphabet is the Crockford-style set used for room codes:
@@ -20,6 +21,12 @@ const codeLength = 4
 // Even with 100 active rooms, the collision probability is ~0.04% per
 // attempt — 100 retries gives a vanishing failure rate.
 const maxCodeAttempts = 100
+
+// DefaultSweepInterval is how often the manager polls every room to
+// see if it has exceeded MaxLifetime. The sweep is cheap (one non-
+// blocking inbox push per room) so a tight cadence is fine, but the
+// lifetime cap is hours-scale — minute granularity is plenty.
+const DefaultSweepInterval = 60 * time.Second
 
 // Sentinel errors returned by the room/manager API.
 var (
@@ -35,7 +42,8 @@ var (
 // concurrent use from HTTP handlers.
 //
 // Rooms own their own goroutines; Manager only tracks the set, mints
-// codes, and provides lookup.
+// codes, provides lookup, and runs the periodic lifetime-sweeper
+// that reaps rooms past their MaxLifetime cap.
 type Manager struct {
 	mu     sync.RWMutex
 	rooms  map[string]*Room
@@ -45,22 +53,47 @@ type Manager struct {
 	// it via Close shuts down every room in the registry.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// sweepInterval is how often runSweeper polls each room to
+	// check whether it has exceeded MaxLifetime. Defaults to
+	// DefaultSweepInterval; tests override to a sub-second cadence
+	// so they don't have to sleep for hours.
+	sweepInterval time.Duration
 }
 
-// NewManager constructs a Manager. The parent context governs the
-// lifetime of every room it owns; cancelling it (or calling Close)
-// causes every room to shut down.
-func NewManager(parent context.Context, logger *slog.Logger) *Manager {
+// ManagerOption tunes a Manager at construction. We use the functional-
+// options pattern (rather than another big config struct) because
+// these knobs are nearly always defaulted and only exist for tests.
+type ManagerOption func(*Manager)
+
+// WithSweepInterval overrides the periodic lifetime-sweep cadence.
+// Primarily for tests that need fast reaping; production code
+// should leave the default.
+func WithSweepInterval(d time.Duration) ManagerOption {
+	return func(m *Manager) { m.sweepInterval = d }
+}
+
+// NewManager constructs a Manager and starts its background
+// lifetime-sweeper goroutine. The parent context governs the
+// lifetime of every room it owns AND the sweeper; cancelling it (or
+// calling Close) shuts down everything.
+func NewManager(parent context.Context, logger *slog.Logger, opts ...ManagerOption) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Manager{
-		rooms:  make(map[string]*Room),
-		logger: logger,
-		ctx:    ctx,
-		cancel: cancel,
+	m := &Manager{
+		rooms:         make(map[string]*Room),
+		logger:        logger,
+		ctx:           ctx,
+		cancel:        cancel,
+		sweepInterval: DefaultSweepInterval,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	go m.runSweeper()
+	return m
 }
 
 // CreateRoom mints a unique code, constructs a Room, and starts its
@@ -144,6 +177,45 @@ func (m *Manager) reapWhenDone(r *Room) {
 	delete(m.rooms, r.code)
 	m.mu.Unlock()
 	m.logger.Info("room reaped", "code", r.code)
+}
+
+// runSweeper periodically asks every registered room to evaluate
+// its age against MaxLifetime. The actual reap decision is made
+// inside the room's run loop (see Room.handleLifetimeCheck); the
+// sweeper just nudges each room on a ticker. This keeps state
+// mutation single-threaded per room and avoids the manager taking
+// locks on room internals.
+//
+// Exits when the manager's context is cancelled (Manager.Close).
+func (m *Manager) runSweeper() {
+	if m.sweepInterval <= 0 {
+		return
+	}
+	t := time.NewTicker(m.sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-t.C:
+			m.sweepOnce()
+		}
+	}
+}
+
+// sweepOnce nudges every room to evaluate its lifetime. Splits the
+// work in two passes (snapshot under read lock, then push without
+// holding the lock) so a slow inbox can't block the registry.
+func (m *Manager) sweepOnce() {
+	m.mu.RLock()
+	rooms := make([]*Room, 0, len(m.rooms))
+	for _, r := range m.rooms {
+		rooms = append(rooms, r)
+	}
+	m.mu.RUnlock()
+	for _, r := range rooms {
+		r.requestLifetimeCheck()
+	}
 }
 
 // randomCode generates a codeLength-character code using

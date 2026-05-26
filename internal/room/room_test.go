@@ -474,6 +474,104 @@ func TestRoom_NightTurnTimersAutoAdvance(t *testing.T) {
 	}
 }
 
+// --- Lifetime reaping ----------------------------------------------------
+
+// newTestManagerWithSweep is newTestManager with a sub-second sweeper
+// cadence so tests can observe reaping without real-time waits.
+func newTestManagerWithSweep(t *testing.T, interval time.Duration) *Manager {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m := NewManager(ctx, silentLogger(), WithSweepInterval(interval))
+	t.Cleanup(func() {
+		shutdown, c := context.WithTimeout(context.Background(), time.Second)
+		defer c()
+		_ = m.Close(shutdown)
+	})
+	return m
+}
+
+// waitGone polls the manager's registry until the given code is
+// missing, or fails the test after deadline. We poll (rather than
+// hook into r.done) because the manager-side reapWhenDone is what
+// removes the entry from the map; observing that race-free from
+// outside requires polling.
+func waitGone(t *testing.T, m *Manager, code string, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if _, err := m.Get(code); err == ErrRoomNotFound {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("room %q was not reaped within %s", code, deadline)
+}
+
+// TestRoom_LifetimeReaperClosesOldRoom verifies the headline case: a
+// room that has existed for longer than its MaxLifetime is reaped
+// on the next sweep, regardless of whether it ever had subscribers.
+func TestRoom_LifetimeReaperClosesOldRoom(t *testing.T) {
+	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		MaxLifetime: 50 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	waitGone(t, m, r.Code(), time.Second)
+}
+
+// TestRoom_LifetimeReaperIgnoresSubscribers verifies that an active
+// room — full of connected subscribers — gets reaped just the same
+// once it crosses MaxLifetime. This is the intentional tradeoff:
+// predictable resource bounds over "wait for everyone to leave".
+func TestRoom_LifetimeReaperIgnoresSubscribers(t *testing.T) {
+	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		MaxLifetime: 80 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	// Connect a player so the room is "active" by any reasonable
+	// definition. Lifetime cap should still reap it.
+	subA, _ := connect(t, r, "Alice")
+	_ = drain(subA, 30*time.Millisecond)
+
+	waitGone(t, m, r.Code(), time.Second)
+}
+
+// TestRoom_LifetimeReaperRespectsCap verifies the inverse: a room
+// younger than its cap is NOT reaped, even with no subscribers.
+func TestRoom_LifetimeReaperRespectsCap(t *testing.T) {
+	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		MaxLifetime: time.Hour, // far longer than any test
+	})
+	require.NoError(t, err)
+
+	// Run several sweeps; the room must stay registered.
+	time.Sleep(200 * time.Millisecond)
+	_, err = m.Get(r.Code())
+	require.NoError(t, err, "room younger than MaxLifetime must not be reaped")
+}
+
+// TestRoom_LifetimeReaperDisabledByZero verifies that MaxLifetime<=0
+// disables reaping entirely.
+func TestRoom_LifetimeReaperDisabledByZero(t *testing.T) {
+	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		MaxLifetime: -1,
+	})
+	require.NoError(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+	_, err = m.Get(r.Code())
+	require.NoError(t, err, "MaxLifetime<=0 must disable reaping")
+}
+
 // --- Projection: RoleAssigned is private --------------------------------
 
 func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {

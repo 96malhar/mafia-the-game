@@ -716,6 +716,15 @@
       // a successful (re)join arrives this is cleared.
       let pendingRejoinCode = null;
 
+      // pendingJoinCode is the symmetric flag for first-time joins
+      // (no stored credentials). Set immediately before we send the
+      // "join" frame and cleared on "joined" ack or on any "error"
+      // frame. Lets us distinguish "the lobby is closed" / "lobby
+      // full" errors during a join handshake from in-game command
+      // errors that arrive over the same channel, so we can show
+      // a friendly message instead of the raw engine sentinel.
+      let pendingJoinCode = null;
+
       function setStatus(text, klass = "text-slate-400") {
         status.textContent = text;
         status.className = `text-sm ${klass}`;
@@ -1348,6 +1357,7 @@
             myId = d.playerId;
             myIsHost = !!d.isHost;
             pendingRejoinCode = null;
+            pendingJoinCode = null;
             // Fresh socket: start from a clean model. The server
             // attaches its projected view of prior events so we can
             // see who else is already in the room. Our own PlayerJoined
@@ -1383,20 +1393,38 @@
           case "event":
             handleEvent(msg.data.event);
             break;
-          case "error":
-            // Surface the server's human-readable message if present,
-            // otherwise fall back to the machine code. Auth failures
-            // during rejoin are recovered silently below.
-            showError(
-              (msg.data && (msg.data.message || msg.data.code)) || "error"
-            );
+          case "error": {
+            const code = msg.data && msg.data.code;
+            const message =
+              (msg.data && (msg.data.message || msg.data.code)) || "error";
+
+            // First-time join error: the server has already shaped a
+            // player-facing message (see room.joinErrorFor); we just
+            // render it in the lobby status line and bounce back to
+            // a clean lobby. The URL is cleared so the "Start a
+            // game" / Create view is visible, since retrying against
+            // the same closed/full/ended room would just fail again.
+            if (pendingJoinCode) {
+              pendingJoinCode = null;
+              if (ws) {
+                ws.onclose = null;
+                ws.onerror = null;
+                try { ws.close(); } catch {}
+                ws = null;
+              }
+              recoverToLobby(null, message);
+              break;
+            }
+
+            showError(message);
+
             // If we were auto-rejoining (e.g. after a refresh) and the
             // server can't authenticate us, the stored credentials are
             // stale — typically because the server restarted, the room
             // was closed, or the player slot was evicted. Clear them
             // and drop the user on the join screen for this room so
             // they can re-enter as a fresh player.
-            if (pendingRejoinCode && msg.data && msg.data.code === "auth_failed") {
+            if (pendingRejoinCode && code === "auth_failed") {
               const stale = pendingRejoinCode;
               pendingRejoinCode = null;
               sessionStorage.removeItem(storageKey(stale));
@@ -1411,6 +1439,7 @@
               recoverToLobby(stale, "Previous session expired — rejoin as a new player.");
             }
             break;
+          }
           default:
             // Unknown top-level frame — should never happen in a
             // version-matched client/server pair. Surface it so we
@@ -1708,7 +1737,10 @@
           setStatus(`connected to ${code}`, "text-emerald-400");
           // Only the fresh-join path needs to send a join frame; rejoin
           // is handled server-side via the URL params.
-          if (!creds) send("join", { name });
+          if (!creds) {
+            pendingJoinCode = code;
+            send("join", { name });
+          }
         };
         ws.onmessage = (ev) => {
           try { handleServerMessage(JSON.parse(ev.data)); }
@@ -1723,6 +1755,16 @@
             const stale = pendingRejoinCode;
             pendingRejoinCode = null;
             recoverToLobby(stale, "Could not reconnect — the room may be closed.");
+            return;
+          }
+          // Symmetric guard for first-time joins: socket died before
+          // the server acked. Most likely the server is unreachable
+          // (the alternative — an "error" frame — is handled above and
+          // detaches this handler before close fires).
+          if (pendingJoinCode) {
+            const stale = pendingJoinCode;
+            pendingJoinCode = null;
+            recoverToLobby(stale, "Could not connect — the server may be unreachable.");
             return;
           }
           setStatus("disconnected", "text-rose-400");
@@ -1782,9 +1824,14 @@
       function recoverToLobby(code, note) {
         $("game").classList.add("hidden");
         $("lobby").classList.remove("hidden");
-        // Ensure the URL still points at the failed-to-rejoin room
-        // so applyURLState() formats the lobby as "Join room ZMPP".
-        history.replaceState(null, "", shareLinkFor(code));
+        // If a code is given, keep the URL pointed at that room so
+        // applyURLState() formats the lobby as "Join room ZMPP"
+        // (used by the rejoin-failed paths — the user still wants to
+        // try this specific room). Passing null clears the URL so
+        // the lobby reverts to the generic "Start a game" view with
+        // the Create button visible — used when the target room is
+        // unjoinable and re-attempting would just fail again.
+        history.replaceState(null, "", code ? shareLinkFor(code) : "/");
         applyURLState();
         setStatus(note, "text-amber-400");
       }

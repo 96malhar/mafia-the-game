@@ -283,7 +283,9 @@ func (r *Room) handleJoin(m inJoin) {
 
 	events, err := r.g.Apply(game.AddPlayer{PlayerID: pid, Name: m.Name})
 	if err != nil {
-		r.sendOne(m.From, errorFor(err))
+		// joinErrorFor gives lobby-closed errors a player-facing
+		// message; all other codes pass through unchanged.
+		r.sendOne(m.From, joinErrorFor(err))
 		return
 	}
 

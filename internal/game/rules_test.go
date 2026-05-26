@@ -201,6 +201,29 @@ func TestAddPlayer(t *testing.T) {
 		_, err := g.Apply(game.AddPlayer{PlayerID: "p1", Name: "Alice"})
 		require.ErrorIs(t, err, game.ErrWrongPhase)
 	})
+
+	t.Run("rejects AddPlayer after StartGame (roles dealt)", func(t *testing.T) {
+		// StartGame deals roles but does NOT transition out of
+		// PhaseLobby — BeginNight does. We still want to block new
+		// joiners as soon as roles are dealt, because adding one
+		// would require re-dealing the whole roster and leaking
+		// information to existing players (see applyAddPlayer doc).
+		g := newWithCreated(t)
+		for _, n := range []string{"a", "b", "c", "d", "e"} {
+			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
+			require.NoError(t, err)
+		}
+		_, err := g.Apply(game.StartGame{})
+		require.NoError(t, err)
+		// Game is still in PhaseLobby here — verify the precondition
+		// so future refactors of StartGame don't silently make this
+		// test pass for the wrong reason.
+		require.Equal(t, game.PhaseLobby, g.State().Phase())
+
+		_, err = g.Apply(game.AddPlayer{PlayerID: "latecomer", Name: "Latecomer"})
+		require.ErrorIs(t, err, game.ErrWrongPhase,
+			"AddPlayer after roles are dealt must be rejected with wrong_phase")
+	})
 }
 
 func TestSetMafiaCount(t *testing.T) {

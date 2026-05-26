@@ -40,3 +40,32 @@ func errorFor(err error) OutError {
 		return OutError{Code: "internal", Message: err.Error()}
 	}
 }
+
+// joinErrorFor is errorFor specialized for the first-time join
+// handshake (room.handleJoin). It returns the same machine-readable
+// Code as errorFor — so the wire contract and existing tests stay
+// stable — but rewrites the Message for the codes that mean "this
+// room can't accept you" into player-facing English. Other codes
+// are passed through unchanged (they shouldn't fire during a join,
+// but if a future engine change adds a new reason we'd rather show
+// the raw sentinel than silently swallow it).
+//
+// The point of doing this server-side rather than on the client is
+// to keep all "what does this error mean to the user?" knowledge in
+// one place. Client code just renders OutError.Message as-is.
+func joinErrorFor(err error) OutError {
+	out := errorFor(err)
+	switch out.Code {
+	case "wrong_phase":
+		// AddPlayer is only legal in PhaseLobby with no roles dealt.
+		// Both pre-StartGame phase mismatches and the
+		// "roles already dealt" check in applyAddPlayer surface
+		// here.
+		out.Message = "This game is already in progress. Create a new room to play."
+	case "lobby_full":
+		out.Message = "This room is full. Create a new room to play."
+	case "game_ended":
+		out.Message = "This game has already ended. Create a new room to play."
+	}
+	return out
+}

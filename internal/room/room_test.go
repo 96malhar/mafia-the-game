@@ -388,6 +388,54 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 	}
 }
 
+func TestRoom_JoinErrorForRewritesLobbyClosedMessages(t *testing.T) {
+	// The Code is the wire contract; that must not change. The
+	// Message is what the player sees and SHOULD be friendlier for
+	// the three "this room can't accept you" cases that show up
+	// during a join handshake.
+	cases := []struct {
+		name        string
+		err         error
+		wantCode    string
+		wantMessage string
+	}{
+		{
+			name:        "wrong_phase becomes a join-friendly message",
+			err:         game.ErrWrongPhase,
+			wantCode:    "wrong_phase",
+			wantMessage: "This game is already in progress. Create a new room to play.",
+		},
+		{
+			name:        "lobby_full becomes a join-friendly message",
+			err:         game.ErrLobbyFull,
+			wantCode:    "lobby_full",
+			wantMessage: "This room is full. Create a new room to play.",
+		},
+		{
+			name:        "game_ended becomes a join-friendly message",
+			err:         game.ErrGameEnded,
+			wantCode:    "game_ended",
+			wantMessage: "This game has already ended. Create a new room to play.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := joinErrorFor(tc.err)
+			require.Equal(t, tc.wantCode, got.Code)
+			require.Equal(t, tc.wantMessage, got.Message)
+		})
+	}
+}
+
+func TestRoom_JoinErrorForPassesUnrelatedCodesThrough(t *testing.T) {
+	// joinErrorFor must not touch codes it doesn't recognize. If a
+	// new engine sentinel ever fires during a join, we'd rather show
+	// the raw text than silently swallow it.
+	got := joinErrorFor(game.ErrDuplicatePlayer)
+	require.Equal(t, "duplicate_player", got.Code)
+	require.Equal(t, game.ErrDuplicatePlayer.Error(), got.Message)
+}
+
 // Slow-subscriber disconnect is tested in room_internal_test.go where
 // we can drive appendAndBroadcast directly. External tests have an
 // unwinnable race with the room goroutine: by the time the test's

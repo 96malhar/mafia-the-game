@@ -107,6 +107,8 @@ func (g *Game) applyCreateGame(c CreateGame) ([]Event, error) {
 //
 // Validation:
 //   - Game must exist and be in PhaseLobby.
+//   - Roles must not have been dealt yet (StartGame closes the lobby
+//     even though the game stays in PhaseLobby until BeginNight).
 //   - PlayerID and Name must be non-empty.
 //   - PlayerID must not already be in the game.
 //   - The lobby must not already be at MaxPlayers.
@@ -115,6 +117,17 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 		return nil, ErrWrongPhase
 	}
 	if g.state.phase != PhaseLobby {
+		return nil, ErrWrongPhase
+	}
+	// Closing the lobby at StartGame (rather than BeginNight) is a
+	// deliberate UX choice: once roles have been dealt, adding a new
+	// player would require re-dealing the whole roster, which leaks
+	// information (existing players would see new RoleAssigned events
+	// and could infer their previous role was unstable). Bouncing the
+	// joiner is the only sane option. The same wrong_phase error code
+	// flows out to the client, which surfaces "This game is already
+	// in progress" in the join lobby.
+	if len(g.state.players) > 0 && g.state.players[0].role != "" {
 		return nil, ErrWrongPhase
 	}
 	if c.PlayerID == "" || c.Name == "" {

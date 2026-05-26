@@ -6,30 +6,7 @@ import (
 
 	"github.com/malhar/mafia-the-game/internal/game"
 	"github.com/malhar/mafia-the-game/internal/room"
-)
-
-// Stable wire tags for each engine event. These must match what the
-// client expects; adding a new engine event means adding an entry here.
-// We use lowerCamelCase to match the JSON field convention.
-const (
-	eventTagGameCreated         = "gameCreated"
-	eventTagMafiaCountChanged   = "mafiaCountChanged"
-	eventTagPlayerJoined        = "playerJoined"
-	eventTagGameStarted         = "gameStarted"
-	eventTagRoleAssigned        = "roleAssigned"
-	eventTagPhaseChanged        = "phaseChanged"
-	eventTagNightTurnStarted    = "nightTurnStarted"
-	eventTagNightTurnEnded      = "nightTurnEnded"
-	eventTagNightActionRecorded = "nightActionRecorded"
-	eventTagPlayerKilled        = "playerKilled"
-	eventTagPlayerSaved         = "playerSaved"
-	eventTagDetectiveResult     = "detectiveResult"
-	eventTagVoteCast            = "voteCast"
-	eventTagVoteChanged         = "voteChanged"
-	eventTagVoteRetracted       = "voteRetracted"
-	eventTagVoteCleared         = "voteCleared"
-	eventTagPlayerLynched       = "playerLynched"
-	eventTagGameEnded           = "gameEnded"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // encodeEvent translates an engine game.Event into the wire-shape
@@ -46,7 +23,7 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	)
 	switch v := e.(type) {
 	case game.GameCreated:
-		tag = eventTagGameCreated
+		tag = wire.EventGameCreated
 		data = kv{
 			"gameId":     string(v.GameID),
 			"minPlayers": v.MinPlayers,
@@ -55,55 +32,55 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 			"seed":       v.Seed,
 		}
 	case game.MafiaCountChanged:
-		tag = eventTagMafiaCountChanged
+		tag = wire.EventMafiaCountChanged
 		data = kv{"from": v.From, "to": v.To}
 	case game.PlayerJoined:
-		tag = eventTagPlayerJoined
+		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
 	case game.GameStarted:
-		tag = eventTagGameStarted
+		tag = wire.EventGameStarted
 		data = kv{}
 	case game.RoleAssigned:
-		tag = eventTagRoleAssigned
+		tag = wire.EventRoleAssigned
 		data = kv{"playerId": string(v.PlayerID), "role": string(v.Role)}
 	case game.PhaseChanged:
-		tag = eventTagPhaseChanged
+		tag = wire.EventPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
 	case game.NightTurnStarted:
-		tag = eventTagNightTurnStarted
+		tag = wire.EventNightTurnStarted
 		data = kv{"role": string(v.Role), "deadline": v.Deadline, "phantom": v.Phantom}
 	case game.NightTurnEnded:
-		tag = eventTagNightTurnEnded
+		tag = wire.EventNightTurnEnded
 		data = kv{"role": string(v.Role)}
 	case game.NightActionRecorded:
-		tag = eventTagNightActionRecorded
+		tag = wire.EventNightActionRecorded
 		data = kv{"actor": string(v.Actor), "target": string(v.Target), "faction": string(v.Faction)}
 	case game.PlayerKilled:
-		tag = eventTagPlayerKilled
+		tag = wire.EventPlayerKilled
 		data = kv{"playerId": string(v.PlayerID)}
 	case game.PlayerSaved:
-		tag = eventTagPlayerSaved
+		tag = wire.EventPlayerSaved
 		data = kv{"playerId": string(v.PlayerID), "doctor": string(v.Doctor)}
 	case game.DetectiveResult:
-		tag = eventTagDetectiveResult
+		tag = wire.EventDetectiveResult
 		data = kv{"detective": string(v.Detective), "target": string(v.Target), "isMafia": v.IsMafia}
 	case game.VoteCast:
-		tag = eventTagVoteCast
+		tag = wire.EventVoteCast
 		data = kv{"voter": string(v.Voter), "target": string(v.Target)}
 	case game.VoteChanged:
-		tag = eventTagVoteChanged
+		tag = wire.EventVoteChanged
 		data = kv{"voter": string(v.Voter), "from": string(v.From), "to": string(v.To)}
 	case game.VoteRetracted:
-		tag = eventTagVoteRetracted
+		tag = wire.EventVoteRetracted
 		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
 	case game.VoteCleared:
-		tag = eventTagVoteCleared
+		tag = wire.EventVoteCleared
 		data = kv{"day": v.Day}
 	case game.PlayerLynched:
-		tag = eventTagPlayerLynched
+		tag = wire.EventPlayerLynched
 		data = kv{"playerId": string(v.PlayerID)}
 	case game.GameEnded:
-		tag = eventTagGameEnded
+		tag = wire.EventGameEnded
 		data = kv{"winner": string(v.Winner), "finalRoles": rolesMapToStrings(v.FinalRoles)}
 	default:
 		return eventEnvelope{}, fmt.Errorf("ws: unknown event type %T", e)

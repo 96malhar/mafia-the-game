@@ -1,17 +1,20 @@
 package game
 
+import "sort"
+
 // This file defines how new roles plug into the engine.
 //
 // To add a new role:
-//  1. Add a new const to role.go and update Faction().
-//  2. Add an entry to the roleSpecs map in this file.
-//  3. If your role has a night action, fill in NightAction with a
-//     Validate, Phase, and Apply.
+//  1. Add a new const to role.go (just the string identifier).
+//  2. Add an entry to the roleSpecs map below with the role's
+//     Faction and (if applicable) NightAction.
 //
-// You should NOT have to edit rules_night.go for ordinary role
-// additions. If you find yourself reaching for a switch on actor.role
+// That's it. Role.Valid(), Role.Faction(), and allRoles() all read
+// from the registry, so a new role automatically participates in
+// validation, faction checks, and test coverage without any other
+// edits. If you find yourself reaching for a switch on actor.role
 // outside this file or role.go, the registry is probably missing an
-// extension point — open a PR to add the hook here.
+// extension point — add the hook here.
 
 // nightPhase orders night-action resolution. Roles declare which phase
 // their Apply function runs in; resolveNight iterates phases in order.
@@ -120,7 +123,7 @@ var roleSpecs = map[Role]roleSpec{
 		NightAction: &nightActionSpec{
 			Phase: nightPhaseSchedule,
 			Validate: func(_ *GameState, _, target *Player) error {
-				if target.role.Faction() == FactionMafia {
+				if target.role == RoleMafia {
 					// Mafia cannot kill another mafia.
 					return ErrNotYourAction
 				}
@@ -204,13 +207,15 @@ func resolvePhase(ctx *nightContext) {
 	ctx.events = append(ctx.events, PlayerKilled{PlayerID: ctx.killTarget})
 }
 
-// allRoles is the canonical list of every role. Tests use it to assert
-// the registry covers every variant.
+// allRoles returns every role known to the registry, in stable
+// (string-sorted) order. The registry is the single source of truth;
+// callers that need to iterate all roles should use this rather than
+// hand-listing constants. Tests use it to verify registry coverage.
 func allRoles() []Role {
-	return []Role{
-		RoleVillager,
-		RoleMafia,
-		RoleDetective,
-		RoleDoctor,
+	out := make([]Role, 0, len(roleSpecs))
+	for r := range roleSpecs {
+		out = append(out, r)
 	}
+	sort.Slice(out, func(i, j int) bool { return string(out[i]) < string(out[j]) })
+	return out
 }

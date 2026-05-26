@@ -7,42 +7,39 @@ import (
 )
 
 // These are INTERNAL tests (package game) — they assert invariants of
-// the role registry that are not observable through the public API.
-// Adding a new role should make exactly one of these fail until the
-// registry entry is added, which is the point.
+// the role registry. With Role.Valid(), Role.Faction(), and
+// allRoles() all derived from roleSpecs, the registry is the single
+// source of truth; these tests guard against accidental regressions
+// to that arrangement (e.g. someone re-introducing a hand-listed
+// switch that drifts).
 
-func TestRegistry_EveryRoleHasASpec(t *testing.T) {
-	for _, r := range allRoles() {
-		spec, ok := roleSpecs[r]
-		require.True(t, ok, "role %q has no entry in roleSpecs", r)
+func TestRegistry_RoleConstantsHaveSpecs(t *testing.T) {
+	// Every Role const declared in role.go must have an entry in
+	// roleSpecs. We hand-enumerate the constants here (the one place
+	// it's appropriate) so adding a const without a spec entry is a
+	// hard test failure, not a silent "unknown role" at runtime.
+	roles := []Role{RoleVillager, RoleMafia, RoleDetective, RoleDoctor}
+	for _, r := range roles {
+		_, ok := roleSpecs[r]
+		require.True(t, ok, "role const %q has no entry in roleSpecs", r)
+	}
+}
 
-		// Spec's Faction must match the standalone Role.Faction() that
-		// the rest of the codebase consults. If these ever diverge, a
-		// real bug is imminent.
-		require.Equal(t, r.Faction(), spec.Faction,
+func TestRegistry_FactionMatchesSpec(t *testing.T) {
+	// Role.Faction() reads roleSpecs, so this is mostly a tautology
+	// today — but the test will catch any future "fast path" in
+	// Faction() that hardcodes a value and forgets to update the
+	// registry.
+	for r, spec := range roleSpecs {
+		require.Equal(t, spec.Faction, r.Faction(),
 			"roleSpecs[%q].Faction (%q) disagrees with %q.Faction() (%q)",
 			r, spec.Faction, r, r.Faction())
 	}
 }
 
 func TestRegistry_AllRolesAreValid(t *testing.T) {
-	// The Role.Valid() switch and allRoles() must stay in lock-step.
 	for _, r := range allRoles() {
 		require.True(t, r.Valid(), "allRoles() lists %q but Role.Valid() rejects it", r)
-	}
-}
-
-func TestRegistry_AllRolesAppearInAllRoles(t *testing.T) {
-	// Inverse direction: every role that has a registry entry must
-	// also appear in allRoles(). This catches the "added to registry
-	// but forgot to update allRoles()" mistake.
-	listed := make(map[Role]bool, len(allRoles()))
-	for _, r := range allRoles() {
-		listed[r] = true
-	}
-	for r := range roleSpecs {
-		require.True(t, listed[r],
-			"role %q is in roleSpecs but missing from allRoles()", r)
 	}
 }
 

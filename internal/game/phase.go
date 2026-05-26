@@ -28,9 +28,10 @@ const (
 	PhaseDayDiscussion Phase = "day_discussion"
 
 	// PhaseDayVote is the public voting phase. Surviving players cast
-	// one vote each; the vote tally is public. If no player has a strict
-	// plurality when the phase ends, the day is extended once for a
-	// re-vote; if still tied, the day ends with no lynch.
+	// one vote each and the tally is public. There is no automatic
+	// vote-extension or auto-finalize: the host explicitly drives the
+	// flow via OpenVoting / ClearVotes / FinalizeVotes (see
+	// commands.go), and votes are mutable until FinalizeVotes lands.
 	PhaseDayVote Phase = "day_vote"
 
 	// PhaseEnded is terminal: a win condition has been reached and no

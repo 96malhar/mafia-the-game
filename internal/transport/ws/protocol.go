@@ -24,6 +24,8 @@ package ws
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // envelope is the outer JSON shape for every message in both directions.
@@ -41,18 +43,21 @@ type envelope struct {
 
 // clientMsgType is the union of valid inbound `type` values. Centralized
 // so the decoder can validate and unknown tags can be rejected cleanly.
+// The string values are sourced from internal/wire so the sim and the
+// server can't drift; the typed wrapper here just buys us
+// exhaustive-switch ergonomics on the decoder side.
 type clientMsgType string
 
 const (
-	clientMsgJoin          clientMsgType = "join"
-	clientMsgNightAction   clientMsgType = "nightAction"
-	clientMsgVote          clientMsgType = "vote"
-	clientMsgStartGame     clientMsgType = "startGame"
-	clientMsgBeginNight    clientMsgType = "beginNight"
-	clientMsgOpenVoting    clientMsgType = "openVoting"
-	clientMsgClearVotes    clientMsgType = "clearVotes"
-	clientMsgFinalizeVotes clientMsgType = "finalizeVotes"
-	clientMsgSetMafia      clientMsgType = "setMafia"
+	clientMsgJoin          clientMsgType = wire.ClientMsgJoin
+	clientMsgNightAction   clientMsgType = wire.ClientMsgNightAction
+	clientMsgVote          clientMsgType = wire.ClientMsgVote
+	clientMsgStartGame     clientMsgType = wire.ClientMsgStartGame
+	clientMsgBeginNight    clientMsgType = wire.ClientMsgBeginNight
+	clientMsgOpenVoting    clientMsgType = wire.ClientMsgOpenVoting
+	clientMsgClearVotes    clientMsgType = wire.ClientMsgClearVotes
+	clientMsgFinalizeVotes clientMsgType = wire.ClientMsgFinalizeVotes
+	clientMsgSetMafia      clientMsgType = wire.ClientMsgSetMafia
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled
@@ -88,13 +93,14 @@ type clientSetMafiaData struct {
 // library, so we don't model them here).
 
 // serverMsgType is the union of valid outbound `type` values.
+// String values sourced from internal/wire (see clientMsgType note).
 type serverMsgType string
 
 const (
-	serverMsgJoined   serverMsgType = "joined"
-	serverMsgRejoined serverMsgType = "rejoined"
-	serverMsgEvent    serverMsgType = "event"
-	serverMsgError    serverMsgType = "error"
+	serverMsgJoined   serverMsgType = wire.ServerMsgJoined
+	serverMsgRejoined serverMsgType = wire.ServerMsgRejoined
+	serverMsgEvent    serverMsgType = wire.ServerMsgEvent
+	serverMsgError    serverMsgType = wire.ServerMsgError
 )
 
 // serverJoinedData acknowledges a successful first-time join.

@@ -46,8 +46,10 @@ func nightActionFor(role, me string, alive map[string]struct{}) (string, string)
 		}
 	case roleDoctor:
 		// Doctor saves the lowest-numbered alive player OTHER than
-		// themselves. Self-save is rejected by the engine
-		// (ErrSelfTarget); excluding ourselves keeps the action valid.
+		// themselves. Self-save IS legal in the engine, but excluding
+		// ourselves keeps the bot's behavior deterministic and
+		// exercises the more interesting "doctor saves someone else"
+		// code path.
 		if t := pickLowestExcluding(alive, me); t != "" {
 			return "nightAction", t
 		}

@@ -31,7 +31,8 @@ type inbound interface {
 }
 
 // inJoin attaches a brand-new subscriber to the room. The subscriber
-// has no PlayerID yet; the room assigns one and replies with inJoinAck.
+// has no PlayerID yet; the room assigns one and replies with OutJoined
+// (which includes a rejoin secret for future reconnects).
 //
 // Sent by: the WebSocket handler when a client connects without a
 // rejoin token.

@@ -26,19 +26,21 @@ const (
 	FactionMafia Faction = "mafia"
 )
 
-// Faction returns which faction this role wins with.
+// Faction returns which faction this role wins with. The answer is
+// sourced from the role registry (roleSpecs in rolespec.go), which is
+// the single source of truth for per-role metadata. An unknown role
+// falls back to FactionTown — defensive, since the engine never deals
+// roles outside the registry.
 func (r Role) Faction() Faction {
-	if r == RoleMafia {
-		return FactionMafia
+	if spec, ok := roleSpecs[r]; ok {
+		return spec.Faction
 	}
 	return FactionTown
 }
 
-// Valid reports whether r is a known role.
+// Valid reports whether r is a known role — i.e. it has an entry in
+// the role registry.
 func (r Role) Valid() bool {
-	switch r {
-	case RoleVillager, RoleMafia, RoleDetective, RoleDoctor:
-		return true
-	}
-	return false
+	_, ok := roleSpecs[r]
+	return ok
 }

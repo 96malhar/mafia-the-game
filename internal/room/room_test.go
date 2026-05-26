@@ -296,7 +296,9 @@ func TestRoom_CommandsRewriteActorToSender(t *testing.T) {
 		_ = drain(s, 50*time.Millisecond)
 	}
 
-	// Start the game (any player can do this in v1; host-only TODO).
+	// Start the game. subs[0] is the host (first to join in this
+	// helper), so this is the legal path; non-host StartGame is
+	// rejected elsewhere with ErrNotHost.
 	require.NoError(t, r.submit(context.Background(), inCommand{
 		From: subs[0], Cmd: game.StartGame{},
 	}))
@@ -370,8 +372,10 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 		{game.ErrDuplicatePlayer, "duplicate_player"},
 		{game.ErrPlayerDead, "player_dead"},
 		{game.ErrNotYourAction, "not_your_action"},
+		{game.ErrNotYourTurn, "not_your_turn"},
 		{game.ErrSelfTarget, "self_target"},
 		{game.ErrRosterMismatch, "roster_mismatch"},
+		{game.ErrLobbyFull, "lobby_full"},
 		{game.ErrGameEnded, "game_ended"},
 		{game.ErrNoChange, "no_change"},
 		{game.ErrAlreadyActed, "already_acted"},

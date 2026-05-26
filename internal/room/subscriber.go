@@ -12,7 +12,7 @@ import (
 // hold up the room.
 //
 // Hitting capacity is interpreted as "this subscriber is too slow" and
-// causes the room to disconnect them. See Room.broadcast.
+// causes the room to disconnect them. See Room.appendAndBroadcast.
 const outboundChanCapacity = 64
 
 // Subscriber represents one active connection to a room — typically one

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/malhar/mafia-the-game/internal/room"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // silentLogger discards all log output so tests don't pollute stdout.
@@ -132,7 +133,7 @@ func TestWS_JoinReceivesJoinedAndPlayerJoined(t *testing.T) {
 	require.Equal(t, "event", got.Type)
 	var evMsg serverEventData
 	require.NoError(t, json.Unmarshal(got.Data, &evMsg))
-	require.Equal(t, eventTagPlayerJoined, evMsg.Event.Type)
+	require.Equal(t, wire.EventPlayerJoined, evMsg.Event.Type)
 }
 
 // TestWS_LateJoinerSeesExistingRoster proves the second player can
@@ -161,7 +162,7 @@ func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
 	require.False(t, joined.IsHost)
 	require.Len(t, joined.Events, 1,
 		"Bob's join ack should carry exactly Alice's PlayerJoined")
-	require.Equal(t, eventTagPlayerJoined, joined.Events[0].Type)
+	require.Equal(t, wire.EventPlayerJoined, joined.Events[0].Type)
 
 	// Bob's own PlayerJoined still arrives separately right after.
 	got := recvFrame(t, connB)
@@ -253,7 +254,7 @@ func TestWS_StartGameProducesPhaseChange(t *testing.T) {
 		}
 		var ev serverEventData
 		require.NoError(t, json.Unmarshal(env.Data, &ev))
-		if ev.Event.Type != eventTagPhaseChanged {
+		if ev.Event.Type != wire.EventPhaseChanged {
 			continue
 		}
 		var pc struct {
@@ -288,7 +289,7 @@ func TestWS_SetMafiaRoundTrip(t *testing.T) {
 	require.Equal(t, "event", env.Type)
 	var evMsg serverEventData
 	require.NoError(t, json.Unmarshal(env.Data, &evMsg))
-	require.Equal(t, eventTagMafiaCountChanged, evMsg.Event.Type)
+	require.Equal(t, wire.EventMafiaCountChanged, evMsg.Event.Type)
 
 	var d struct {
 		From int `json:"from"`

@@ -45,6 +45,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 func main() {
@@ -185,7 +187,7 @@ func runHostDriver(ctx context.Context, host *Bot, logger *slog.Logger, tick tim
 		return
 	}
 
-	if err := host.send(ctx, "startGame", struct{}{}); err != nil {
+	if err := host.send(ctx, wire.ClientMsgStartGame, struct{}{}); err != nil {
 		logger.Error("startGame send failed", "err", err)
 		return
 	}
@@ -201,20 +203,20 @@ func runHostDriver(ctx context.Context, host *Bot, logger *slog.Logger, tick tim
 		switch host.Phase() {
 		case phaseLobby:
 			// Roles dealt; kick off Night 1.
-			if err := host.send(ctx, "beginNight", struct{}{}); err != nil {
+			if err := host.send(ctx, wire.ClientMsgBeginNight, struct{}{}); err != nil {
 				logger.Warn("beginNight send failed", "err", err)
 				return
 			}
 		case phaseDayDiscussion:
 			if host.DayLynchResolved() {
 				// Lynch already happened this day; start next night.
-				if err := host.send(ctx, "beginNight", struct{}{}); err != nil {
+				if err := host.send(ctx, wire.ClientMsgBeginNight, struct{}{}); err != nil {
 					logger.Warn("beginNight (post-lynch) send failed", "err", err)
 					return
 				}
 			} else {
 				// Town has been discussing for `tick` — open voting.
-				if err := host.send(ctx, "openVoting", struct{}{}); err != nil {
+				if err := host.send(ctx, wire.ClientMsgOpenVoting, struct{}{}); err != nil {
 					logger.Warn("openVoting send failed", "err", err)
 					return
 				}
@@ -227,7 +229,7 @@ func runHostDriver(ctx context.Context, host *Bot, logger *slog.Logger, tick tim
 			// infinite tie loop we periodically ClearVotes to nudge
 			// strategies to re-decide. The strategy is deterministic
 			// so this is rarely needed in practice.
-			if err := host.send(ctx, "finalizeVotes", struct{}{}); err != nil {
+			if err := host.send(ctx, wire.ClientMsgFinalizeVotes, struct{}{}); err != nil {
 				logger.Warn("finalizeVotes send failed", "err", err)
 				return
 			}

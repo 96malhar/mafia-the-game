@@ -8,6 +8,8 @@ import (
 	"log/slog"
 
 	"github.com/coder/websocket"
+
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // Bot is one simulated player. It owns its WebSocket connection and a
@@ -88,7 +90,7 @@ func (b *Bot) Close() {
 // Join sends the initial {type:"join"} frame. The "joined" ack is
 // consumed by Run.
 func (b *Bot) Join(ctx context.Context) error {
-	return b.send(ctx, "join", clientJoin{Name: b.name})
+	return b.send(ctx, wire.ClientMsgJoin, clientJoin{Name: b.name})
 }
 
 // Run is the bot's main loop. It reads messages, updates state, and
@@ -122,7 +124,21 @@ func (b *Bot) Run(ctx context.Context, ended chan<- evGameEnded) error {
 			_ = json.Unmarshal(env.Data, &d)
 			b.playerID = d.PlayerID
 			b.log = b.log.With("pid", d.PlayerID)
-			b.log.Info("joined", "host", d.IsHost)
+			b.log.Info("joined", "host", d.IsHost, "replay", len(d.Events))
+			// Replay the projected event log so late-joining bots see
+			// the players who joined before them. Without this, bots
+			// 2..N start with alivePlayers containing only themselves
+			// and pick invalid targets later. handleEvent is idempotent
+			// for these events (set inserts / phase assignments).
+			for _, prior := range d.Events {
+				if done, end := b.handleEvent(ctx, prior); done {
+					select {
+					case ended <- end:
+					default:
+					}
+					return nil
+				}
+			}
 
 		case msgError:
 			var d serverError
@@ -245,10 +261,10 @@ func (b *Bot) maybeAct(ctx context.Context) {
 		// No action this phase for this role.
 	case "nightAction":
 		b.log.Info("night action", "target", target)
-		_ = b.send(ctx, "nightAction", clientNightAction{Target: target})
+		_ = b.send(ctx, wire.ClientMsgNightAction, clientNightAction{Target: target})
 	case "vote":
 		b.log.Info("vote", "target", target)
-		_ = b.send(ctx, "vote", clientVote{Target: target})
+		_ = b.send(ctx, wire.ClientMsgVote, clientVote{Target: target})
 	}
 }
 

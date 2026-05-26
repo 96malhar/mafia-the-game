@@ -1,11 +1,18 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/malhar/mafia-the-game/internal/wire"
+)
 
 // The sim treats the server as a black box reachable via the public
-// JSON wire format. We intentionally re-declare the message shapes here
-// rather than importing them from internal/transport/ws — this forces
-// any future protocol change to be conscious and bidirectional.
+// JSON wire format. We intentionally re-declare the message *shapes*
+// (structs) here rather than importing them from
+// internal/transport/ws — this forces any future shape change to be
+// conscious and bidirectional. But the *string tags* (message types,
+// event names, phase/role names) come from internal/wire so the sim
+// and server can't drift on those.
 
 // envelope is the outer JSON shape every message uses in both
 // directions.
@@ -31,10 +38,12 @@ type clientVote struct {
 // --- Server → Client (incoming) ------------------------------------------
 
 type serverJoined struct {
-	PlayerID string `json:"playerId"`
-	Secret   string `json:"secret"`
-	RoomCode string `json:"roomCode"`
-	IsHost   bool   `json:"isHost"`
+	PlayerID string          `json:"playerId"`
+	Name     string          `json:"name"`
+	Secret   string          `json:"secret"`
+	RoomCode string          `json:"roomCode"`
+	IsHost   bool            `json:"isHost"`
+	Events   []eventEnvelope `json:"events"`
 }
 
 type serverEvent struct {
@@ -98,36 +107,31 @@ type evGameEnded struct {
 	FinalRoles map[string]string `json:"finalRoles"`
 }
 
-// Wire-tag constants. Keep these stable; they must match the server's
-// emitters in internal/transport/ws/codec.go.
+// Local aliases re-export the wire constants under the sim's
+// historical lower-case names so the bot / strategy code stays
+// readable. The single source of truth lives in internal/wire.
 const (
-	msgJoined = "joined"
-	msgEvent  = "event"
-	msgError  = "error"
+	msgJoined = wire.ServerMsgJoined
+	msgEvent  = wire.ServerMsgEvent
+	msgError  = wire.ServerMsgError
 
-	evTagPlayerJoined     = "playerJoined"
-	evTagRoleAssigned     = "roleAssigned"
-	evTagPhaseChanged     = "phaseChanged"
-	evTagNightTurnStarted = "nightTurnStarted"
-	evTagPlayerKilled     = "playerKilled"
-	evTagPlayerLynched    = "playerLynched"
-	evTagDetectiveResult  = "detectiveResult"
-	evTagGameEnded        = "gameEnded"
-)
+	evTagPlayerJoined     = wire.EventPlayerJoined
+	evTagRoleAssigned     = wire.EventRoleAssigned
+	evTagPhaseChanged     = wire.EventPhaseChanged
+	evTagNightTurnStarted = wire.EventNightTurnStarted
+	evTagPlayerKilled     = wire.EventPlayerKilled
+	evTagPlayerLynched    = wire.EventPlayerLynched
+	evTagDetectiveResult  = wire.EventDetectiveResult
+	evTagGameEnded        = wire.EventGameEnded
 
-// Phase string constants — these correspond to game.Phase values.
-const (
-	phaseLobby         = "lobby"
-	phaseNight         = "night"
-	phaseDayDiscussion = "day_discussion"
-	phaseDayVote       = "day_vote"
-	phaseEnded         = "ended"
-)
+	phaseLobby         = wire.PhaseLobby
+	phaseNight         = wire.PhaseNight
+	phaseDayDiscussion = wire.PhaseDayDiscussion
+	phaseDayVote       = wire.PhaseDayVote
+	phaseEnded         = wire.PhaseEnded
 
-// Role string constants.
-const (
-	roleVillager  = "villager"
-	roleMafia     = "mafia"
-	roleDoctor    = "doctor"
-	roleDetective = "detective"
+	roleVillager  = wire.RoleVillager
+	roleMafia     = wire.RoleMafia
+	roleDoctor    = wire.RoleDoctor
+	roleDetective = wire.RoleDetective
 )

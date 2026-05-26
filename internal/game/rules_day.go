@@ -80,9 +80,11 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 // "Unique plurality" means: there is exactly one target with the
 // highest vote count, and that count is at least 1.
 //
-// The vote map is NOT cleared here. The caller (AdvancePhase) decides
-// whether to extend the day (clear votes, stay in PhaseDayVote) or end
-// the day (transition to Night with no lynch).
+// The vote map is NOT cleared here. The caller is FinalizeVotes,
+// which is host-driven (no auto-advance from PhaseDayVote): on a
+// unique plurality the targeted player is lynched and the phase
+// returns to DayDiscussion; on a tie the host calls ClearVotes for
+// a re-vote or FinalizeVotes again to end the day with no lynch.
 func (g *Game) resolveDayVote() (PlayerID, bool) {
 	counts := make(map[PlayerID]int, len(g.state.votes))
 	for _, target := range g.state.votes {

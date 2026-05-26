@@ -8,6 +8,7 @@ import (
 
 	"github.com/malhar/mafia-the-game/internal/game"
 	"github.com/malhar/mafia-the-game/internal/room"
+	"github.com/malhar/mafia-the-game/internal/wire"
 )
 
 // --- Inbound (client -> server) decoding ---------------------------------
@@ -126,7 +127,7 @@ func TestEncodeOutbound_Joined(t *testing.T) {
 	require.Equal(t, "ABCD", data.RoomCode)
 	require.False(t, data.IsHost)
 	require.Len(t, data.Events, 1)
-	require.Equal(t, eventTagPlayerJoined, data.Events[0].Type)
+	require.Equal(t, wire.EventPlayerJoined, data.Events[0].Type)
 }
 
 // The very first joiner gets no prior events; this guards the
@@ -165,9 +166,9 @@ func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
 	require.Equal(t, "p1", data.PlayerID)
 	require.Equal(t, "Alice", data.Name)
 	require.Len(t, data.Events, 3)
-	require.Equal(t, eventTagPlayerJoined, data.Events[0].Type)
-	require.Equal(t, eventTagGameStarted, data.Events[1].Type)
-	require.Equal(t, eventTagPhaseChanged, data.Events[2].Type)
+	require.Equal(t, wire.EventPlayerJoined, data.Events[0].Type)
+	require.Equal(t, wire.EventGameStarted, data.Events[1].Type)
+	require.Equal(t, wire.EventPhaseChanged, data.Events[2].Type)
 }
 
 func TestEncodeOutbound_AllEventTypes(t *testing.T) {

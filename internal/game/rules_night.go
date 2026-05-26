@@ -1,26 +1,36 @@
 package game
 
-// applyNightAction records one role-specific night action.
+// applyNightAction records one role-specific night action AND advances
+// the turn machinery.
 //
-// This handler is now a thin wrapper over the role registry in
-// rolespec.go: generic structural checks live here, and role-specific
-// validation lives in each role's NightAction.Validate hook.
+// This handler is a thin wrapper over the role registry in rolespec.go:
+// generic structural checks live here, and role-specific validation
+// lives in each role's NightAction.Validate hook.
 //
 // Generic validation:
 //   - PhaseNight only.
 //   - Actor and Target must be known and alive.
+//   - Actor's role must equal currentNightRole — the strict turn-order
+//     gate that makes the game playable in person ("Mafia, wake up…
+//     now Detective"). The error is ErrNotYourTurn (distinct from
+//     ErrNotYourAction so the UI can tell "wrong role" from "wrong
+//     time").
 //   - Actor must be a role with a NightAction in the registry.
-//     (Villagers, and any future role lacking a night action, are
-//     rejected with ErrNotYourAction.)
+//   - For the mafia turn the "actor" may be any living mafia (faction-
+//     collective); first valid submission locks the kill target and
+//     ends the turn for the whole faction.
 //   - Each actor commits once per night (ErrAlreadyActed).
 //
-// Role-specific validation is delegated to spec.NightAction.Validate
-// (e.g., "mafia cannot kill mafia", "doctor cannot self-save on n1",
-// "detective cannot self-investigate").
+// Role-specific validation is delegated to spec.NightAction.Validate.
 //
-// On success this emits a single NightActionRecorded scoped to the
-// actor's faction. Effects (kill/save/info) are emitted later by
-// resolveNight when AdvancePhase ends Night.
+// Emitted events (atomic batch):
+//
+//	NightActionRecorded{actor, target, faction}    — faction-only
+//	NightTurnEnded{role: currentNightRole}         — public
+//	NightTurnStarted{role: nextRole}               — public, if queue non-empty
+//
+// If the queue is now empty, the room will follow up with an
+// AdvancePhase to resolve the night.
 func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -39,7 +49,17 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 
 	spec, ok := roleSpecs[actor.role]
 	if !ok || spec.NightAction == nil {
+		// Roles with no night action (villager) are categorically
+		// rejected regardless of whose turn it is. This keeps the
+		// "you have no night action" error stable for UI gating.
 		return nil, ErrNotYourAction
+	}
+
+	// Strict turn-order gate. The current role MUST match the actor's
+	// role; mafia is the faction-collective case (any mafia can submit
+	// when it's the mafia's turn).
+	if actor.role != g.state.currentNightRole {
+		return nil, ErrNotYourTurn
 	}
 
 	if c.Target == "" {
@@ -67,11 +87,57 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	}
 	g.state.pendingNight[c.Actor] = c.Target
 
-	return []Event{NightActionRecorded{
-		Actor:   c.Actor,
-		Target:  c.Target,
-		Faction: actor.role.Faction(),
-	}}, nil
+	// First valid submission ends the turn. For mafia (faction-
+	// collective), this is intentional: only one kill per night,
+	// decided by whichever mafia submits first.
+	events := []Event{
+		NightActionRecorded{
+			Actor:   c.Actor,
+			Target:  c.Target,
+			Faction: actor.role.Faction(),
+		},
+	}
+
+	// Detective gets immediate private feedback ("X IS / is NOT a
+	// mafia member"). We emit it BEFORE NightTurnEnded so the modal
+	// pops the moment the action is recorded — much better UX than
+	// waiting for the whole night to resolve. The detective's
+	// reveal-phase Apply is now a no-op (see rolespec.go); the
+	// information is purely role-based (target.role.Faction()), so
+	// it doesn't depend on the resolve step at all.
+	if actor.role == RoleDetective {
+		events = append(events, DetectiveResult{
+			Detective: actor.id,
+			Target:    target.id,
+			IsMafia:   target.role.Faction() == FactionMafia,
+		})
+	}
+
+	events = append(events, NightTurnEnded{Role: g.state.currentNightRole})
+	g.state.currentNightRole = ""
+	g.state.nightTurnDeadlineMillis = 0
+
+	// After a detective action we INTENTIONALLY do not start the next
+	// turn here. The engine state has currentNightRole="" with the
+	// queue still populated; the room layer schedules a brief pause
+	// (so the detective can read their result modal) and then sends
+	// AdvancePhase to pop the next role. Tests that drive the engine
+	// directly must do the same — see playNight in rules_phase_test.go.
+	if actor.role == RoleDetective {
+		return events, nil
+	}
+
+	// If the queue still has roles to act, pop the next one. Otherwise
+	// — this was the last role's turn — resolve the night now so the
+	// behaviour matches the "final skip resolves the night" case. This
+	// removes a footgun where a caller would have to know whether the
+	// last turn was an action vs a timeout.
+	if next := g.beginNextNightTurn(); len(next) > 0 {
+		events = append(events, next...)
+		return events, nil
+	}
+	events = append(events, g.resolveAndExitNight()...)
+	return events, nil
 }
 
 // resolveNight runs each scheduled night action through its role's

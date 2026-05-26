@@ -8,9 +8,9 @@ package game
 // votes are visible. Discussion forces social deduction; the vote phase
 // then crystallizes a decision against a public tally.
 //
-// On the very first night the doctor may not self-save and the detective
-// has not yet investigated anyone — those nuances live in the rules,
-// not in the Phase type itself.
+// Role-specific restrictions (e.g. the detective can never investigate
+// themselves) live in each role's NightAction.Validate hook in
+// rolespec.go, not in the Phase type itself.
 type Phase string
 
 const (

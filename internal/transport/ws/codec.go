@@ -13,10 +13,13 @@ import (
 // We use lowerCamelCase to match the JSON field convention.
 const (
 	eventTagGameCreated         = "gameCreated"
+	eventTagMafiaCountChanged   = "mafiaCountChanged"
 	eventTagPlayerJoined        = "playerJoined"
 	eventTagGameStarted         = "gameStarted"
 	eventTagRoleAssigned        = "roleAssigned"
 	eventTagPhaseChanged        = "phaseChanged"
+	eventTagNightTurnStarted    = "nightTurnStarted"
+	eventTagNightTurnEnded      = "nightTurnEnded"
 	eventTagNightActionRecorded = "nightActionRecorded"
 	eventTagPlayerKilled        = "playerKilled"
 	eventTagPlayerSaved         = "playerSaved"
@@ -24,7 +27,7 @@ const (
 	eventTagVoteCast            = "voteCast"
 	eventTagVoteChanged         = "voteChanged"
 	eventTagVoteRetracted       = "voteRetracted"
-	eventTagVoteExtended        = "voteExtended"
+	eventTagVoteCleared         = "voteCleared"
 	eventTagPlayerLynched       = "playerLynched"
 	eventTagGameEnded           = "gameEnded"
 )
@@ -44,7 +47,16 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	switch v := e.(type) {
 	case game.GameCreated:
 		tag = eventTagGameCreated
-		data = kv{"gameId": string(v.GameID), "roles": rolesToStrings(v.Roles), "seed": v.Seed}
+		data = kv{
+			"gameId":     string(v.GameID),
+			"minPlayers": v.MinPlayers,
+			"maxPlayers": v.MaxPlayers,
+			"mafiaCount": v.MafiaCount,
+			"seed":       v.Seed,
+		}
+	case game.MafiaCountChanged:
+		tag = eventTagMafiaCountChanged
+		data = kv{"from": v.From, "to": v.To}
 	case game.PlayerJoined:
 		tag = eventTagPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
@@ -57,6 +69,12 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.PhaseChanged:
 		tag = eventTagPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
+	case game.NightTurnStarted:
+		tag = eventTagNightTurnStarted
+		data = kv{"role": string(v.Role), "deadline": v.Deadline, "phantom": v.Phantom}
+	case game.NightTurnEnded:
+		tag = eventTagNightTurnEnded
+		data = kv{"role": string(v.Role)}
 	case game.NightActionRecorded:
 		tag = eventTagNightActionRecorded
 		data = kv{"actor": string(v.Actor), "target": string(v.Target), "faction": string(v.Faction)}
@@ -78,8 +96,8 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.VoteRetracted:
 		tag = eventTagVoteRetracted
 		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
-	case game.VoteExtended:
-		tag = eventTagVoteExtended
+	case game.VoteCleared:
+		tag = eventTagVoteCleared
 		data = kv{"day": v.Day}
 	case game.PlayerLynched:
 		tag = eventTagPlayerLynched
@@ -105,11 +123,17 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 	switch m := msg.(type) {
 	case room.OutJoined:
+		evs, errs := encodeEventsBatch(m.Events)
+		if len(errs) > 0 {
+			return nil, true, errs[0]
+		}
 		raw, err := marshalEnvelope(string(serverMsgJoined), serverJoinedData{
 			PlayerID: string(m.PlayerID),
+			Name:     m.Name,
 			Secret:   m.Secret,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
+			Events:   evs,
 		})
 		return raw, true, err
 
@@ -120,6 +144,7 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 		}
 		raw, err := marshalEnvelope(string(serverMsgRejoined), serverRejoinedData{
 			PlayerID: string(m.PlayerID),
+			Name:     m.Name,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
 			Events:   evs,
@@ -193,11 +218,27 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		}
 		return clientMsgVote, d, nil
 
+	case clientMsgSetMafia:
+		var d clientSetMafiaData
+		if err := unmarshalData(env.Data, &d); err != nil {
+			return "", nil, err
+		}
+		return clientMsgSetMafia, d, nil
+
 	case clientMsgStartGame:
 		return clientMsgStartGame, struct{}{}, nil
 
-	case clientMsgAdvancePhase:
-		return clientMsgAdvancePhase, struct{}{}, nil
+	case clientMsgBeginNight:
+		return clientMsgBeginNight, struct{}{}, nil
+
+	case clientMsgOpenVoting:
+		return clientMsgOpenVoting, struct{}{}, nil
+
+	case clientMsgClearVotes:
+		return clientMsgClearVotes, struct{}{}, nil
+
+	case clientMsgFinalizeVotes:
+		return clientMsgFinalizeVotes, struct{}{}, nil
 
 	default:
 		return "", nil, badEnvelopef("unknown type %q", env.Type)
@@ -231,24 +272,25 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgVote:
 		d := data.(clientVoteData)
 		return game.DayVote{Target: game.PlayerID(d.Target)}, true
+	case clientMsgSetMafia:
+		d := data.(clientSetMafiaData)
+		return game.SetMafiaCount{Count: d.Count}, true
 	case clientMsgStartGame:
 		return game.StartGame{}, true
-	case clientMsgAdvancePhase:
-		return game.AdvancePhase{}, true
+	case clientMsgBeginNight:
+		return game.BeginNight{}, true
+	case clientMsgOpenVoting:
+		return game.OpenVoting{}, true
+	case clientMsgClearVotes:
+		return game.ClearVotes{}, true
+	case clientMsgFinalizeVotes:
+		return game.FinalizeVotes{}, true
 	default:
 		return nil, false
 	}
 }
 
 // --- Small utility shims --------------------------------------------------
-
-func rolesToStrings(roles []game.Role) []string {
-	out := make([]string, len(roles))
-	for i, r := range roles {
-		out[i] = string(r)
-	}
-	return out
-}
 
 func rolesMapToStrings(m map[game.PlayerID]game.Role) map[string]string {
 	out := make(map[string]string, len(m))

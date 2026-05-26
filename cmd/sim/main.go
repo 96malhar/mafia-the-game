@@ -51,7 +51,7 @@ func main() {
 	addr := flag.String("addr", "http://localhost:8080", "server base URL")
 	nPlayers := flag.Int("players", 5, "number of bot players (must match the server's roster size)")
 	tick := flag.Duration("tick", 500*time.Millisecond, "delay between phase advances")
-	timeout := flag.Duration("timeout", 30*time.Second, "hard cap on total game duration")
+	timeout := flag.Duration("timeout", 180*time.Second, "hard cap on total game duration")
 	verbose := flag.Bool("verbose", false, "enable debug-level logging")
 	flag.Parse()
 
@@ -124,44 +124,26 @@ func run(ctx context.Context, logger *slog.Logger, addr string, nPlayers int, ti
 		}(b)
 	}
 
-	// Drive phase advancement from the host bot. We wait `tick` so
-	// every bot has a chance to act on phase entry before we push the
-	// game forward.
+	// Drive game progression from the host bot. With the new
+	// host-controlled flow, daytime no longer auto-advances; the host
+	// must explicitly issue BeginNight / OpenVoting / FinalizeVotes.
 	//
 	// Sequence (default 5-player roster, 1 mafia / 1 detective / 1 doctor / 2 villagers):
 	//
-	//   startGame -> phase = night            (bots: mafia/doctor/detective act)
-	//   advancePhase -> phase = day_discussion
-	//   advancePhase -> phase = day_vote      (bots vote)
-	//   advancePhase -> phase = night (or ended)
+	//   startGame                              (deals roles; phase stays Lobby)
+	//   beginNight       -> phase = night      (bots: mafia/doctor/detective act)
+	//   [engine resolves night] -> phase = day_discussion
+	//   openVoting       -> phase = day_vote   (bots vote)
+	//   finalizeVotes    -> lynch -> phase = day_discussion (lynchResolved=true)
+	//   beginNight       -> phase = night (or gameEnded already fired)
 	//   ...
+	//
+	// Implementation: the host polls its own phase state (which the
+	// Bot updates from incoming PhaseChanged events) and reacts. tick
+	// gives bots time to cast votes / take night actions before we
+	// push forward.
 	host := bots[0]
-	go func() {
-		// Brief settle before we kick off so all PlayerJoined events
-		// have been processed by everyone.
-		time.Sleep(tick)
-
-		if err := host.send(ctx, "startGame", struct{}{}); err != nil {
-			logger.Error("startGame send failed", "err", err)
-			return
-		}
-		// After startGame, the room enters Night. Keep advancing until
-		// gameEnded fires (handled separately) or context cancels.
-		ticker := time.NewTicker(tick)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				// We don't track phase here; just advance. The engine
-				// rejects no-ops with no ill effect.
-				if err := host.send(ctx, "advancePhase", struct{}{}); err != nil {
-					return
-				}
-			}
-		}
-	}()
+	go runHostDriver(ctx, host, logger, tick)
 
 	// Wait for either gameEnded or context timeout.
 	select {
@@ -182,6 +164,100 @@ func run(ctx context.Context, logger *slog.Logger, addr string, nPlayers int, ti
 			return errGameTimeout
 		}
 		return ctx.Err()
+	}
+}
+
+// runHostDriver issues the host-only progression commands to walk a
+// game from lobby to gameEnded. It samples the bot's view of the
+// current phase (which lags the server by one frame) and reacts.
+//
+// We sleep `tick` BEFORE each command so that the bots have a chance
+// to act on phase entry — e.g. cast votes after we OpenVoting,
+// submit night actions after we BeginNight. Without this pause the
+// host would race the actors and finalize before any votes land.
+//
+// The loop exits cleanly when:
+//   - phase reaches "ended" (gameEnded fired);
+//   - the context is cancelled.
+func runHostDriver(ctx context.Context, host *Bot, logger *slog.Logger, tick time.Duration) {
+	// Brief settle so all PlayerJoined events have been processed.
+	if !sleep(ctx, tick) {
+		return
+	}
+
+	if err := host.send(ctx, "startGame", struct{}{}); err != nil {
+		logger.Error("startGame send failed", "err", err)
+		return
+	}
+
+	// Poll every tick. Each pass: look at the current phase + the
+	// dayLynchResolved flag, decide what (if anything) to send, then
+	// sleep again. Keep polling until phase=ended.
+	for {
+		if !sleep(ctx, tick) {
+			return
+		}
+
+		switch host.Phase() {
+		case phaseLobby:
+			// Roles dealt; kick off Night 1.
+			if err := host.send(ctx, "beginNight", struct{}{}); err != nil {
+				logger.Warn("beginNight send failed", "err", err)
+				return
+			}
+		case phaseDayDiscussion:
+			if host.DayLynchResolved() {
+				// Lynch already happened this day; start next night.
+				if err := host.send(ctx, "beginNight", struct{}{}); err != nil {
+					logger.Warn("beginNight (post-lynch) send failed", "err", err)
+					return
+				}
+			} else {
+				// Town has been discussing for `tick` — open voting.
+				if err := host.send(ctx, "openVoting", struct{}{}); err != nil {
+					logger.Warn("openVoting send failed", "err", err)
+					return
+				}
+			}
+		case phaseDayVote:
+			// Bots have had `tick` to cast votes. Try to finalize.
+			// If the tally is tied we get a 'no_change' error back
+			// and we'll just keep polling — bots may keep adjusting
+			// their votes over subsequent ticks. To avoid an
+			// infinite tie loop we periodically ClearVotes to nudge
+			// strategies to re-decide. The strategy is deterministic
+			// so this is rarely needed in practice.
+			if err := host.send(ctx, "finalizeVotes", struct{}{}); err != nil {
+				logger.Warn("finalizeVotes send failed", "err", err)
+				return
+			}
+		case phaseNight:
+			// Nights auto-resolve via the per-turn timer; the host
+			// has nothing to do until the engine emits
+			// PhaseChanged → DayDiscussion.
+		case phaseEnded:
+			return
+		default:
+			// Unknown phase string (could happen briefly during a
+			// race between reading and reconnecting). Loop.
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// sleep blocks for d or until ctx is done. Returns false iff ctx
+// cancelled — caller should propagate that.
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 

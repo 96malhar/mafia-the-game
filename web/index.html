@@ -2,99 +2,1230 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      viewport-fit=cover tells iOS Safari to extend the layout under
+      notches / the dynamic island; we then opt INTO safe areas
+      explicitly on the body via env(safe-area-inset-*). Without
+      viewport-fit=cover the safe-area values are 0.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!--
+      Theme color tints the iOS Safari toolbar / Android nav to match
+      the app background, so the chrome blends in rather than
+      sandwiching the dark UI between two white bars.
+    -->
+    <meta name="theme-color" content="#0f172a" />
     <title>Mafia</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /*
+       * iOS Safari respects env(safe-area-inset-*) only when we use
+       * it explicitly. Apply it as padding on <body> so every
+       * descendant gets a visual breathing room from the notch /
+       * home indicator without each component needing to opt in.
+       *
+       * Using max(env(...), 0px) is the safe pattern for browsers
+       * that don't understand env(): they parse it as max(0px) = 0,
+       * which matches the desktop default.
+       */
+      body {
+        padding-top: max(env(safe-area-inset-top), 0px);
+        padding-bottom: max(env(safe-area-inset-bottom), 0px);
+        padding-left: max(env(safe-area-inset-left), 0px);
+        padding-right: max(env(safe-area-inset-right), 0px);
+      }
+      /*
+       * touch-manipulation kills the iOS Safari 300ms tap delay on
+       * elements that don't need double-tap-to-zoom (every button
+       * in this app). Set globally so we don't have to remember it
+       * per-button.
+       */
+      button, [role="button"], a {
+        touch-action: manipulation;
+      }
+    </style>
   </head>
   <body class="min-h-screen bg-slate-900 text-slate-100 antialiased">
-    <main class="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-10">
-      <header class="mb-6 flex items-baseline justify-between">
-        <h1 class="text-4xl font-bold tracking-tight">Mafia</h1>
-        <p id="status" class="text-sm text-slate-400">offline</p>
+    <main class="mx-auto flex min-h-screen max-w-3xl flex-col px-4 py-6 sm:px-6 sm:py-10">
+      <header class="mb-6 flex items-baseline justify-between gap-3">
+        <h1 class="text-3xl font-bold tracking-tight sm:text-4xl">Mafia</h1>
+        <p id="status" class="shrink-0 text-sm text-slate-400">offline</p>
       </header>
 
-      <!-- Lobby (room create / join) -->
+      <!--
+        Lobby = pre-game landing screen.
+        One name input drives BOTH actions. When the URL carries
+        ?room=ZMPP we hide "Create" and surface a big "Join ZMPP" CTA,
+        because at that point the user clearly came from a share link.
+      -->
       <section id="lobby" class="space-y-4 rounded-lg border border-slate-700 bg-slate-800/40 p-6">
+        <h2 id="lobby-title" class="text-lg font-semibold">Start a game</h2>
+        <p id="lobby-subtitle" class="text-sm text-slate-400">Pick a name. Create a room or join one via a share link.</p>
+
         <div class="flex flex-col gap-2">
           <label class="text-xs uppercase tracking-wide text-slate-400" for="name">Your name</label>
-          <input id="name" class="rounded border border-slate-700 bg-slate-900 px-3 py-2" placeholder="Alice" />
+          <!--
+            text-base (16px) is REQUIRED on inputs to suppress iOS
+            Safari's auto-zoom on focus. Anything smaller and the
+            viewport zooms in mid-game and never zooms out. Same
+            reasoning applies to #manual-code below.
+          -->
+          <input id="name" class="min-h-[44px] rounded border border-slate-700 bg-slate-900 px-3 py-2 text-base"
+                 placeholder="Alice" autocomplete="off" maxlength="32" />
         </div>
-        <div class="grid grid-cols-2 gap-3">
-          <button id="create" class="rounded bg-emerald-600 px-4 py-2 font-medium hover:bg-emerald-500">
-            Create room
+
+        <div id="lobby-actions" class="flex flex-col gap-2 sm:flex-row sm:gap-3">
+          <button id="create"
+                  class="inline-flex min-h-[44px] items-center justify-center rounded bg-emerald-600 px-4 py-2 font-medium hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled>
+            Create new room
           </button>
-          <div class="flex gap-2">
-            <input id="code" class="flex-1 rounded border border-slate-700 bg-slate-900 px-3 py-2 uppercase" placeholder="ABCD" maxlength="4" />
-            <button id="join" class="rounded bg-indigo-600 px-4 py-2 font-medium hover:bg-indigo-500">Join</button>
-          </div>
+          <button id="join"
+                  class="hidden min-h-[44px] inline-flex items-center justify-center rounded bg-indigo-600 px-4 py-2 font-medium hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled>
+            Join room <span id="join-code" class="ml-1 font-mono">----</span>
+          </button>
         </div>
+
+        <details class="text-sm text-slate-400">
+          <summary class="cursor-pointer select-none py-1">Join by code instead</summary>
+          <div class="mt-2 flex gap-2">
+            <input id="manual-code"
+                   class="min-h-[44px] flex-1 rounded border border-slate-700 bg-slate-900 px-3 py-2 text-base font-mono uppercase tracking-widest"
+                   placeholder="ABCD" maxlength="4" autocomplete="off" />
+            <button id="manual-join"
+                    class="inline-flex min-h-[44px] items-center justify-center rounded bg-slate-700 px-4 py-2 hover:bg-slate-600">Go</button>
+          </div>
+        </details>
       </section>
 
       <!-- In-game view -->
       <section id="game" class="mt-6 hidden space-y-4">
-        <div class="flex items-center justify-between rounded border border-slate-700 bg-slate-800/40 p-4">
-          <div>
+        <!-- Share strip: visible while in the room. Anyone can copy. -->
+        <div class="flex flex-col gap-2 rounded border border-emerald-700/60 bg-emerald-900/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="text-xs uppercase tracking-wide text-emerald-300">Invite link</div>
+            <div id="share-url" class="truncate font-mono text-sm">…</div>
+          </div>
+          <button id="copy-link"
+                  class="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500">
+            Copy link
+          </button>
+        </div>
+
+        <!--
+          Identity / room strip. Three equal columns on phones, the
+          long player name truncates rather than pushing the room
+          code off-screen. min-w-0 on each column is the magic that
+          enables truncation inside a flex parent.
+        -->
+        <div class="grid grid-cols-3 gap-3 rounded border border-slate-700 bg-slate-800/40 p-3 sm:p-4">
+          <div class="min-w-0">
             <div class="text-xs uppercase tracking-wide text-slate-400">Room</div>
-            <div id="room-code" class="font-mono text-2xl">----</div>
+            <div id="room-code" class="truncate font-mono text-xl sm:text-2xl">----</div>
           </div>
-          <div>
+          <div class="min-w-0">
             <div class="text-xs uppercase tracking-wide text-slate-400">You</div>
-            <div id="me" class="font-mono">—</div>
+            <div id="me" class="truncate font-mono text-sm sm:text-base">—</div>
           </div>
-          <div>
+          <div class="min-w-0">
             <div class="text-xs uppercase tracking-wide text-slate-400">Role</div>
-            <div id="my-role" class="font-mono">—</div>
-          </div>
-          <div>
-            <div class="text-xs uppercase tracking-wide text-slate-400">Phase</div>
-            <div id="phase" class="font-mono">lobby</div>
+            <div id="my-role" class="truncate font-mono text-sm sm:text-base">—</div>
           </div>
         </div>
 
-        <div class="flex flex-wrap gap-2">
-          <button id="start" class="rounded bg-emerald-600 px-3 py-2 text-sm hover:bg-emerald-500">Start game</button>
-          <button id="advance" class="rounded bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600">Advance phase</button>
-        </div>
+        <!--
+          Phase banner. Color + headline + helper text are all driven
+          from the client-side reducer in renderActionPanel(). The
+          #action-extras slot is where phase-specific affordances
+          (e.g. "Submitted: Alice", "Waiting for the host…") render.
+        -->
+        <!--
+          Narrator card. Echoes the most recent spoken cue as large
+          on-screen text so (a) deaf / hard-of-hearing players have an
+          equal experience, (b) hosts can confirm the cue fired, and
+          (c) devices without speechSynthesis still get the prompts and
+          can read them aloud manually.
+        -->
+        <div id="narrator-card"
+             class="hidden rounded border border-amber-500/60 bg-amber-950/60 px-4 py-3 text-center text-lg font-semibold tracking-wide text-amber-100"
+             aria-live="polite"></div>
+
+
+        <section id="action-panel"
+                 class="rounded border p-4 transition-colors duration-300">
+          <div class="flex items-baseline justify-between gap-3">
+            <div>
+              <div id="phase-label" class="text-xs uppercase tracking-widest opacity-70">phase</div>
+              <h2 id="phase-headline" class="text-xl font-semibold">Lobby</h2>
+            </div>
+            <div id="phase-day" class="font-mono text-sm opacity-70"></div>
+          </div>
+          <p id="phase-hint" class="mt-1 text-sm opacity-80">Waiting for the host to start the game.</p>
+
+          <!--
+            Night spectator banner. Shows whose turn it is and a
+            countdown bar to the deadline. Visible only during Night,
+            built dynamically by renderActionPanel.
+          -->
+          <div id="night-banner" class="hidden mt-3 rounded border border-indigo-500/40 bg-indigo-950/60 p-3">
+            <div class="flex items-baseline justify-between gap-3">
+              <div id="night-banner-text" class="text-sm font-medium text-indigo-100"></div>
+              <div id="night-banner-countdown" class="font-mono text-xs text-indigo-300"></div>
+            </div>
+            <div class="mt-2 h-1.5 overflow-hidden rounded bg-indigo-950">
+              <div id="night-banner-bar" class="h-full bg-indigo-400 transition-all" style="width: 100%"></div>
+            </div>
+          </div>
+
+          <div id="action-extras" class="mt-3 flex flex-wrap items-center gap-2"></div>
+        </section>
 
         <div>
-          <h2 class="mb-2 text-xs uppercase tracking-wide text-slate-400">Event log</h2>
-          <ul id="events" class="max-h-96 overflow-auto rounded border border-slate-700 bg-slate-950/40 p-3 font-mono text-sm leading-relaxed"></ul>
+          <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="text-xs uppercase tracking-wide text-slate-400">Players</h2>
+            <span id="player-count" class="text-xs text-slate-500">0</span>
+          </div>
+          <!--
+            Single column on mobile (taller, easier to scan and tap),
+            two columns on tablet+. Bumped padding to p-2 sm:p-3 so
+            the row chrome doesn't waste 12px of horizontal real
+            estate on phones.
+          -->
+          <ul id="players"
+              class="grid grid-cols-1 gap-2 rounded border border-slate-700 bg-slate-950/40 p-2 sm:grid-cols-2 sm:p-3">
+            <li class="text-sm text-slate-500">Waiting for players to join…</li>
+          </ul>
         </div>
+
+        <!--
+          Error surface. Hidden until something goes wrong (the server
+          rejects a command, the WebSocket can't parse a frame, etc).
+          Replaces the old "Event log" debug panel, which echoed every
+          server frame as JSON — too noisy for end users, and the same
+          information is in DevTools for anyone who needs it.
+        -->
+        <div id="errors"
+             class="hidden rounded border border-rose-500/60 bg-rose-950/50 p-3 text-sm text-rose-200"></div>
       </section>
+
+      <!--
+        Detective result modal. Placed as a SIBLING of #game (not
+        nested inside) because:
+
+        On a live result, the engine emits detectiveResult in the
+        same WS batch as phaseChanged → day_discussion. The day
+        phase repaint and narrator card animation happen on the
+        same tick. If the modal were nested deeper in the action
+        panel chain, a parent re-render could blow it away. Sitting
+        as a top-level fixed overlay sibling of #game keeps it
+        isolated from the rest of the layout machinery.
+
+        Shown only on the detective's own device when a
+        detectiveResult event arrives (server-side PrivateTo
+        visibility filter guarantees no one else receives the
+        event). Color is tied to the result: rose = mafia hit,
+        emerald = town. Both variants' classes are listed in the
+        static class attribute below so Tailwind CDN's JIT picks
+        them up (it scans HTML, not reliably JS strings) — guarded
+        by "hidden" so they have no visual effect until the modal
+        fires.
+      -->
+      <div id="detective-modal"
+           class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-6 backdrop-blur-sm"
+           role="dialog"
+           aria-modal="true"
+           aria-live="polite">
+        <div id="detective-modal-card"
+             class="max-w-lg rounded-xl border-2 px-8 py-8 text-center shadow-2xl
+                    border-rose-500/70 bg-rose-950/95 text-rose-100
+                    border-emerald-500/70 bg-emerald-950/95 text-emerald-100">
+          <div id="detective-modal-eyebrow" class="text-sm uppercase tracking-widest opacity-70">Investigation result</div>
+          <div id="detective-modal-body" class="mt-4 text-3xl font-bold tracking-wide leading-snug"></div>
+          <button id="detective-modal-dismiss"
+                  class="mt-8 rounded-lg bg-slate-800 px-6 py-3 text-base font-semibold text-white hover:bg-slate-700">
+            Got it
+          </button>
+        </div>
+      </div>
     </main>
 
     <script>
-      // --- minimal client ------------------------------------------------
-      // Stores per-room identity so a reload reconnects via ?playerId&secret.
-      const storageKey = (code) => `mafia.room.${code}`;
+      // ----- helpers ------------------------------------------------------
 
       const $ = (id) => document.getElementById(id);
+
+      // Per-tab rejoin credentials. sessionStorage (not localStorage) so
+      // opening a second tab to the same room joins as a NEW player
+      // instead of evicting the original tab's subscriber.
+      const storageKey = (code) => `mafia.room.${code}`;
+
       const status = $("status");
-      const events = $("events");
+      const errorPanel = $("errors");
 
       let ws = null;
       let myId = null;
+      let myIsHost = false;
       let myRole = null;
+
+      // Client-side roster reducer. Keyed by PlayerID. The server is
+      // the source of truth; we just fold the public event stream into
+      // a small local model so the UI can render a who's-here list
+      // without re-querying anything. Rebuilt from scratch on every
+      // (re)join so a replay never duplicates entries.
+      //
+      // Shape: { [pid]: { id, name, alive, deathCause, revealedRole } }
+      let players = new Map();
+
+      // Per-phase state. All of these are reset on phaseChanged so a
+      // replay reconstructs them correctly from the event stream.
+      //   phase        — current Phase string ("lobby", "night", …).
+      //   day          — Day number from the engine (0 on first night).
+      //   myAction     — Target this player submitted THIS night.
+      //                  Populated from the actor's own
+      //                  nightActionRecorded event.
+      //   votes        — Map<voter, target> for the current day_vote.
+      //   winner       — Faction string set by gameEnded.
+      let phase = "lobby";
+      let day = 0;
+      let myAction = null;
+      let votes = new Map();
+      let winner = null;
+      // dayLynchResolved mirrors the engine's same-named flag. Set to
+      // true when a PlayerLynched event arrives during day_vote (the
+      // PhaseChanged → day_discussion that follows is the post-lynch
+      // discussion). Cleared on any PhaseChanged into "night". The
+      // host UI keys off this to decide whether to show
+      // "Open voting" (false) or "Begin night" (true) while sitting
+      // in day_discussion.
+      let dayLynchResolved = false;
+      // rolesDealt mirrors the engine: true once StartGame has fired
+      // and every player has been assigned a role. The host's lobby
+      // UI swaps "Start game" → "Begin night" once this becomes true.
+      let rolesDealt = false;
+
+      // Lobby configuration mirrored from the server's GameCreated /
+      // MafiaCountChanged events. Defaults are placeholders until the
+      // gameCreated event from the server overwrites them — we keep
+      // them sane (5/20/1) so the UI never flashes nonsense if the
+      // events haven't arrived yet (e.g. brief race on first paint).
+      let lobbyMinPlayers = 5;
+      let lobbyMaxPlayers = 20;
+      let mafiaCount = 1;
+
+      // --- Night turn state (mirrors the engine's currentNightRole) ---
+      //
+      // During PhaseNight only one role acts at a time, in canonical
+      // order Mafia → Detective → Doctor. The currently-acting role
+      // (and its deadline) drive the spectator banner, the per-row
+      // Target buttons, the countdown bar, and — for the host — the
+      // audio narration cues.
+      //
+      // currentNightRole is the engine's authoritative answer: "" between
+      // turns and outside Night, otherwise one of "mafia" / "detective"
+      // / "doctor". nightTurnDeadlineMs is unix-millis at which the
+      // turn auto-passes (engine + room contract; the room stamps the
+      // wall-clock deadline before broadcasting).
+      let currentNightRole = "";
+      let nightTurnDeadlineMs = 0;
+      // currentNightTurnPhantom mirrors the engine's per-turn Phantom
+      // flag. True when no living player holds currentNightRole; the
+      // moderator audio still plays (so the room can't deduce which
+      // role is dead from the absence of cues) but no NightAction is
+      // accepted on the server, and no Target buttons render on any
+      // client.
+      let currentNightTurnPhantom = false;
+
+      // NIGHT_ACTION_WINDOW_MS mirrors the server's NightActionDuration
+      // (internal/room.DefaultNightActionDuration). The server stamps
+      // a deadline of (turn start + grace + action window); we derive
+      // the moment when the audio prompt is expected to finish — and
+      // therefore the moment when the Target buttons unlock — by
+      // subtracting this constant from the deadline. Keep these two
+      // in sync.
+      const NIGHT_ACTION_WINDOW_MS = 45000;
+      // nightTurnUnlockMs is unix-millis at which the actor's Target
+      // buttons become tappable for the current turn. 0 means "no
+      // active turn" or "unlock already passed".
+      let nightTurnUnlockMs = 0;
+      // nightUnlockTimer fires once per turn to repaint the UI when
+      // the unlock moment arrives.
+      let nightUnlockTimer = null;
+
+      // narratorEnabled gates whether THIS device speaks. Only the host
+      // narrates — having every player's phone narrate would yield
+      // overlapping audio. Toggled by the "Test audio" button in the
+      // lobby (which also serves as the user-gesture needed by iOS to
+      // unlock speechSynthesis).
+      let narratorEnabled = false;
+
+      // narrationsSeen is a guard against double-narrating the same
+      // event when handleEvent runs over the replay batch on join AND
+      // again as live events arrive. We key on a stable string per
+      // narration trigger; events not in this set fire normally.
+      const narrationsSeen = new Set();
+
+      // dayDiscussionPendingDeath holds the playerId killed last night
+      // (if any), captured from PlayerKilled in the same event batch
+      // as the phaseChanged → day_discussion. The narrator reads it on
+      // the dawn cue, then clears it. Null = "nobody died."
+      let dayDiscussionPendingDeath = null;
+
+      // --- TTS (narrator) ----------------------------------------------
+      //
+      // We use the browser's built-in speechSynthesis API. No external
+      // dependency, no API key, works offline. Quality varies by device
+      // but iOS Safari / macOS Safari / modern Chrome all produce
+      // intelligible English voices.
+      //
+      // Quirks worth knowing:
+      //   - iOS Safari blocks speechSynthesis until a user gesture has
+      //     "unlocked" the audio context. The "Test audio" button in
+      //     the lobby satisfies this.
+      //   - Calling speak() while another utterance is in progress
+      //     queues by default. We rely on that for back-to-back cues
+      //     ("Mafia wake up. [pause] Choose your target.").
+      //   - feature detection: not all browsers support it. If
+      //     ttsSupported is false, the UI falls back to large on-screen
+      //     text cards (renderNarratorCard).
+      const ttsSupported =
+        typeof window !== "undefined" &&
+        "speechSynthesis" in window &&
+        typeof window.SpeechSynthesisUtterance === "function";
+
+      function speak(text, { rate = 0.95, pitch = 1, pauseBefore = 0 } = {}) {
+        if (!ttsSupported || !narratorEnabled) return;
+        const fire = () => {
+          const utter = new SpeechSynthesisUtterance(text);
+          utter.rate = rate;
+          utter.pitch = pitch;
+          window.speechSynthesis.speak(utter);
+        };
+        if (pauseBefore > 0) {
+          setTimeout(fire, pauseBefore);
+        } else {
+          fire();
+        }
+      }
+
+      // narrate runs ONLY on the host (gated by narratorEnabled, which
+      // only the host ever sets to true). It also shows the spoken
+      // text in a visual card so the room can see what the audio said
+      // — useful both as an accessibility affordance and as a
+      // fallback when TTS is unavailable.
+      //
+      // key dedupes replays: each narration sets a stable key so we
+      // don't repeat the cue when an event arrives twice (once during
+      // join replay, once during the live broadcast that immediately
+      // follows). Live events that should ALWAYS speak (e.g. a fresh
+      // nightTurnStarted) pass key=null.
+      function narrate(text, { key = null, pauseBefore = 0 } = {}) {
+        if (key !== null) {
+          if (narrationsSeen.has(key)) return;
+          narrationsSeen.add(key);
+        }
+        showNarratorCard(text);
+        if (narratorEnabled) speak(text, { pauseBefore });
+      }
+
+      // Shows the spoken text in a top-of-page card for a few seconds.
+      // Stacked: multiple lines in a row appear together. The card is
+      // visible even on non-host devices, which serves as a fallback
+      // when the host's TTS is unavailable — a non-host can read it
+      // aloud to the room.
+      let narratorCardTimer = null;
+      function showNarratorCard(text) {
+        const el = $("narrator-card");
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove("hidden");
+        if (narratorCardTimer) clearTimeout(narratorCardTimer);
+        narratorCardTimer = setTimeout(() => {
+          el.classList.add("hidden");
+          el.textContent = "";
+        }, 6000);
+      }
+
+      // --- Detective toast ---------------------------------------------
+      //
+      // Shows the detective the result of their last investigation as a
+      // prominent modal. Color signals the outcome at a glance: rose
+      // (danger) for a mafia hit, emerald for confirmed town.
+      //
+      // No auto-dismiss: the engine emits detectiveResult in the same
+      // batch as phaseChanged → day_discussion, so the underlying UI
+      // repaint and "Everybody, wake up" narration fire immediately
+      // afterward. A timed dismiss feels like the result vanished
+      // mid-read. Instead we REQUIRE the detective to tap "Got it"
+      // (or click the dimmed overlay). That gating click is also the
+      // detective's own pacing signal — they read, internalize, then
+      // dismiss and the day starts for them visually.
+      //
+      // The dim overlay (bg-slate-950/85) on top of z-50 also masks
+      // the day-discussion repaint behind the modal, so the
+      // detective isn't visually distracted by phase transitions
+      // while reading. The modal is local-only — it never echoes
+      // via narrator TTS, since the detective's result is private
+      // and we don't want the host's phone speaking it aloud.
+      function showDetectiveToast(targetName, isMafia) {
+        const modal = $("detective-modal");
+        const card = $("detective-modal-card");
+        const body = $("detective-modal-body");
+        if (!modal || !card || !body) return;
+
+        const rose    = ["border-rose-500/70",    "bg-rose-950/95",    "text-rose-100"];
+        const emerald = ["border-emerald-500/70", "bg-emerald-950/95", "text-emerald-100"];
+        card.classList.remove(...rose, ...emerald);
+        card.classList.add(...(isMafia ? rose : emerald));
+
+        body.textContent = isMafia
+          ? `${targetName} IS a mafia member.`
+          : `${targetName} is NOT a mafia member.`;
+
+        modal.classList.remove("hidden");
+        // Inline display:flex wins over EVERY Tailwind utility, no
+        // matter what order .hidden / .flex appear in the generated
+        // stylesheet. Intentional defensive overkill.
+        modal.style.display = "flex";
+      }
+
+      function hideDetectiveToast() {
+        const modal = $("detective-modal");
+        if (!modal) return;
+        modal.classList.add("hidden");
+        modal.style.display = "none";
+        const body = $("detective-modal-body");
+        if (body) body.textContent = "";
+      }
+
+      // --- Night countdown bar -----------------------------------------
+      //
+      // The night banner shows a per-turn countdown that ticks down to
+      // the engine-stamped deadline. Updates ~10×/second so the bar
+      // smoothly drains and the seconds number is responsive.
+      let nightCountdownInterval = null;
+      let nightCountdownTotalMs = 0; // initial duration for the bar's %
+
+      function startNightCountdown(deadlineMs) {
+        stopNightCountdown();
+        if (!deadlineMs) return;
+        nightCountdownTotalMs = Math.max(1, deadlineMs - Date.now());
+        renderNightCountdownFrame();
+        nightCountdownInterval = setInterval(renderNightCountdownFrame, 100);
+      }
+
+      function stopNightCountdown() {
+        if (nightCountdownInterval) {
+          clearInterval(nightCountdownInterval);
+          nightCountdownInterval = null;
+        }
+      }
+
+      // --- Night audio-gate (Target buttons unlock after the prompt) ---
+      //
+      // The engine deadline already accounts for the spoken-prompt
+      // grace + the 45s action window, so the unlock moment is just
+      // (deadline - NIGHT_ACTION_WINDOW_MS). On replay or when the
+      // server's grace was zero, this can fall in the past — in that
+      // case the buttons are already unlocked.
+      function scheduleNightUnlock(deadlineMs) {
+        stopNightUnlockTimer();
+        if (!deadlineMs) {
+          nightTurnUnlockMs = 0;
+          return;
+        }
+        nightTurnUnlockMs = deadlineMs - NIGHT_ACTION_WINDOW_MS;
+        const wait = nightTurnUnlockMs - Date.now();
+        if (wait <= 0) return;
+        nightUnlockTimer = setTimeout(() => {
+          nightUnlockTimer = null;
+          // Repaint: the actor's Target buttons depend on
+          // nightAudioReady() flipping to true.
+          renderActionPanel();
+          renderPlayers();
+        }, wait);
+      }
+
+      function stopNightUnlockTimer() {
+        if (nightUnlockTimer) {
+          clearTimeout(nightUnlockTimer);
+          nightUnlockTimer = null;
+        }
+        nightTurnUnlockMs = 0;
+      }
+
+      function nightAudioReady() {
+        if (!nightTurnUnlockMs) return true;
+        return Date.now() >= nightTurnUnlockMs;
+      }
+
+      function nightUnlockSecondsLeft() {
+        if (!nightTurnUnlockMs) return 0;
+        return Math.max(0, Math.ceil((nightTurnUnlockMs - Date.now()) / 1000));
+      }
+
+      function renderNightCountdownFrame() {
+        const remaining = Math.max(0, nightTurnDeadlineMs - Date.now());
+        const seconds = Math.ceil(remaining / 1000);
+        const pct = Math.max(0, Math.min(100, (remaining / nightCountdownTotalMs) * 100));
+        const text = $("night-banner-countdown");
+        const bar = $("night-banner-bar");
+        if (text) text.textContent = `${seconds}s`;
+        if (bar) bar.style.width = `${pct}%`;
+        if (remaining <= 0) stopNightCountdown();
+      }
+
+      // Audio enablement (host-only). speechSynthesis on iOS requires
+      // a user-gesture before it will speak; this button is what
+      // satisfies that requirement. It also lets the host test the
+      // voice quality before starting the game.
+      function enableNarrator() {
+        if (!ttsSupported) {
+          showNarratorCard("Text-to-speech is not available on this device. The on-screen card will still show every cue.");
+          return;
+        }
+        narratorEnabled = true;
+        speak("Audio enabled. Ready when you are.", { rate: 1 });
+        showNarratorCard("Audio enabled. The host's phone will narrate the game.");
+        renderActionPanel(); // rerender so the button switches state
+      }
+
+      // When we kick off a rejoin attempt from stored credentials
+      // (e.g. on page reload) we remember the room code here. If the
+      // server then sends an "error" before we ever receive "rejoined"
+      // / "joined", we know the stored credentials are stale and we
+      // can recover by clearing them and showing the join lobby. Once
+      // a successful (re)join arrives this is cleared.
+      let pendingRejoinCode = null;
 
       function setStatus(text, klass = "text-slate-400") {
         status.textContent = text;
         status.className = `text-sm ${klass}`;
       }
 
+      // Builds the canonical share link for a room. Always pointed at
+      // the current origin so it Just Works in dev (localhost:8080) and
+      // anywhere we deploy later.
+      function shareLinkFor(code) {
+        return `${location.origin}/?room=${encodeURIComponent(code)}`;
+      }
+
+      // Reads ?room=XYZW from the URL and normalises to upper-case.
+      // Returns null if there is no room param or it's empty.
+      function roomFromURL() {
+        const raw = new URLSearchParams(location.search).get("room");
+        if (!raw) return null;
+        return raw.trim().toUpperCase();
+      }
+
       function showGame(code) {
         $("lobby").classList.add("hidden");
         $("game").classList.remove("hidden");
         $("room-code").textContent = code;
+        $("share-url").textContent = shareLinkFor(code);
       }
 
-      function logEvent(label, data) {
-        const li = document.createElement("li");
-        const time = new Date().toLocaleTimeString();
-        const safe = data ? JSON.stringify(data) : "";
-        li.textContent = `[${time}] ${label} ${safe}`;
-        events.appendChild(li);
-        events.scrollTop = events.scrollHeight;
+      // Renders the YOU box: "Name (p1) (host)". Name is server-truth.
+      function formatMe(name, pid, isHost) {
+        const safeName = name && name.trim() ? name : "(unnamed)";
+        return `${safeName} (${pid})${isHost ? " (host)" : ""}`;
       }
+
+      // ----- roster reducer + render --------------------------------------
+
+      // resetGameState clears everything derived from the event stream
+      // so a (re)join can rebuild the model from scratch via replay.
+      function resetGameState() {
+        players = new Map();
+        phase = "lobby";
+        day = 0;
+        myAction = null;
+        votes = new Map();
+        winner = null;
+        myRole = null;
+        dayLynchResolved = false;
+        rolesDealt = false;
+        // Lobby config is also event-sourced (gameCreated / mafiaCountChanged);
+        // reset to engine defaults so a replay rebuilds it from scratch.
+        lobbyMinPlayers = 5;
+        lobbyMaxPlayers = 20;
+        mafiaCount = 1;
+        // Night turn state — engine-authoritative; replayed on join.
+        currentNightRole = "";
+        nightTurnDeadlineMs = 0;
+        nightTurnUnlockMs = 0;
+        currentNightTurnPhantom = false;
+        dayDiscussionPendingDeath = null;
+        narrationsSeen.clear();
+        stopNightCountdown();
+        stopNightUnlockTimer();
+        // Clear any open detective modal so a refresh doesn't carry
+        // a stale "X IS a mafia member" card into the new session.
+        hideDetectiveToast();
+        $("my-role").textContent = "—";
+        renderAll();
+      }
+
+      // renderAll re-renders every dynamic panel. Called whenever phase
+      // changes (cheap: at most every few seconds) so that any UI piece
+      // depending on phase + roster + votes stays consistent.
+      function renderAll() {
+        renderPlayers();
+        renderActionPanel();
+      }
+
+      function upsertPlayer(pid, patch) {
+        const existing = players.get(pid) || {
+          id: pid,
+          name: pid,
+          alive: true,
+          deathCause: null,    // "killed" | "lynched" | null
+          revealedRole: null,  // populated at gameEnded for everyone
+        };
+        players.set(pid, { ...existing, ...patch });
+        // Roster changes can affect the action panel hint
+        // (e.g. "Waiting for 2 more players" → "Ready to start").
+        renderPlayers();
+        renderActionPanel();
+      }
+
+      function renderPlayers() {
+        const list = $("players");
+        const count = $("player-count");
+        list.innerHTML = "";
+
+        if (players.size === 0) {
+          const empty = document.createElement("li");
+          empty.className = "text-sm text-slate-500";
+          empty.textContent = "Waiting for players to join…";
+          list.appendChild(empty);
+          count.textContent = "0";
+          return;
+        }
+
+        // Deterministic order: insertion order is the join order, which
+        // is the most natural reading order. Map iteration preserves it.
+        let alive = 0;
+        for (const p of players.values()) {
+          if (p.alive) alive++;
+          list.appendChild(renderPlayerRow(p));
+        }
+        // In the lobby, frame the count as "joined / cap" so the host
+        // knows when the room is full. After the game has started the
+        // cap is irrelevant — switch to "alive / total".
+        if (phase === "lobby") {
+          count.textContent = `${players.size} / ${lobbyMaxPlayers} joined (min ${lobbyMinPlayers})`;
+        } else {
+          count.textContent = `${alive} alive / ${players.size} total`;
+        }
+      }
+
+      function renderPlayerRow(p) {
+        const li = document.createElement("li");
+        li.className =
+          "flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900/60 px-3 py-2";
+
+        const left = document.createElement("div");
+        left.className = "min-w-0";
+
+        const nameEl = document.createElement("div");
+        nameEl.className = "truncate text-sm font-medium";
+        if (!p.alive) nameEl.classList.add("text-slate-500", "line-through");
+        nameEl.textContent = p.name;
+
+        const subEl = document.createElement("div");
+        subEl.className = "truncate font-mono text-xs text-slate-500";
+        const bits = [p.id];
+        if (!p.alive) {
+          bits.push(p.deathCause === "lynched" ? "lynched by vote" : "killed in the night");
+        }
+        if (p.revealedRole) bits.push(p.revealedRole);
+        // Day-vote tally count alongside the pid. Computed each render
+        // from the votes Map; cheap (n=5 today).
+        if (phase === "day_vote" && p.alive) {
+          const n = tallyFor(p.id);
+          if (n > 0) bits.push(`${n} vote${n === 1 ? "" : "s"}`);
+        }
+        subEl.textContent = bits.join(" · ");
+
+        left.appendChild(nameEl);
+        left.appendChild(subEl);
+
+        const right = document.createElement("div");
+        right.className = "flex shrink-0 items-center gap-1";
+
+        // Phase-aware action button on each row. Targeting lives here
+        // (vs a separate panel) so action and identity stay together.
+        const btn = phaseActionButton(p);
+        if (btn) right.appendChild(btn);
+
+        if (p.id === myId) right.appendChild(badge("You", "bg-emerald-700 text-emerald-100"));
+        if (p.id === myId && myIsHost) right.appendChild(badge("Host", "bg-indigo-700 text-indigo-100"));
+
+        li.appendChild(left);
+        li.appendChild(right);
+        return li;
+      }
+
+      // tallyFor returns the current public vote count against pid.
+      function tallyFor(pid) {
+        let n = 0;
+        for (const target of votes.values()) if (target === pid) n++;
+        return n;
+      }
+
+      // canActAtNight reports whether the LOCAL player has a night
+      // action available given their role. Villager has none. The
+      // engine also forbids the doctor from self-saving on Night 0,
+      // but the wire never echoes the day cleanly enough for us to
+      // pre-block that client-side; we let the server reject and the
+      // error flow into the log. Conservative behavior.
+      function canActAtNight() {
+        if (!myRole) return false;
+        return myRole === "mafia" || myRole === "doctor" || myRole === "detective";
+      }
+
+      // phaseActionButton returns a per-row action button suitable for
+      // the current phase, or null if no row-action applies.
+      function phaseActionButton(p) {
+        const me = players.get(myId);
+        const iAmAlive = !!(me && me.alive);
+
+        // Night Target buttons are gated by the strict turn-order
+        // rule: only show them when it's THIS role's turn. Outside the
+        // turn, the engine would reject the action with ErrNotYourTurn
+        // anyway — hiding the buttons makes the UX match the rules.
+        //
+        // They're also hidden until the moderator prompt finishes
+        // (nightAudioReady), so the actor can't pre-empt the audio
+        // cue. This keeps the in-person flow tight: listen first,
+        // then choose.
+        //
+        // Phantom turns (no living holder of the role) never show
+        // Target buttons — by definition there's no live player who
+        // could be the actor, but we guard explicitly to keep the
+        // intent obvious.
+        // Row buttons (Target / Vote) are sized to clear the 44px
+        // iOS HIG tap-target minimum. The previous px-2/py-1/text-xs
+        // styling looked nice on desktop but produced ~24×16px hit
+        // areas that were borderline unusable on a phone.
+        const rowBtnBase =
+          "inline-flex min-h-[44px] min-w-[64px] items-center justify-center rounded px-3 py-2 text-sm font-medium";
+
+        // Self-targeting policy:
+        //   - mafia: cannot target self (engine rejects via faction
+        //     check against the kill list anyway).
+        //   - detective: cannot investigate self (ErrSelfTarget).
+        //   - doctor: CAN save self on any night.
+        // So we allow the self row only for the doctor.
+        const isSelfRow = p.id === myId;
+        const canTargetThisRow = !isSelfRow || myRole === "doctor";
+
+        if (
+          phase === "night" &&
+          iAmAlive &&
+          canActAtNight() &&
+          currentNightRole === myRole &&
+          !currentNightTurnPhantom &&
+          nightAudioReady() &&
+          p.alive &&
+          canTargetThisRow
+        ) {
+          const submitted = myAction === p.id;
+          const b = document.createElement("button");
+          b.className = submitted
+            ? `${rowBtnBase} bg-amber-600 text-white`
+            : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          b.textContent = submitted
+            ? (isSelfRow ? "Saving self" : "Targeted")
+            : (isSelfRow ? "Save self" : "Target");
+          b.addEventListener("click", () => send("nightAction", { target: p.id }));
+          return b;
+        }
+
+        if (phase === "day_vote" && iAmAlive && p.alive && p.id !== myId) {
+          const mine = votes.get(myId);
+          const isMyTarget = mine === p.id;
+          const b = document.createElement("button");
+          b.className = isMyTarget
+            ? `${rowBtnBase} bg-rose-600 text-white`
+            : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          b.textContent = isMyTarget ? "Voted ✓" : "Vote";
+          b.addEventListener("click", () => send("vote", { target: p.id }));
+          return b;
+        }
+
+        return null;
+      }
+
+      function badge(text, klass) {
+        const span = document.createElement("span");
+        span.className = `rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${klass}`;
+        span.textContent = text;
+        return span;
+      }
+
+      // ----- action panel (per-phase) -------------------------------------
+
+      // Phase theming. Each phase gets a distinct color so a glance is
+      // enough to know what's happening. Lobby is neutral; Night is
+      // deep indigo (sleeping); Day Discussion is amber (sunlight);
+      // Day Vote is rose (tense); Ended depends on the winner.
+      const PHASE_THEMES = {
+        lobby:           "border-slate-700 bg-slate-800/40 text-slate-100",
+        night:           "border-indigo-800 bg-indigo-950/40 text-indigo-100",
+        day_discussion:  "border-amber-700/60 bg-amber-900/20 text-amber-100",
+        day_vote:        "border-rose-700/60 bg-rose-900/20 text-rose-100",
+        ended:           "border-emerald-700/60 bg-emerald-900/20 text-emerald-100",
+      };
+
+      function renderActionPanel() {
+        const panel = $("action-panel");
+        const label = $("phase-label");
+        const headline = $("phase-headline");
+        const dayEl = $("phase-day");
+        const hint = $("phase-hint");
+        const extras = $("action-extras");
+        const banner = $("night-banner");
+        const bannerText = $("night-banner-text");
+
+        panel.className =
+          "rounded border p-4 transition-colors duration-300 " +
+          (PHASE_THEMES[phase] || PHASE_THEMES.lobby);
+
+        label.textContent = phase.replace("_", " ");
+        dayEl.textContent = phase === "lobby" || phase === "ended" ? "" : `Day ${day}`;
+        extras.innerHTML = "";
+
+        // Show the night banner only when we're in Night AND a turn is
+        // active. Between turns or outside Night, hide it so the panel
+        // doesn't display stale countdowns.
+        if (phase === "night" && currentNightRole) {
+          banner.classList.remove("hidden");
+          const display = capitalize(currentNightRole);
+          const youAct = currentNightRole === myRole;
+          bannerText.textContent = youAct
+            ? `Your turn — ${display}. Pick a target on the Players panel below.`
+            : `${display} is choosing. Eyes closed.`;
+        } else {
+          banner.classList.add("hidden");
+        }
+
+        const me = players.get(myId);
+        const iAmAlive = !!(me && me.alive);
+        const total = players.size;
+
+        switch (phase) {
+          case "lobby": {
+            headline.textContent = "Lobby";
+            // A valid game needs: total in [min, max] AND mafia in
+            // [1, total - 3] (the engine reserves Det + Doc + ≥1
+            // villager).  We surface both numbers so the host can see
+            // exactly what's stopping Start from being enabled.
+            const minMafia = 1;
+            const maxMafiaNow = Math.max(0, total - 3);
+            const tooFew = total < lobbyMinPlayers;
+            const tooMany = total > lobbyMaxPlayers;
+            const mafiaOK = mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;
+            const canStart = !tooFew && !tooMany && mafiaOK;
+
+            if (tooFew) {
+              const need = lobbyMinPlayers - total;
+              hint.textContent =
+                `Waiting for ${need} more player${need === 1 ? "" : "s"} ` +
+                `(min ${lobbyMinPlayers}, currently ${total}).`;
+            } else if (tooMany) {
+              hint.textContent = `Too many players (${total} > ${lobbyMaxPlayers}).`;
+            } else if (!mafiaOK) {
+              hint.textContent =
+                `Mafia count ${mafiaCount} is invalid for ${total} players ` +
+                `— must be between 1 and ${maxMafiaNow}.`;
+            } else {
+              hint.textContent = "Ready to start.";
+            }
+
+            // Mafia-count picker: host-only, lobby-only. We show the
+            // current value plus -/+ buttons clamped to the engine's
+            // allowed range against MaxPlayers (so the host can tune
+            // before everyone has even joined). Final validity against
+            // the actual player count is checked above for canStart.
+            const mafiaPicker = renderMafiaPicker();
+            if (mafiaPicker) extras.appendChild(mafiaPicker);
+
+            if (myIsHost) {
+              // "Test audio" comes first so it gets tapped before
+              // "Start game" — that's the user gesture iOS Safari needs
+              // to unlock speechSynthesis.
+              if (ttsSupported && !narratorEnabled) {
+                extras.appendChild(actionButton(
+                  "Test audio",
+                  "bg-amber-600 hover:bg-amber-500",
+                  () => enableNarrator()
+                ));
+              } else if (narratorEnabled) {
+                extras.appendChild(noteChip("Audio: on", "bg-emerald-800/80"));
+              } else {
+                extras.appendChild(noteChip("Audio: not supported (visual cues only)", "bg-slate-700/80"));
+              }
+
+              if (!rolesDealt) {
+                if (canStart) {
+                  extras.appendChild(actionButton("Start game", "bg-emerald-600 hover:bg-emerald-500",
+                                                  () => send("startGame")));
+                } else {
+                  extras.appendChild(disabledNote("Start unlocks once the lobby + roles are valid."));
+                }
+              } else {
+                // Roles dealt; show "Begin night" so everyone can
+                // peek at their role before the first night begins.
+                headline.textContent = "Roles dealt";
+                hint.textContent = "Everyone, check your role privately. When ready, the host begins the night.";
+                extras.appendChild(actionButton("Begin night", "bg-indigo-600 hover:bg-indigo-500",
+                                                () => send("beginNight")));
+              }
+            } else {
+              if (!rolesDealt) {
+                extras.appendChild(disabledNote("Only the host can start the game."));
+              } else {
+                hint.textContent = "You've been dealt your role. Waiting for the host to begin the night.";
+              }
+            }
+            break;
+          }
+
+          case "night": {
+            headline.textContent = "Night falls";
+            if (!iAmAlive) {
+              hint.textContent = "You're out. Watch the night unfold.";
+              break;
+            }
+            // Hint text is driven by the strict turn order: only act
+            // when the current turn matches your role; otherwise sit
+            // still (eyes closed, in the in-person flow).
+            if (!currentNightRole) {
+              hint.textContent = "Eyes closed. Waiting for the moderator audio…";
+            } else if (currentNightRole === myRole) {
+              if (myAction) {
+                hint.textContent = "Submitted. The next role will be summoned shortly.";
+                const t = players.get(myAction);
+                extras.appendChild(noteChip(`Targeted: ${t ? t.name : myAction}`, "bg-amber-700/60"));
+              } else if (!nightAudioReady()) {
+                const s = nightUnlockSecondsLeft();
+                hint.textContent =
+                  s > 0
+                    ? `Listen to the moderator… ${s}s`
+                    : "Listen to the moderator…";
+              } else {
+                hint.textContent = "Pick your target on the Players panel below.";
+              }
+            } else if (canActAtNight()) {
+              hint.textContent =
+                `${capitalize(currentNightRole)} is acting now. Your turn comes next (or later).`;
+            } else {
+              hint.textContent = "Eyes closed. The active role acts in secret.";
+            }
+            break;
+          }
+
+          case "day_discussion": {
+            if (dayLynchResolved) {
+              headline.textContent = "Day ends";
+              if (iAmAlive) {
+                hint.textContent = myIsHost
+                  ? "When the room is ready, begin the next night."
+                  : "The vote is in. Waiting for the host to begin the night.";
+              } else {
+                hint.textContent = "You're out. Waiting for the next night.";
+              }
+              if (myIsHost) {
+                extras.appendChild(actionButton(
+                  "Begin night",
+                  "bg-indigo-600 hover:bg-indigo-500",
+                  () => send("beginNight"),
+                ));
+              }
+            } else {
+              headline.textContent = "Daybreak — discuss";
+              if (iAmAlive) {
+                hint.textContent = myIsHost
+                  ? "Let the room discuss, then open voting when they're ready."
+                  : "Talk it out (offline / voice). Voting opens when the host says so.";
+              } else {
+                hint.textContent = "You're out. The living debate without you.";
+              }
+              if (myIsHost) {
+                extras.appendChild(actionButton(
+                  "Open voting",
+                  "bg-rose-600 hover:bg-rose-500",
+                  () => send("openVoting"),
+                ));
+              }
+            }
+            break;
+          }
+
+          case "day_vote": {
+            headline.textContent = "Vote";
+            if (!iAmAlive) {
+              hint.textContent = "You're out. You may not vote.";
+            } else {
+              const myVote = votes.get(myId);
+              hint.textContent = myVote
+                ? "Vote locked in. Tap another player to change, or retract."
+                : "Pick a player to lynch on the Players panel below.";
+              if (myVote) {
+                const t = players.get(myVote);
+                extras.appendChild(noteChip(`Your vote: ${t ? t.name : myVote}`, "bg-rose-700/60"));
+                extras.appendChild(actionButton("Retract", "bg-slate-700 hover:bg-slate-600",
+                  () => send("vote", { target: "" })));
+              }
+            }
+            // Host-only vote-management buttons. Finalize resolves the
+            // tally (engine rejects on tie / no votes); Clear wipes
+            // the board for a re-vote.
+            if (myIsHost) {
+              const haveAnyVote = votes.size > 0;
+              extras.appendChild(actionButton(
+                "Finalize votes",
+                "bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50",
+                () => send("finalizeVotes"),
+              ));
+              const clearBtn = actionButton(
+                "Clear & re-vote",
+                "bg-amber-600 hover:bg-amber-500 disabled:opacity-50",
+                () => send("clearVotes"),
+              );
+              if (!haveAnyVote) clearBtn.disabled = true;
+              extras.appendChild(clearBtn);
+            }
+            break;
+          }
+
+          case "ended": {
+            headline.textContent = winner
+              ? `${capitalize(winner)} wins`
+              : "Game over";
+            hint.textContent = "Roles below are revealed. Open a new room to play again.";
+            break;
+          }
+
+          default:
+            headline.textContent = phase;
+            hint.textContent = "";
+        }
+      }
+
+      // Buttons use min-h-[44px] to clear the iOS Human Interface
+      // Guidelines minimum tap target. Tailwind doesn't ship a 44px
+      // utility out of the box; the arbitrary value works fine and
+      // is more honest about the constraint than rounding to 40px.
+      function actionButton(label, klass, onClick) {
+        const b = document.createElement("button");
+        b.className = `inline-flex min-h-[44px] items-center justify-center rounded px-4 py-2 text-sm font-medium text-white ${klass}`;
+        b.textContent = label;
+        b.addEventListener("click", onClick);
+        return b;
+      }
+
+      // renderMafiaPicker builds the host's lobby-only control for the
+      // planned mafia count. Non-hosts see the same value as a read-only
+      // chip so everyone has shared visibility into the configured
+      // composition.
+      //
+      // Bounds:
+      //   minimum:  1 (engine requires ≥1 mafia)
+      //   maximum:  MaxPlayers - 3 (Det + Doc + ≥1 villager reserved).
+      //             The "is this valid for the CURRENT player count?"
+      //             check lives in the calling switch arm — here we
+      //             only enforce the absolute lobby bound so the host
+      //             can pre-tune before everyone has joined.
+      function renderMafiaPicker() {
+        const wrapper = document.createElement("div");
+        wrapper.className =
+          "flex items-center gap-2 rounded bg-slate-700/60 px-3 py-1.5 text-xs";
+
+        const label = document.createElement("span");
+        label.className = "uppercase tracking-wide opacity-70";
+        label.textContent = "Mafia";
+        wrapper.appendChild(label);
+
+        if (!myIsHost) {
+          const val = document.createElement("span");
+          val.className = "font-mono text-sm";
+          val.textContent = String(mafiaCount);
+          wrapper.appendChild(val);
+          return wrapper;
+        }
+
+        const minMafia = 1;
+        const maxMafia = Math.max(1, lobbyMaxPlayers - 3);
+
+        // Stepper buttons need real tap targets. Square 36px buttons
+        // line up visually with the label and read clearly on phones.
+        const stepBtnClass =
+          "inline-flex h-9 w-9 items-center justify-center rounded bg-slate-600 text-base font-semibold hover:bg-slate-500 disabled:cursor-not-allowed disabled:opacity-40";
+
+        const minus = document.createElement("button");
+        minus.className = stepBtnClass;
+        minus.textContent = "−";
+        minus.disabled = mafiaCount <= minMafia;
+        minus.addEventListener("click", () => send("setMafia", { count: mafiaCount - 1 }));
+
+        const val = document.createElement("span");
+        val.className = "min-w-[1.5rem] text-center font-mono text-base";
+        val.textContent = String(mafiaCount);
+
+        const plus = document.createElement("button");
+        plus.className = stepBtnClass;
+        plus.textContent = "+";
+        plus.disabled = mafiaCount >= maxMafia;
+        plus.addEventListener("click", () => send("setMafia", { count: mafiaCount + 1 }));
+
+        wrapper.appendChild(minus);
+        wrapper.appendChild(val);
+        wrapper.appendChild(plus);
+        return wrapper;
+      }
+
+      function disabledNote(text) {
+        const span = document.createElement("span");
+        span.className = "text-xs opacity-70";
+        span.textContent = text;
+        return span;
+      }
+
+      function noteChip(text, bgClass) {
+        const span = document.createElement("span");
+        span.className = `rounded px-2 py-1 text-xs ${bgClass}`;
+        span.textContent = text;
+        return span;
+      }
+
+      function capitalize(s) {
+        return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+      }
+
+      // showError surfaces a user-facing problem (server rejected a
+      // command, wire frame failed to parse, etc) in the error
+      // panel. Auto-clears after ~5s so a transient error doesn't
+      // linger forever.
+      //
+      // For developer-style telemetry (every server event echoed),
+      // open DevTools — there's no in-app log anymore.
+      let errorPanelTimer = null;
+      function showError(message) {
+        if (!errorPanel) return;
+        errorPanel.textContent = message;
+        errorPanel.classList.remove("hidden");
+        if (errorPanelTimer) clearTimeout(errorPanelTimer);
+        errorPanelTimer = setTimeout(() => {
+          errorPanel.classList.add("hidden");
+          errorPanel.textContent = "";
+          errorPanelTimer = null;
+        }, 5000);
+      }
+
+      // ----- WebSocket plumbing ------------------------------------------
 
       function send(type, data = {}) {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -106,47 +1237,358 @@
           case "joined": {
             const d = msg.data;
             myId = d.playerId;
-            $("me").textContent = `${d.playerId}${d.isHost ? " (host)" : ""}`;
+            myIsHost = !!d.isHost;
+            pendingRejoinCode = null;
+            // Fresh socket: start from a clean model. The server
+            // attaches its projected view of prior events so we can
+            // see who else is already in the room. Our own PlayerJoined
+            // arrives as a separate "event" frame immediately after.
+            resetGameState();
+            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
             showGame(d.roomCode);
-            localStorage.setItem(storageKey(d.roomCode), JSON.stringify({
+            sessionStorage.setItem(storageKey(d.roomCode), JSON.stringify({
               playerId: d.playerId,
               secret: d.secret,
             }));
-            logEvent("joined", { playerId: d.playerId, host: d.isHost });
+            if (Array.isArray(d.events)) {
+              // Replay: feed prior events through the reducer so the
+              // UI reflects the room's current state. Mark them as
+              // replay so narration is suppressed (we don't want a
+              // late-joining host's phone re-announcing every event
+              // from earlier in the night).
+              for (const env of d.events) handleEvent(env, { replaying: true });
+            }
             break;
           }
           case "rejoined": {
             const d = msg.data;
             myId = d.playerId;
-            $("me").textContent = `${d.playerId}${d.isHost ? " (host)" : ""}`;
+            myIsHost = !!d.isHost;
+            pendingRejoinCode = null;
+            resetGameState();
+            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
             showGame(d.roomCode);
-            logEvent("rejoined", { replaying: d.events.length });
-            for (const env of d.events) handleEvent(env);
+            for (const env of d.events) handleEvent(env, { replaying: true });
             break;
           }
           case "event":
             handleEvent(msg.data.event);
             break;
           case "error":
-            logEvent("error", msg.data);
+            // Surface the server's human-readable message if present,
+            // otherwise fall back to the machine code. Auth failures
+            // during rejoin are recovered silently below.
+            showError(
+              (msg.data && (msg.data.message || msg.data.code)) || "error"
+            );
+            // If we were auto-rejoining (e.g. after a refresh) and the
+            // server can't authenticate us, the stored credentials are
+            // stale — typically because the server restarted, the room
+            // was closed, or the player slot was evicted. Clear them
+            // and drop the user on the join screen for this room so
+            // they can re-enter as a fresh player.
+            if (pendingRejoinCode && msg.data && msg.data.code === "auth_failed") {
+              const stale = pendingRejoinCode;
+              pendingRejoinCode = null;
+              sessionStorage.removeItem(storageKey(stale));
+              // Detach handlers so the synthetic close from our own
+              // teardown doesn't overwrite the recovery status message.
+              if (ws) {
+                ws.onclose = null;
+                ws.onerror = null;
+                try { ws.close(); } catch {}
+                ws = null;
+              }
+              recoverToLobby(stale, "Previous session expired — rejoin as a new player.");
+            }
             break;
           default:
-            logEvent("unknown", msg);
+            // Unknown top-level frame — should never happen in a
+            // version-matched client/server pair. Surface it so we
+            // notice during dev (and don't silently drop something
+            // important).
+            showError(`Unknown server message: ${msg.type}`);
         }
       }
 
-      function handleEvent(env) {
-        if (env.type === "phaseChanged") {
-          $("phase").textContent = env.data.to;
+      function handleEvent(env, { replaying = false } = {}) {
+        switch (env.type) {
+          case "gameCreated":
+            lobbyMinPlayers = env.data.minPlayers ?? lobbyMinPlayers;
+            lobbyMaxPlayers = env.data.maxPlayers ?? lobbyMaxPlayers;
+            mafiaCount = env.data.mafiaCount ?? mafiaCount;
+            renderAll();
+            break;
+
+          case "mafiaCountChanged":
+            mafiaCount = env.data.to;
+            renderActionPanel();
+            break;
+
+          case "playerJoined":
+            upsertPlayer(env.data.playerId, {
+              name: env.data.name,
+              alive: true,
+            });
+            break;
+
+          case "playerKilled":
+            upsertPlayer(env.data.playerId, {
+              alive: false,
+              deathCause: "killed",
+            });
+            // Stash the death so the day_discussion narration can
+            // announce it. The phaseChanged → day_discussion event
+            // arrives in the SAME batch and will read + clear this.
+            dayDiscussionPendingDeath = env.data.playerId;
+            break;
+
+          case "playerLynched":
+            upsertPlayer(env.data.playerId, {
+              alive: false,
+              deathCause: "lynched",
+            });
+            // A lynch only fires after the host's FinalizeVotes, so we
+            // flip the resolved flag here. The PhaseChanged →
+            // day_discussion that follows in the same batch will read
+            // this when rendering the host buttons (Begin night
+            // instead of Open voting).
+            dayLynchResolved = true;
+            if (!replaying) {
+              const p = players.get(env.data.playerId);
+              const name = p ? p.name : env.data.playerId;
+              narrate(`${name} has been voted out.`);
+            }
+            break;
+
+          case "phaseChanged": {
+            const from = env.data.from;
+            const to = env.data.to;
+            phase = to;
+            if (typeof env.data.day === "number") day = env.data.day;
+            myAction = null;
+            votes = new Map();
+            // Going INTO night clears any prior turn state; the
+            // accompanying nightTurnStarted event in the same batch
+            // will set it.
+            if (to === "night") {
+              currentNightRole = "";
+              nightTurnDeadlineMs = 0;
+              currentNightTurnPhantom = false;
+              stopNightCountdown();
+              stopNightUnlockTimer();
+              dayLynchResolved = false;
+            }
+            renderAll();
+
+            if (!replaying) {
+              narratePhaseChange(from, to, env.data.day);
+            }
+            break;
+          }
+
+          case "nightTurnStarted": {
+            // Engine-stamped deadline (room substitutes the wall-clock
+            // value before broadcasting). On replay this may be in the
+            // past, which is fine — the countdown just shows 0s.
+            currentNightRole = env.data.role || "";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            // Phantom turns happen when no living player holds the
+            // current role. Audio still plays (to avoid leaking which
+            // role is dead) but no one can submit; we use a shorter
+            // server-side timer for them so the night doesn't drag.
+            currentNightTurnPhantom = !!env.data.phantom;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+              // Target buttons stay hidden until the spoken prompt
+              // finishes. We approximate "prompt finished" as
+              // (deadline - 45s), which exactly matches the server's
+              // (grace + 45s) deadline math. Phantom turns have no
+              // actor to gate, so the unlock isn't scheduled.
+              if (!currentNightTurnPhantom) {
+                scheduleNightUnlock(nightTurnDeadlineMs);
+              } else {
+                stopNightUnlockTimer();
+              }
+              narrateNightTurnStarted(currentNightRole, day);
+            } else {
+              nightTurnUnlockMs = 0;
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightTurnEnded": {
+            const endedRole = env.data.role || "";
+            currentNightRole = "";
+            nightTurnDeadlineMs = 0;
+            currentNightTurnPhantom = false;
+            stopNightCountdown();
+            stopNightUnlockTimer();
+            renderActionPanel();
+            renderPlayers();
+            if (!replaying) {
+              narrateNightTurnEnded(endedRole);
+            }
+            break;
+          }
+
+          case "roleAssigned":
+            // Each player only ever sees their own RoleAssigned, so
+            // receiving any RoleAssigned is enough to know roles
+            // have been dealt (server-side projection guarantees the
+            // event only fires for us). The host UI uses this to
+            // swap "Start game" → "Begin night".
+            rolesDealt = true;
+            if (env.data.playerId === myId) {
+              myRole = env.data.role;
+              $("my-role").textContent = env.data.role;
+              renderActionPanel(); // role unlocks new action-panel content
+            }
+            break;
+
+          case "nightActionRecorded":
+            if (env.data.actor === myId) {
+              myAction = env.data.target;
+              renderActionPanel();
+              renderPlayers();
+            }
+            break;
+
+          case "detectiveResult": {
+            // Server-side projection (PrivateTo) guarantees only the
+            // detective receives this event — no extra gating needed
+            // here. We show on REPLAY too: if the detective just
+            // refreshed mid-game, the replay carries every prior
+            // investigation and each call to showDetectiveToast
+            // overwrites the previous one, so the modal ends up
+            // showing the most recent result (which is what the
+            // detective wants to be reminded of).
+            const t = players.get(env.data.target);
+            const name = t ? t.name : env.data.target;
+            showDetectiveToast(name, !!env.data.isMafia);
+            break;
+          }
+
+          case "voteCast":
+            votes.set(env.data.voter, env.data.target);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteChanged":
+            votes.set(env.data.voter, env.data.to);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteRetracted":
+            votes.delete(env.data.voter);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteCleared":
+            votes = new Map();
+            renderActionPanel();
+            renderPlayers();
+            if (!replaying) {
+              narrate("Votes cleared. Cast again.");
+            }
+            break;
+
+          case "gameEnded":
+            winner = env.data.winner || null;
+            if (env.data.finalRoles) {
+              for (const [pid, role] of Object.entries(env.data.finalRoles)) {
+                upsertPlayer(pid, { revealedRole: role });
+              }
+            }
+            renderActionPanel();
+            if (!replaying) {
+              narrate(
+                winner === "town"
+                  ? "Town wins. Roles will now be revealed."
+                  : winner === "mafia"
+                    ? "Mafia wins. Roles will now be revealed."
+                    : "Game over.",
+                { pauseBefore: 300 },
+              );
+            }
+            break;
         }
-        if (env.type === "roleAssigned" && env.data.playerId === myId) {
-          myRole = env.data.role;
-          $("my-role").textContent = env.data.role;
-        }
-        logEvent(env.type, env.data);
       }
 
-      function connect(code, creds) {
+      // --- Narrator scripts -------------------------------------------
+
+      function narratePhaseChange(from, to, dayNum) {
+        if (to === "night") {
+          // First night uses the "everybody close your eyes" preface.
+          // The nightTurnStarted that arrives in the same batch will
+          // immediately follow with "Mafia, wake up…", with a short
+          // pause between them.
+          if (dayNum === 0) {
+            narrate("Everybody, close your eyes.");
+          }
+        } else if (to === "day_discussion") {
+          // day_discussion is entered from TWO places:
+          //   1. night → day_discussion: morning narration after the
+          //      night resolves ("Everybody, wake up. Last night, X
+          //      was killed." / "...nobody died.").
+          //   2. day_vote → day_discussion: a lynch was finalized.
+          //      The room already knows what happened (PlayerLynched
+          //      event), the host announces it verbally, and a
+          //      narrator line here would be redundant or — worse —
+          //      wrong (e.g. announcing "nobody died last night"
+          //      after a lynch). So we narrate ONLY when arriving
+          //      from night.
+          if (from === "night") {
+            const dead = dayDiscussionPendingDeath;
+            dayDiscussionPendingDeath = null;
+            // Slight pause before the wake-up cue so any "doctor,
+            // go to sleep" queued before this one finishes first.
+            narrate("Everybody, wake up.", { pauseBefore: 200 });
+            if (dead) {
+              const p = players.get(dead);
+              const name = p ? p.name : dead;
+              narrate(`Last night, ${name} was killed.`, { pauseBefore: 1800 });
+            } else {
+              narrate("Last night, nobody died.", { pauseBefore: 1800 });
+            }
+          }
+        } else if (to === "day_vote") {
+          narrate("Time to vote.");
+        }
+      }
+
+      function narrateNightTurnStarted(role, dayNum) {
+        if (role === "mafia") {
+          if (dayNum === 0) {
+            narrate("Mafia, wake up. Look around and recognize each other.", { pauseBefore: 600 });
+            // ~3s beat for eye-contact, then the action prompt.
+            narrate("Mafia, choose your target.", { pauseBefore: 3600 });
+          } else {
+            narrate("Mafia, wake up. Choose your target.");
+          }
+        } else if (role === "detective") {
+          narrate("Detective, wake up. Choose someone to investigate.");
+        } else if (role === "doctor") {
+          narrate("Doctor, wake up. Choose someone to save.");
+        }
+      }
+
+      function narrateNightTurnEnded(role) {
+        if (role === "mafia") {
+          narrate("Mafia, go to sleep.");
+        } else if (role === "detective") {
+          narrate("Detective, go to sleep.");
+        } else if (role === "doctor") {
+          narrate("Doctor, go to sleep.");
+        }
+      }
+
+      function connect(code, name, creds) {
         const params = creds
           ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
           : "";
@@ -155,42 +1597,192 @@
 
         ws.onopen = () => {
           setStatus(`connected to ${code}`, "text-emerald-400");
-          if (!creds) {
-            const name = $("name").value || "Player";
-            send("join", { name });
-          }
+          // Only the fresh-join path needs to send a join frame; rejoin
+          // is handled server-side via the URL params.
+          if (!creds) send("join", { name });
         };
         ws.onmessage = (ev) => {
           try { handleServerMessage(JSON.parse(ev.data)); }
-          catch (e) { logEvent("parse-error", { error: String(e) }); }
+          catch (e) { showError(`Failed to parse server message: ${e}`); }
         };
-        ws.onclose = () => setStatus("disconnected", "text-rose-400");
+        ws.onclose = () => {
+          // If we were mid-auto-rejoin and the socket died before we
+          // received any frame (server down, room gone), surface the
+          // lobby instead of leaving the user looking at an empty
+          // in-game view they can't escape.
+          if (pendingRejoinCode) {
+            const stale = pendingRejoinCode;
+            pendingRejoinCode = null;
+            recoverToLobby(stale, "Could not reconnect — the room may be closed.");
+            return;
+          }
+          setStatus("disconnected", "text-rose-400");
+        };
         ws.onerror = () => setStatus("connection error", "text-rose-400");
       }
 
-      // --- wiring --------------------------------------------------------
+      // ----- lobby actions ------------------------------------------------
 
-      $("create").addEventListener("click", async () => {
+      // Both actions need a name. We gate the buttons rather than
+      // popping an alert; the disabled state makes the requirement
+      // visible at a glance.
+      function currentName() {
+        return $("name").value.trim();
+      }
+
+      function refreshLobbyButtons() {
+        const hasName = currentName().length > 0;
+        const fromLink = roomFromURL();
+        $("create").disabled = !hasName;
+        $("join").disabled = !hasName || !fromLink;
+      }
+
+      async function createRoom() {
+        const name = currentName();
+        if (!name) return;
+        setStatus("creating room…", "text-slate-300");
         try {
           const res = await fetch("/api/rooms", { method: "POST" });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const { code } = await res.json();
-          connect(code, null);
+          // Reflect the new room in the address bar so a reload of
+          // THIS tab keeps the same target room, and a copy-paste of
+          // the address bar URL is also a valid invite.
+          history.replaceState(null, "", shareLinkFor(code));
+          connect(code, name, null);
         } catch (e) {
           setStatus(`could not create: ${e.message}`, "text-rose-400");
         }
-      });
+      }
 
-      $("join").addEventListener("click", () => {
-        const code = $("code").value.trim().toUpperCase();
-        if (!code) return;
-        const stored = localStorage.getItem(storageKey(code));
+      function joinRoom(code) {
+        const name = currentName();
+        if (!name || !code) return;
+        const stored = sessionStorage.getItem(storageKey(code));
         const creds = stored ? JSON.parse(stored) : null;
-        connect(code, creds);
+        connect(code, name, creds);
+      }
+
+      // ----- URL-driven lobby setup ---------------------------------------
+
+      // recoverToLobby restores the pre-game lobby view after an
+      // auto-rejoin attempt failed (typically: server restart cleared
+      // the room, or stored credentials are stale). It assumes the
+      // game view was never shown (we caught the error before
+      // "joined" / "rejoined" arrived).
+      function recoverToLobby(code, note) {
+        $("game").classList.add("hidden");
+        $("lobby").classList.remove("hidden");
+        // Ensure the URL still points at the failed-to-rejoin room
+        // so applyURLState() formats the lobby as "Join room ZMPP".
+        history.replaceState(null, "", shareLinkFor(code));
+        applyURLState();
+        setStatus(note, "text-amber-400");
+      }
+
+      // tryAutoRejoin runs at page load. If the URL carries a room
+      // code AND sessionStorage has matching rejoin credentials, we
+      // open a WebSocket immediately and let the server replay the
+      // event log — the user never sees the lobby. Returns true if a
+      // rejoin attempt was launched.
+      function tryAutoRejoin() {
+        const code = roomFromURL();
+        if (!code) return false;
+        const stored = sessionStorage.getItem(storageKey(code));
+        if (!stored) return false;
+        let creds;
+        try { creds = JSON.parse(stored); }
+        catch { sessionStorage.removeItem(storageKey(code)); return false; }
+        if (!creds || !creds.playerId || !creds.secret) {
+          sessionStorage.removeItem(storageKey(code));
+          return false;
+        }
+        pendingRejoinCode = code;
+        setStatus(`reconnecting to ${code}…`, "text-slate-300");
+        // The server takes name from its own roster on rejoin, so
+        // we pass null for the name argument.
+        connect(code, null, creds);
+        return true;
+      }
+
+      function applyURLState() {
+        const fromLink = roomFromURL();
+        if (fromLink) {
+          // Visitor came from a share link. Make joining the obvious
+          // action; hide Create so they don't accidentally spawn a
+          // second room.
+          $("lobby-title").textContent = `Join room ${fromLink}`;
+          $("lobby-subtitle").textContent = "Pick a name to join.";
+          $("join-code").textContent = fromLink;
+          $("join").classList.remove("hidden");
+          $("create").classList.add("hidden");
+        } else {
+          $("lobby-title").textContent = "Start a game";
+          $("lobby-subtitle").textContent = "Pick a name. Create a room or join one via a share link.";
+          $("join").classList.add("hidden");
+          $("create").classList.remove("hidden");
+        }
+        refreshLobbyButtons();
+      }
+
+      // ----- wiring -------------------------------------------------------
+
+      $("name").addEventListener("input", refreshLobbyButtons);
+      $("name").addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        if (roomFromURL()) joinRoom(roomFromURL());
+        else createRoom();
       });
 
-      $("start").addEventListener("click", () => send("startGame"));
-      $("advance").addEventListener("click", () => send("advancePhase"));
+      $("create").addEventListener("click", createRoom);
+      $("join").addEventListener("click", () => joinRoom(roomFromURL()));
+
+      $("manual-join").addEventListener("click", () => {
+        const code = $("manual-code").value.trim().toUpperCase();
+        if (code) joinRoom(code);
+      });
+
+      // Detective modal dismissal: the button, clicking the dimmed
+      // overlay (but not the card), and Escape all close it.
+      $("detective-modal-dismiss").addEventListener("click", hideDetectiveToast);
+      $("detective-modal").addEventListener("click", (e) => {
+        if (e.target.id === "detective-modal") hideDetectiveToast();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          const m = $("detective-modal");
+          if (m && !m.classList.contains("hidden")) hideDetectiveToast();
+        }
+      });
+
+      $("copy-link").addEventListener("click", async () => {
+        const url = $("share-url").textContent;
+        const btn = $("copy-link");
+        const original = btn.textContent;
+        try {
+          await navigator.clipboard.writeText(url);
+          btn.textContent = "Copied!";
+        } catch {
+          // Clipboard API can be unavailable (http on a LAN IP, older
+          // browsers). Fall back to selecting the text so the user can
+          // Cmd/Ctrl-C it themselves.
+          const range = document.createRange();
+          range.selectNodeContents($("share-url"));
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          btn.textContent = "Select & copy";
+        }
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      });
+
+      // On page load: if the URL has ?room= AND sessionStorage has
+      // rejoin credentials for that room, reconnect silently. Only
+      // show the lobby if there's nothing to rejoin to. This is what
+      // makes a tab refresh a no-op from the player's perspective.
+      if (!tryAutoRejoin()) {
+        applyURLState();
+      }
 
       // Quick health probe to confirm the server is up before anyone clicks.
       (async () => {

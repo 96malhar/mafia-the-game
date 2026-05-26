@@ -29,10 +29,20 @@ func (p Player) Alive() bool { return p.alive }
 // We keep fields unexported so the compiler enforces this rule across the
 // codebase — no one can write `state.phase = PhaseEnded` from another
 // package even by accident.
+//
+// Roster model: instead of a fixed Roles slice configured at CreateGame,
+// the engine carries (minPlayers, maxPlayers, mafiaCount). The actual
+// per-player role list is composed at StartGame from
+// (playerCount, mafiaCount): Mafia×N, Detective, Doctor, Villager×rest.
+// This lets the host tune the game during the lobby without having to
+// know up-front exactly how many friends will show up.
 type GameState struct {
-	id    GameID
-	seed  int64
-	roles []Role // configured roster: roles to be dealt at StartGame
+	id   GameID
+	seed int64
+
+	minPlayers int // minimum players required to call StartGame
+	maxPlayers int // hard cap on AddPlayer
+	mafiaCount int // number of Mafia roles to deal at StartGame
 
 	phase   Phase
 	day     int // day number; 0 in Lobby/first Night, 1 after first day starts
@@ -48,9 +58,29 @@ type GameState struct {
 	// or deleted as players change or retract their vote.
 	votes map[PlayerID]PlayerID
 
-	// dayVoteExtended records whether the current day has already used
-	// its single re-vote extension. Reset each time a fresh day begins.
-	dayVoteExtended bool
+	// dayLynchResolved records whether this day has already had a vote
+	// finalized. When true, the only legal host transition out of
+	// PhaseDayDiscussion is BeginNight; OpenVoting is rejected. Reset
+	// to false each time a fresh DayDiscussion begins (out of Night).
+	dayLynchResolved bool
+
+	// --- Night turn state ----------------------------------------------
+	//
+	// Nights are strictly turn-ordered: one role acts at a time, in
+	// nightTurnQueue order. The currently-active role is at index 0
+	// (currentNightRole), and the deadline below is when its turn
+	// auto-passes if no action arrives. Cleared (zero values) any time
+	// the game is not in PhaseNight, or when the queue is exhausted
+	// just before resolveNight runs.
+	//
+	// We keep these as ENGINE-OWNED state because the engine is the
+	// authority on "whose turn is it"; the room layer only schedules
+	// wall-clock callbacks against the deadline. The deadline is stored
+	// as unix-millis to keep the engine free of time.Time imports and
+	// to keep the wire encoding trivial.
+	currentNightRole        Role
+	nightTurnDeadlineMillis int64
+	nightTurnQueue          []Role
 }
 
 // newState constructs an empty state in PhaseLobby. Unexported because
@@ -82,6 +112,49 @@ func (s *GameState) Players() []Player {
 
 // PlayerCount returns the number of players in the game (alive or dead).
 func (s *GameState) PlayerCount() int { return len(s.players) }
+
+// MinPlayers returns the minimum player count required to start.
+func (s *GameState) MinPlayers() int { return s.minPlayers }
+
+// MaxPlayers returns the hard cap on AddPlayer.
+func (s *GameState) MaxPlayers() int { return s.maxPlayers }
+
+// MafiaCount returns the current configured number of mafia for the
+// upcoming game. May still be adjusted (via SetMafiaCount) while the
+// game is in PhaseLobby.
+func (s *GameState) MafiaCount() int { return s.mafiaCount }
+
+// DayLynchResolved reports whether the current day has already had a
+// vote finalized (i.e. a lynch has been resolved or the day was
+// otherwise concluded). Used by the UI to decide which host buttons
+// to surface — pre-finalize the host gets Open/Clear/Finalize voting,
+// post-finalize they only get Begin Night.
+func (s *GameState) DayLynchResolved() bool { return s.dayLynchResolved }
+
+// CurrentNightRole returns the role whose turn it currently is during
+// PhaseNight, or the empty Role between turns / outside of Night.
+func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
+
+// NightTurnDeadlineMillis returns the unix-millis deadline at which the
+// current night-turn auto-passes, or 0 if no turn is active.
+func (s *GameState) NightTurnDeadlineMillis() int64 { return s.nightTurnDeadlineMillis }
+
+// CurrentNightTurnIsPhantom reports whether the active night turn has
+// no living player holding its role. Such turns are still emitted (so
+// the moderator audio doesn't leak which role is dead) but accept no
+// NightAction. Returns false when there is no active turn or when at
+// least one player of the current role is alive.
+func (s *GameState) CurrentNightTurnIsPhantom() bool {
+	if s.currentNightRole == "" {
+		return false
+	}
+	for i := range s.players {
+		if s.players[i].alive && s.players[i].role == s.currentNightRole {
+			return false
+		}
+	}
+	return true
+}
 
 // findPlayer returns a pointer to the player record and true, or nil and
 // false if no such player exists. Unexported: rule helpers use it; the

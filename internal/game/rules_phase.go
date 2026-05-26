@@ -1,45 +1,66 @@
 package game
 
-// applyAdvancePhase moves the game to its next logical state and
-// resolves any pending actions/votes for the phase being left.
+// applyAdvancePhase ends the current night turn (PhaseNight only). It
+// is an INTERNAL command, invoked by the room's per-turn timer when a
+// real role times out or a phantom turn elapses. Daytime pacing is no
+// longer driven by AdvancePhase: hosts use BeginNight / OpenVoting /
+// ClearVotes / FinalizeVotes for those transitions.
 //
-// Transition table:
+// Transition summary:
 //
-//	Lobby            -> ErrWrongPhase (use StartGame).
-//	Night            -> resolveNight; win-check; if not over, -> DayDiscussion.
-//	DayDiscussion    -> -> DayVote (no resolution).
-//	DayVote (1st)    -> resolveDayVote; if decisive lynch + win-check;
-//	                    else if not yet extended, clear votes and stay in
-//	                    DayVote with dayVoteExtended=true (emit VoteExtended);
-//	                    else end day with no lynch and continue to Night.
-//	Ended            -> ErrGameEnded.
-//
-// On any transition that moves between phases, a PhaseChanged event is
-// emitted. The day number is incremented when entering DayDiscussion.
+//	Lobby / DayDiscussion / DayVote -> ErrWrongPhase
+//	Ended                           -> ErrGameEnded
+//	Night, midQueue                 -> NightTurnEnded + NightTurnStarted (next role)
+//	Night, lastTurn                 -> NightTurnEnded + resolveNight;
+//	                                   if not won -> DayDiscussion (Day N+1).
 func (g *Game) applyAdvancePhase(_ AdvancePhase) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
 	switch g.state.phase {
-	case PhaseLobby:
-		return nil, ErrWrongPhase
 	case PhaseEnded:
 		return nil, ErrGameEnded
 	case PhaseNight:
 		return g.advanceFromNight(), nil
-	case PhaseDayDiscussion:
-		return g.advanceFromDayDiscussion(), nil
-	case PhaseDayVote:
-		return g.advanceFromDayVote(), nil
 	default:
+		// Day phases are host-driven; AdvancePhase is invalid here.
 		return nil, ErrWrongPhase
 	}
 }
 
-// advanceFromNight resolves night actions, checks for a winner, and if
-// the game continues, transitions to PhaseDayDiscussion and increments
-// the day counter.
+// advanceFromNight ends the current role's turn. If more roles remain
+// in the night-turn queue, it pops the next one and emits
+// NightTurnStarted. Otherwise it runs resolveAndExitNight which
+// handles resolution + win-check + transition to DayDiscussion.
 func (g *Game) advanceFromNight() []Event {
+	var events []Event
+	if g.state.currentNightRole != "" {
+		events = append(events, NightTurnEnded{Role: g.state.currentNightRole})
+		g.state.currentNightRole = ""
+		g.state.nightTurnDeadlineMillis = 0
+	}
+
+	if len(g.state.nightTurnQueue) > 0 {
+		events = append(events, g.beginNextNightTurn()...)
+		return events
+	}
+	events = append(events, g.resolveAndExitNight()...)
+	return events
+}
+
+// resolveAndExitNight is the common Night-end path shared by:
+//   - advanceFromNight when the queue is exhausted by skip/timeout;
+//   - applyNightAction when the action ended the last turn in the queue.
+//
+// It runs resolveNight, checks for a win, and transitions to
+// DayDiscussion (or PhaseEnded). The day counter is incremented when
+// entering DayDiscussion. Caller is responsible for emitting any
+// NightTurnEnded events for the prior turn before calling this.
+//
+// DayDiscussion is entered with dayLynchResolved=false so the host's
+// OpenVoting command is enabled; the only way out of DayDiscussion
+// after that is the host pressing the appropriate button.
+func (g *Game) resolveAndExitNight() []Event {
 	events := g.resolveNight()
 
 	if endEvt, ended := g.checkWin(); ended {
@@ -53,46 +74,110 @@ func (g *Game) advanceFromNight() []Event {
 	from := g.state.phase
 	g.state.day++
 	g.state.phase = PhaseDayDiscussion
-	g.state.dayVoteExtended = false
+	g.state.dayLynchResolved = false
 	events = append(events, PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day})
 	return events
 }
 
-// advanceFromDayDiscussion is a no-op transition into PhaseDayVote.
-// Votes are not yet possible during discussion, so there is no
-// resolution to perform here.
-func (g *Game) advanceFromDayDiscussion() []Event {
-	from := g.state.phase
-	g.state.phase = PhaseDayVote
-	if g.state.votes == nil {
-		g.state.votes = make(map[PlayerID]PlayerID)
+// applyBeginNight transitions into PhaseNight, kicking off the night
+// turn sequence atomically. Valid from two places:
+//
+//  1. PhaseLobby AFTER StartGame has dealt roles. This starts Night 1
+//     (day stays 0).
+//  2. PhaseDayDiscussion AFTER a vote has been finalized for the day
+//     (dayLynchResolved == true). This starts Night N+1 (day stays as
+//     the just-resolved day number; resolveAndExitNight increments it
+//     before transitioning to the next DayDiscussion).
+//
+// In both cases the engine emits PhaseChanged{To: PhaseNight} followed
+// by the first NightTurnStarted (mafia, or its phantom).
+func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
 	}
-	return []Event{PhaseChanged{From: from, To: PhaseDayVote, Day: g.state.day}}
+	switch g.state.phase {
+	case PhaseLobby:
+		// Roles must have been dealt by StartGame first.
+		if len(g.state.players) == 0 || g.state.players[0].role == "" {
+			return nil, ErrWrongPhase
+		}
+	case PhaseDayDiscussion:
+		// Only after a finalized vote — i.e. the room is between
+		// "X was lynched" and the next night.
+		if !g.state.dayLynchResolved {
+			return nil, ErrWrongPhase
+		}
+	default:
+		return nil, ErrWrongPhase
+	}
+
+	from := g.state.phase
+	g.state.phase = PhaseNight
+	g.state.votes = nil
+	g.state.dayLynchResolved = false
+	events := []Event{PhaseChanged{From: from, To: PhaseNight, Day: g.state.day}}
+	events = append(events, g.beginNightTurns()...)
+	return events, nil
 }
 
-// advanceFromDayVote resolves the day vote, applying the extension rule:
-//
-//   - Unique plurality              -> lynch + win-check; transition to Night.
-//   - No plurality, not yet extended -> emit VoteExtended; clear votes;
-//     remain in PhaseDayVote.
-//   - No plurality, already extended -> end day with no lynch; win-check;
-//     transition to Night.
-func (g *Game) advanceFromDayVote() []Event {
-	var events []Event
-	target, decisive := g.resolveDayVote()
+// applyOpenVoting transitions PhaseDayDiscussion into PhaseDayVote.
+// Valid only when no lynch has been resolved yet on this day (after a
+// finalized vote, the day is effectively over and the only legal
+// action is BeginNight).
+func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase != PhaseDayDiscussion {
+		return nil, ErrWrongPhase
+	}
+	if g.state.dayLynchResolved {
+		return nil, ErrWrongPhase
+	}
+	from := g.state.phase
+	g.state.phase = PhaseDayVote
+	g.state.votes = make(map[PlayerID]PlayerID)
+	return []Event{PhaseChanged{From: from, To: PhaseDayVote, Day: g.state.day}}, nil
+}
 
-	if !decisive {
-		if !g.state.dayVoteExtended {
-			g.state.dayVoteExtended = true
-			g.state.votes = make(map[PlayerID]PlayerID)
-			events = append(events, VoteExtended{Day: g.state.day})
-			return events
-		}
-		// Already extended once and still indecisive: no lynch, move on.
-		return g.endDayToNight(events)
+// applyClearVotes wipes the in-flight vote tally so the room can
+// re-vote from a clean slate. Stays in PhaseDayVote.
+//
+// Returns ErrNoChange if there are no votes to clear, to avoid noisy
+// double-clicks producing redundant events.
+func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase != PhaseDayVote {
+		return nil, ErrWrongPhase
+	}
+	if len(g.state.votes) == 0 {
+		return nil, ErrNoChange
+	}
+	g.state.votes = make(map[PlayerID]PlayerID)
+	return []Event{VoteCleared{Day: g.state.day}}, nil
+}
+
+// applyFinalizeVotes resolves the current vote tally. Requires a
+// unique plurality (decisive lynch); otherwise rejects with ErrNoChange
+// so the host can ClearVotes and re-run the round. On success, lynches
+// the plurality target and transitions to PhaseDayDiscussion with
+// dayLynchResolved=true (or PhaseEnded if the lynch ends the game).
+func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase != PhaseDayVote {
+		return nil, ErrWrongPhase
 	}
 
-	// Decisive lynch.
+	target, decisive := g.resolveDayVote()
+	if !decisive {
+		return nil, ErrNoChange
+	}
+
+	var events []Event
 	if tp, ok := g.state.findPlayer(target); ok {
 		tp.alive = false
 	}
@@ -103,21 +188,69 @@ func (g *Game) advanceFromDayVote() []Event {
 		from := g.state.phase
 		g.state.phase = PhaseEnded
 		events = append(events, PhaseChanged{From: from, To: PhaseEnded, Day: g.state.day})
-		return events
+		return events, nil
 	}
-	return g.endDayToNight(events)
+
+	// Lynch but no win: return to DayDiscussion with the resolved flag
+	// set so the only legal host command is BeginNight.
+	from := g.state.phase
+	g.state.phase = PhaseDayDiscussion
+	g.state.votes = nil
+	g.state.dayLynchResolved = true
+	events = append(events, PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day})
+	return events, nil
 }
 
-// endDayToNight performs the bookkeeping shared by both the "no lynch
-// after extension" and "lynch did not end the game" exits from
-// PhaseDayVote. It clears day-scoped state and emits PhaseChanged.
-func (g *Game) endDayToNight(events []Event) []Event {
-	from := g.state.phase
-	g.state.phase = PhaseNight
-	g.state.votes = nil
-	g.state.dayVoteExtended = false
-	events = append(events, PhaseChanged{From: from, To: PhaseNight, Day: g.state.day})
-	return events
+// beginNightTurns is called whenever the game enters PhaseNight. It
+// builds the night turn queue with ALL acting roles in the canonical
+// order (Mafia → Detective → Doctor), regardless of whether any
+// player of that role is still alive. Turns for roles with no living
+// holder are emitted as "phantom" turns: they take a (shorter,
+// randomized) wall-clock duration on the room side and accept no
+// NightAction, but the moderator narration still plays — otherwise
+// the room would deduce a role is dead just from the missing audio
+// cue. The night ends when the whole queue is exhausted.
+//
+// Returns the events to be appended after PhaseChanged.
+func (g *Game) beginNightTurns() []Event {
+	g.state.nightTurnQueue = g.state.nightTurnQueue[:0]
+	// Canonical order. Mafia first so the doctor (last) saves with the
+	// most information about who's been targeted.
+	g.state.nightTurnQueue = append(g.state.nightTurnQueue,
+		RoleMafia, RoleDetective, RoleDoctor)
+	return g.beginNextNightTurn()
+}
+
+// beginNextNightTurn pops the front of the queue and sets it as the
+// current role. Deadline is left at 0 — the engine is timeless; the
+// room layer stamps a real deadline before broadcasting. The Phantom
+// flag on the emitted event tells the room/clients to treat this turn
+// as "audio only": no action will be accepted, and the room arms a
+// shorter (randomized) wall-clock timer.
+func (g *Game) beginNextNightTurn() []Event {
+	if len(g.state.nightTurnQueue) == 0 {
+		return nil
+	}
+	next := g.state.nightTurnQueue[0]
+	g.state.nightTurnQueue = g.state.nightTurnQueue[1:]
+	g.state.currentNightRole = next
+	g.state.nightTurnDeadlineMillis = 0
+	return []Event{NightTurnStarted{
+		Role:     next,
+		Deadline: 0,
+		Phantom:  !g.hasLivingRole(next),
+	}}
+}
+
+// hasLivingRole reports whether at least one living player holds the
+// given role.
+func (g *Game) hasLivingRole(r Role) bool {
+	for i := range g.state.players {
+		if g.state.players[i].alive && g.state.players[i].role == r {
+			return true
+		}
+	}
+	return false
 }
 
 // checkWin evaluates win conditions and, if a faction has won, returns

@@ -21,12 +21,27 @@ type Outbound interface {
 
 // OutJoined acknowledges a successful first-time join. The Secret is
 // the rejoin credential; the client must remember it (typically in
-// localStorage) to reconnect later. Sent only to the joining subscriber.
+// sessionStorage) to reconnect later. Sent only to the joining
+// subscriber.
+//
+// Name echoes back the display name the player chose. The server is
+// the source of truth for player identity (display name included), so
+// rejoiners receive the same field without needing to remember it
+// client-side.
+//
+// Events is the projected event log of everything that happened in
+// the room BEFORE this join, filtered through the joiner's projection.
+// This lets a late joiner reconstruct who else is already in the room
+// (and any other public state) without re-querying. The PlayerJoined
+// event for THIS join is NOT in Events — it is broadcast separately
+// to all subscribers (including the joiner) immediately after.
 type OutJoined struct {
 	PlayerID game.PlayerID
+	Name     string
 	Secret   string
 	RoomCode string
 	IsHost   bool
+	Events   []game.Event
 }
 
 func (OutJoined) isOutbound() {}
@@ -36,6 +51,7 @@ func (OutJoined) isOutbound() {}
 // Sent only to the rejoining subscriber.
 type OutRejoined struct {
 	PlayerID game.PlayerID
+	Name     string
 	RoomCode string
 	IsHost   bool
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	mrand "math/rand/v2"
 	"sync"
 	"time"
 
@@ -59,9 +60,13 @@ type Room struct {
 }
 
 // playerSlot is the room-layer record of a player. It holds the rejoin
-// secret and the currently-attached subscriber (nil if disconnected).
+// secret, display name, and the currently-attached subscriber (nil if
+// disconnected). The engine has no concept of a name beyond its
+// PlayerJoined event payload; we keep our own copy here so rejoins can
+// echo it back.
 type playerSlot struct {
 	id     game.PlayerID
+	name   string
 	secret string
 	sub    *Subscriber
 }
@@ -73,50 +78,178 @@ type Config struct {
 	// generates one from its code.
 	GameID game.GameID
 
-	// Roles is the multiset of roles for the upcoming game. The room
-	// requires len(players) == len(Roles) before StartGame succeeds.
-	// If empty, defaults to a 5-player roster.
-	Roles []game.Role
+	// MinPlayers, MaxPlayers, MafiaCount describe the variable lobby
+	// configuration the engine will use. Zero values fall back to
+	// engine defaults (currently 5..20 players, ~maxPlayers/3 mafia).
+	MinPlayers int
+	MaxPlayers int
+	MafiaCount int
 
 	// Seed is the deterministic shuffle seed passed to the engine.
 	// 0 (the default) is a valid seed.
 	Seed int64
 
-	// PhaseDurations controls how long each timed phase lasts before
-	// the room auto-advances. Phases not in the map have no automatic
-	// timeout (PhaseLobby and PhaseEnded are intentionally untimed).
-	// If nil, defaults are applied: Night 30s, Discussion 60s, Vote 30s.
+	// PhaseDurations controls per-phase auto-advance timers. With the
+	// host-driven daytime flow (BeginNight / OpenVoting / ClearVotes /
+	// FinalizeVotes), Day phases NO LONGER auto-advance by default —
+	// the host paces them. Tests can still set durations here to drive
+	// auto-advance behavior, but the production default is empty.
 	//
-	// A duration of 0 (e.g. for a phase you want to disable) means no
-	// timer — useful for tests that drive AdvancePhase manually.
+	// PhaseLobby and PhaseEnded are intentionally untimed.
+	//
+	// NOTE: PhaseNight is turn-ordered. Use NightActionDuration +
+	// NightTurnGrace + PhantomTurnDuration to control per-role timing;
+	// a PhaseNight entry here has no effect.
+	//
+	// A duration of 0 disables the timer for that phase — useful for
+	// tests that drive things manually.
 	PhaseDurations map[game.Phase]time.Duration
+
+	// NightActionDuration is the time a role has to ACT on its night
+	// turn, measured from the moment the spoken narration prompt
+	// finishes. Default 10 seconds.
+	//
+	// The total per-turn deadline broadcast to clients is
+	//   NightTurnGrace(role, day) + NightActionDuration
+	// so that the actor still gets their full action window even when
+	// the prompt audio (or its visible-card fallback) is mid-playback
+	// when the turn starts.
+	NightActionDuration time.Duration
+
+	// NightTurnGrace returns the audio-grace period for the given role
+	// on the given day (engine's state.day, 0 for the first night).
+	// It's added BEFORE NightActionDuration to form the per-turn
+	// deadline. Default returns DefaultNightTurnGrace.
+	//
+	// Day 0 mafia gets a longer grace because the narration includes
+	// the "look around and recognize each other" beat.
+	NightTurnGrace func(role game.Role, day int) time.Duration
+
+	// PhantomTurnDuration returns the wall-clock duration of a phantom
+	// night turn — a turn for a role with no living holder. The
+	// narrator audio still plays so the room can't deduce a role is
+	// dead from the missing cues; but no action will be accepted, so
+	// we shorten the timer to something plausible (a fast-acting
+	// actor's range) rather than the full grace + 45s.
+	//
+	// Default DefaultPhantomTurnDuration returns a uniformly-random
+	// duration in [8s, 20s]. The room owns the randomness so the
+	// engine stays deterministic.
+	PhantomTurnDuration func(role game.Role, day int) time.Duration
+
+	// DetectivePauseDuration is the wall-clock pause inserted AFTER a
+	// detective records a night action and BEFORE the next role's
+	// turn begins. The engine emits DetectiveResult at action time
+	// (so the detective's modal pops immediately) but stops short of
+	// starting the doctor's turn — this pause is what gives the
+	// detective a beat to read the result before audio narration for
+	// the doctor kicks in. Default DefaultDetectivePauseDuration.
+	DetectivePauseDuration time.Duration
 
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
 }
 
-// DefaultPhaseDurations are the per-phase auto-advance timers a room
-// uses if Config.PhaseDurations is nil. Exposed for callers that want
-// to override one entry without re-declaring the rest.
-var DefaultPhaseDurations = map[game.Phase]time.Duration{
-	game.PhaseNight:         30 * time.Second,
-	game.PhaseDayDiscussion: 60 * time.Second,
-	game.PhaseDayVote:       30 * time.Second,
+// DefaultPhaseDurations is the empty map used when Config.PhaseDurations
+// is nil — daytime pacing is host-driven, so there's nothing to auto-
+// advance by default. Tests can pass explicit non-zero durations to
+// keep their loops short.
+var DefaultPhaseDurations = map[game.Phase]time.Duration{}
+
+// DefaultNightActionDuration is the action window every role gets on
+// its night turn, measured from when the narration prompt finishes.
+const DefaultNightActionDuration = 45 * time.Second
+
+// DefaultDetectivePauseDuration is how long the room waits after a
+// detective records a night action before kicking off the next
+// queued role's turn. Tuned to comfortably cover "read the modal +
+// click Got it" without dragging the night out.
+const DefaultDetectivePauseDuration = 3 * time.Second
+
+// DefaultNightTurnGrace returns the per-role audio grace used when
+// Config.NightTurnGrace is nil. The values are tuned to match the
+// narrator script in web/index.html — kept in sync intentionally so
+// the action window starts roughly when the spoken prompt ends.
+//
+// Day 0 mafia spans two utterances with a beat between them:
+//
+//	"Mafia, wake up. Look around and recognize each other." (~2.5s)
+//	[3.6s pause]
+//	"Mafia, choose your target." (~1.5s)
+//
+// So the grace there is ~5.5s. Other roles play a single short prompt
+// (~2s) and get a small buffer to round out to 2.5s.
+func DefaultNightTurnGrace(role game.Role, day int) time.Duration {
+	if role == game.RoleMafia && day == 0 {
+		return 5500 * time.Millisecond
+	}
+	return 2500 * time.Millisecond
+}
+
+// PhantomTurnMin and PhantomTurnMax bound the randomized duration of a
+// phantom night turn. The values are tuned so a phantom turn feels like
+// a real turn where the actor decided quickly: long enough to be
+// plausible, short enough not to drag the night out per dead role.
+const (
+	PhantomTurnMin = 8 * time.Second
+	PhantomTurnMax = 20 * time.Second
+)
+
+// DefaultPhantomTurnDuration returns a uniformly-random wall-clock
+// duration in [PhantomTurnMin, PhantomTurnMax] for a phantom (dead-
+// role) night turn. We bake in the audio grace for Day 0 mafia so the
+// "look around" beat has time to play; for other roles the lower
+// bound already comfortably covers the ~2.5s prompt.
+func DefaultPhantomTurnDuration(role game.Role, day int) time.Duration {
+	lo, hi := PhantomTurnMin, PhantomTurnMax
+	if role == game.RoleMafia && day == 0 {
+		// The Day-0 mafia narration takes ~5.5s on its own; bump the
+		// floor so the phantom turn never undercuts the audio.
+		if lo < 7*time.Second {
+			lo = 7 * time.Second
+		}
+	}
+	span := hi - lo
+	if span <= 0 {
+		return lo
+	}
+	return lo + time.Duration(mrand.Int64N(int64(span)+1))
 }
 
 func (c *Config) applyDefaults() {
-	if len(c.Roles) == 0 {
-		c.Roles = []game.Role{
-			game.RoleMafia, game.RoleDetective, game.RoleDoctor,
-			game.RoleVillager, game.RoleVillager,
-		}
-	}
+	// Zero values for MinPlayers/MaxPlayers/MafiaCount are intentionally
+	// left as-is so the engine's CreateGame can apply its own defaults
+	// (keeping the "what's the default lobby?" answer in one place).
 	if c.PhaseDurations == nil {
 		c.PhaseDurations = DefaultPhaseDurations
+	}
+	if c.NightActionDuration == 0 {
+		c.NightActionDuration = DefaultNightActionDuration
+	}
+	if c.NightTurnGrace == nil {
+		c.NightTurnGrace = DefaultNightTurnGrace
+	}
+	if c.PhantomTurnDuration == nil {
+		c.PhantomTurnDuration = DefaultPhantomTurnDuration
+	}
+	if c.DetectivePauseDuration == 0 {
+		c.DetectivePauseDuration = DefaultDetectivePauseDuration
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+}
+
+// nightTurnDuration returns the total per-turn deadline for the given
+// role on the given day. Real turns use NightTurnGrace +
+// NightActionDuration; phantom turns (no living holder of role) use
+// the shorter PhantomTurnDuration to avoid stalling the night while
+// still letting the audio cue play.
+func (c *Config) nightTurnDuration(role game.Role, day int, phantom bool) time.Duration {
+	if phantom {
+		return c.PhantomTurnDuration(role, day)
+	}
+	return c.NightTurnGrace(role, day) + c.NightActionDuration
 }
 
 // newRoom constructs a Room and primes its engine with CreateGame. The
@@ -142,7 +275,13 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	if gid == "" {
 		gid = game.GameID("game-" + code)
 	}
-	_, err := r.g.Apply(game.CreateGame{GameID: gid, Roles: cfg.Roles, Seed: cfg.Seed})
+	_, err := r.g.Apply(game.CreateGame{
+		GameID:     gid,
+		MinPlayers: cfg.MinPlayers,
+		MaxPlayers: cfg.MaxPlayers,
+		MafiaCount: cfg.MafiaCount,
+		Seed:       cfg.Seed,
+	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("room: CreateGame failed: %w", err)
@@ -261,32 +400,42 @@ func (r *Room) Run() {
 	}
 }
 
-// handlePhaseTimer is invoked when the current phase's duration
-// elapses. It synthesizes an AdvancePhase as if a host had clicked
-// "next phase" — the engine validates the transition itself, so a
-// stale fire (e.g. phase already advanced) just becomes a no-op error
-// that we drop.
+// handlePhaseTimer is invoked when the current phase's (or night
+// turn's) duration elapses. It synthesizes an AdvancePhase, which the
+// engine interprets context-sensitively:
+//   - In a day phase, it transitions to the next phase.
+//   - In a night, it ends the current role's turn.
+//
+// appendAndBroadcast handles arming the next timer in either case
+// (per-turn during Night, per-phase during day phases), so we don't
+// re-arm here.
 func (r *Room) handlePhaseTimer() {
-	r.phaseTimer = nil // consumed; resetPhaseTimer below will recreate
+	r.phaseTimer = nil
 	events, err := r.g.Apply(game.AdvancePhase{})
 	if err != nil {
-		// AdvancePhase can fail in PhaseEnded, etc. Not an error from
-		// the timer's perspective.
+		// AdvancePhase fails in PhaseEnded; not a timer-level error.
 		r.log.Debug("phase timer advance rejected", "err", err)
-		r.resetPhaseTimer()
 		return
 	}
 	r.appendAndBroadcast(events)
-	r.resetPhaseTimer()
 }
 
 // resetPhaseTimer sets phaseTimer for the current phase based on
 // cfg.PhaseDurations. If the current phase has no configured duration
 // (or duration is 0), the timer is cleared.
+//
+// Note: PhaseNight is intentionally skipped here — Night timing is
+// driven by per-turn timers (resetNightTurnTimer), keyed off
+// NightTurnStarted events rather than the phase entry itself.
 func (r *Room) resetPhaseTimer() {
 	r.stopPhaseTimer()
 
 	phase := r.g.State().Phase()
+	if phase == game.PhaseNight {
+		// Per-turn timer takes over; the NightTurnStarted that fires
+		// alongside this PhaseChanged will arm it via resetNightTurnTimer.
+		return
+	}
 	dur := r.cfg.PhaseDurations[phase]
 	if dur <= 0 {
 		return
@@ -349,7 +498,7 @@ func (r *Room) handleJoin(m inJoin) {
 		return
 	}
 
-	slot := &playerSlot{id: pid, secret: secret, sub: m.From}
+	slot := &playerSlot{id: pid, name: m.Name, secret: secret, sub: m.From}
 	r.players[pid] = slot
 	r.subs[m.From] = struct{}{}
 	m.From.setPlayerID(pid)
@@ -361,11 +510,19 @@ func (r *Room) handleJoin(m inJoin) {
 		r.host = pid
 	}
 
+	// Project the PRIOR event log so the new player can see who's
+	// already in the room. r.events at this point contains everything
+	// that happened before this join; the new PlayerJoined will be
+	// broadcast separately via appendAndBroadcast below.
+	priorEvents := game.Project(pid, r.events, r.g.State())
+
 	r.sendOne(m.From, OutJoined{
 		PlayerID: pid,
+		Name:     m.Name,
 		Secret:   secret,
 		RoomCode: r.code,
 		IsHost:   isHost,
+		Events:   priorEvents,
 	})
 	r.appendAndBroadcast(events)
 }
@@ -395,6 +552,7 @@ func (r *Room) handleRejoin(m inRejoin) {
 
 	r.sendOne(m.From, OutRejoined{
 		PlayerID: m.PlayerID,
+		Name:     slot.name,
 		RoomCode: r.code,
 		IsHost:   m.PlayerID == r.host,
 		Events:   game.Project(m.PlayerID, r.events, r.g.State()),
@@ -422,6 +580,15 @@ func (r *Room) handleLeave(m inLeave) {
 // fields on the command to match the originating subscriber. This is
 // the auth boundary: clients cannot impersonate other players even by
 // crafting the command with another PlayerID.
+//
+// Two additional gates beyond identity rewriting:
+//
+//  1. Host-only commands (StartGame, BeginNight, OpenVoting,
+//     ClearVotes, FinalizeVotes, SetMafiaCount) are rejected from
+//     non-host subscribers with a "forbidden" error.
+//  2. AdvancePhase is INTERNAL — it's the room's per-turn-timer
+//     signal. Forwarding it from a client would let any player skip
+//     the active night turn, so we reject those outright.
 func (r *Room) handleCommand(m inCommand) {
 	if m.From == nil {
 		return
@@ -432,6 +599,22 @@ func (r *Room) handleCommand(m inCommand) {
 		return
 	}
 
+	if _, isAdvance := m.Cmd.(game.AdvancePhase); isAdvance {
+		r.sendOne(m.From, OutError{
+			Code:    "forbidden",
+			Message: "advancePhase is server-internal",
+		})
+		return
+	}
+
+	if isHostOnly(m.Cmd) && pid != r.host {
+		r.sendOne(m.From, OutError{
+			Code:    "forbidden",
+			Message: "only the host can issue this command",
+		})
+		return
+	}
+
 	cmd := rewriteActor(m.Cmd, pid)
 	events, err := r.g.Apply(cmd)
 	if err != nil {
@@ -439,6 +622,22 @@ func (r *Room) handleCommand(m inCommand) {
 		return
 	}
 	r.appendAndBroadcast(events)
+}
+
+// isHostOnly reports whether the command requires the host privilege.
+// Player actions (NightAction, DayVote) are excluded — those go through
+// rewriteActor and the engine's own role/turn checks.
+func isHostOnly(cmd game.Command) bool {
+	switch cmd.(type) {
+	case game.StartGame,
+		game.BeginNight,
+		game.OpenVoting,
+		game.ClearVotes,
+		game.FinalizeVotes,
+		game.SetMafiaCount:
+		return true
+	}
+	return false
 }
 
 // appendAndBroadcast records events into the room's log and sends each
@@ -452,13 +651,48 @@ func (r *Room) appendAndBroadcast(events []game.Event) {
 	if len(events) == 0 {
 		return
 	}
+	// Pre-process: stamp wall-clock deadlines on NightTurnStarted (the
+	// engine is timeless and emits Deadline=0). We do this BEFORE
+	// appending so the log retains the real deadlines — late joiners
+	// reconstructing state from a projected event stream see the same
+	// timing the original viewers saw.
+	// State.Day() at this point reflects the night currently in
+	// progress: Day 0 for the first night, Day 1 for the second, etc.
+	// We pass it to nightTurnDuration so the grace can scale (Night 1
+	// mafia gets a longer audio grace for the "look around" beat).
+	day := r.g.State().Day()
+	// Capture the most recent NightTurnStarted in this batch so the
+	// timer-arming pass below knows whether the just-started turn is
+	// phantom (shortened wall-clock window, no action accepted).
+	var lastNightTurnPhantom bool
+	for i := range events {
+		if ts, ok := events[i].(game.NightTurnStarted); ok {
+			if ts.Deadline == 0 {
+				dur := r.cfg.nightTurnDuration(ts.Role, day, ts.Phantom)
+				ts.Deadline = time.Now().Add(dur).UnixMilli()
+				events[i] = ts
+			}
+			lastNightTurnPhantom = ts.Phantom
+		}
+	}
 	r.events = append(r.events, events...)
 
+	// Scan for phase / turn transitions so we can (re)arm timers AFTER
+	// all subscribers have been notified.
 	phaseChanged := false
+	nightTurnStarted := false
+	nightTurnEnded := false
+	detectiveResult := false
 	for _, e := range events {
-		if _, ok := e.(game.PhaseChanged); ok {
+		switch e.(type) {
+		case game.PhaseChanged:
 			phaseChanged = true
-			break
+		case game.NightTurnStarted:
+			nightTurnStarted = true
+		case game.NightTurnEnded:
+			nightTurnEnded = true
+		case game.DetectiveResult:
+			detectiveResult = true
 		}
 	}
 
@@ -475,9 +709,72 @@ func (r *Room) appendAndBroadcast(events []game.Event) {
 		}
 	}
 
+	// Timer management. Daytime pacing is host-driven, so the only
+	// auto-advance is the Night per-turn timer. We still call
+	// resetPhaseTimer on PhaseChanged in case PhaseDurations was set
+	// (tests), but in production it'll be a no-op for day phases.
 	if phaseChanged {
 		r.resetPhaseTimer()
 	}
+	if nightTurnStarted {
+		r.resetNightTurnTimer(lastNightTurnPhantom)
+	}
+	if nightTurnEnded && !nightTurnStarted && !phaseChanged {
+		// NightTurnEnded with no immediate NightTurnStarted is the
+		// engine signalling a deliberate pause — currently this only
+		// happens after a detective action. We arm a short timer
+		// here; when it fires, handlePhaseTimer sends AdvancePhase
+		// which pops the next queued role (engine's advanceFromNight
+		// handles the "currentNightRole=='' but queue non-empty"
+		// case as "start next turn"). Without this timer the night
+		// would silently hang.
+		//
+		// If something else ever produces NightTurnEnded without
+		// NightTurnStarted, double-check this branch — for now,
+		// detectiveResult is the only known producer.
+		if detectiveResult {
+			r.armDetectivePauseTimer()
+		} else {
+			r.stopPhaseTimer()
+		}
+	}
+}
+
+// armDetectivePauseTimer schedules the next-turn kickoff that the
+// engine intentionally didn't issue inside applyNightAction (see
+// rules_night.go's detective branch). The timer fires AdvancePhase
+// via handlePhaseTimer, which pops the next queued night role.
+func (r *Room) armDetectivePauseTimer() {
+	r.stopPhaseTimer()
+	dur := r.cfg.DetectivePauseDuration
+	if dur <= 0 {
+		// Misconfigured to zero — fall back to immediate advance
+		// rather than hanging the night.
+		dur = time.Millisecond
+	}
+	r.phaseTimer = time.NewTimer(dur)
+}
+
+// resetNightTurnTimer arms the per-turn timer for the role that has
+// just become active. The duration matches the deadline we stamped
+// onto the outbound NightTurnStarted event a moment ago, so the
+// server and clients agree on when this turn ends.
+//
+// We read the role and day from engine state rather than the event
+// because by this point in appendAndBroadcast the engine has already
+// applied them and CurrentNightRole() is the freshly-started role.
+// The phantom flag is passed in by appendAndBroadcast (sourced from
+// the NightTurnStarted event) — phantom turns use the shorter
+// PhantomTurnDuration instead of grace + action.
+func (r *Room) resetNightTurnTimer(phantom bool) {
+	r.stopPhaseTimer()
+	role := r.g.State().CurrentNightRole()
+	day := r.g.State().Day()
+	dur := r.cfg.nightTurnDuration(role, day, phantom)
+	if dur <= 0 {
+		return
+	}
+	r.phaseTimer = time.NewTimer(dur)
 }
 
 // sendOne attempts a non-blocking send to a subscriber. Returns true on
@@ -526,11 +823,9 @@ func rewriteActor(cmd game.Command, pid game.PlayerID) game.Command {
 	case game.DayVote:
 		c.Voter = pid
 		return c
-	// Commands without an actor field (StartGame, AdvancePhase) pass
-	// through unchanged. Host-only enforcement is a future addition;
-	// see TODO below.
-	// TODO(host-only): reject StartGame / AdvancePhase from non-host
-	// subscribers once we model that policy.
+	// Commands without an actor field (StartGame, BeginNight, etc.)
+	// pass through unchanged. Host-only authorization is checked in
+	// handleCommand via isHostOnly before this function runs.
 	default:
 		return cmd
 	}
@@ -554,6 +849,8 @@ func errorFor(err error) OutError {
 		return OutError{Code: "self_target", Message: err.Error()}
 	case errors.Is(err, game.ErrRosterMismatch):
 		return OutError{Code: "roster_mismatch", Message: err.Error()}
+	case errors.Is(err, game.ErrLobbyFull):
+		return OutError{Code: "lobby_full", Message: err.Error()}
 	case errors.Is(err, game.ErrGameEnded):
 		return OutError{Code: "game_ended", Message: err.Error()}
 	case errors.Is(err, game.ErrNoChange):

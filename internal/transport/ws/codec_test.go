@@ -38,14 +38,35 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			wantData: clientVoteData{Target: "p3"},
 		},
 		{
+			name:     "setMafia with count",
+			raw:      `{"type":"setMafia","data":{"count":3}}`,
+			wantTag:  clientMsgSetMafia,
+			wantData: clientSetMafiaData{Count: 3},
+		},
+		{
 			name:    "startGame no data",
 			raw:     `{"type":"startGame"}`,
 			wantTag: clientMsgStartGame,
 		},
 		{
-			name:    "advancePhase null data",
-			raw:     `{"type":"advancePhase","data":null}`,
-			wantTag: clientMsgAdvancePhase,
+			name:    "beginNight no data",
+			raw:     `{"type":"beginNight"}`,
+			wantTag: clientMsgBeginNight,
+		},
+		{
+			name:    "openVoting null data",
+			raw:     `{"type":"openVoting","data":null}`,
+			wantTag: clientMsgOpenVoting,
+		},
+		{
+			name:    "clearVotes no data",
+			raw:     `{"type":"clearVotes"}`,
+			wantTag: clientMsgClearVotes,
+		},
+		{
+			name:    "finalizeVotes no data",
+			raw:     `{"type":"finalizeVotes"}`,
+			wantTag: clientMsgFinalizeVotes,
 		},
 	}
 	for _, tc := range cases {
@@ -82,8 +103,14 @@ func TestDecodeClientMessage_Rejects(t *testing.T) {
 // --- Outbound (server -> client) encoding --------------------------------
 
 func TestEncodeOutbound_Joined(t *testing.T) {
+	// A late joiner's ack carries the prior events so the new client
+	// can reconstruct existing roster state.
+	priorEvents := []game.Event{
+		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
+	}
 	raw, ok, err := encodeOutbound(room.OutJoined{
-		PlayerID: "p1", Secret: "shh", RoomCode: "ABCD", IsHost: true,
+		PlayerID: "p2", Name: "Bob", Secret: "shh", RoomCode: "ABCD", IsHost: false,
+		Events: priorEvents,
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -93,10 +120,29 @@ func TestEncodeOutbound_Joined(t *testing.T) {
 
 	var data serverJoinedData
 	require.NoError(t, json.Unmarshal(got.Data, &data))
-	require.Equal(t, "p1", data.PlayerID)
+	require.Equal(t, "p2", data.PlayerID)
+	require.Equal(t, "Bob", data.Name)
 	require.Equal(t, "shh", data.Secret)
 	require.Equal(t, "ABCD", data.RoomCode)
-	require.True(t, data.IsHost)
+	require.False(t, data.IsHost)
+	require.Len(t, data.Events, 1)
+	require.Equal(t, eventTagPlayerJoined, data.Events[0].Type)
+}
+
+// The very first joiner gets no prior events; this guards the
+// nil-events path through encodeOutbound so it doesn't emit
+// `"events": null` or panic.
+func TestEncodeOutbound_Joined_NoPriorEvents(t *testing.T) {
+	raw, ok, err := encodeOutbound(room.OutJoined{
+		PlayerID: "p1", Name: "Alice", Secret: "shh", RoomCode: "ABCD", IsHost: true,
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var data serverJoinedData
+	got := mustUnmarshalEnvelope(t, raw)
+	require.NoError(t, json.Unmarshal(got.Data, &data))
+	require.Empty(t, data.Events)
 }
 
 func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
@@ -106,7 +152,7 @@ func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
 		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight, Day: 0},
 	}
 	raw, ok, err := encodeOutbound(room.OutRejoined{
-		PlayerID: "p1", RoomCode: "ABCD", IsHost: true, Events: events,
+		PlayerID: "p1", Name: "Alice", RoomCode: "ABCD", IsHost: true, Events: events,
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -117,6 +163,7 @@ func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
 	var data serverRejoinedData
 	require.NoError(t, json.Unmarshal(got.Data, &data))
 	require.Equal(t, "p1", data.PlayerID)
+	require.Equal(t, "Alice", data.Name)
 	require.Len(t, data.Events, 3)
 	require.Equal(t, eventTagPlayerJoined, data.Events[0].Type)
 	require.Equal(t, eventTagGameStarted, data.Events[1].Type)
@@ -128,11 +175,14 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 	// added to the engine, this test fails until codec.go is updated —
 	// the desired forcing function.
 	all := []game.Event{
-		game.GameCreated{GameID: "g", Roles: []game.Role{game.RoleMafia}, Seed: 1},
+		game.GameCreated{GameID: "g", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 1},
+		game.MafiaCountChanged{From: 1, To: 2},
 		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
 		game.GameStarted{},
 		game.RoleAssigned{PlayerID: "p1", Role: game.RoleMafia},
 		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
+		game.NightTurnStarted{Role: game.RoleMafia, Deadline: 1700000000000, Phantom: true},
+		game.NightTurnEnded{Role: game.RoleMafia},
 		game.NightActionRecorded{Actor: "p1", Target: "p2", Faction: game.FactionMafia},
 		game.PlayerKilled{PlayerID: "p2"},
 		game.PlayerSaved{PlayerID: "p2", Doctor: "p3"},
@@ -140,7 +190,7 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.VoteCast{Voter: "p1", Target: "p2"},
 		game.VoteChanged{Voter: "p1", From: "p2", To: "p3"},
 		game.VoteRetracted{Voter: "p1", Was: "p2"},
-		game.VoteExtended{Day: 1},
+		game.VoteCleared{Day: 1},
 		game.PlayerLynched{PlayerID: "p2"},
 		game.GameEnded{Winner: game.FactionTown, FinalRoles: map[game.PlayerID]game.Role{"p1": game.RoleMafia}},
 	}
@@ -184,9 +234,21 @@ func TestCommandFromClient(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, game.StartGame{}, cmd)
 
-	cmd, ok = commandFromClient(clientMsgAdvancePhase, struct{}{})
+	cmd, ok = commandFromClient(clientMsgBeginNight, struct{}{})
 	require.True(t, ok)
-	require.Equal(t, game.AdvancePhase{}, cmd)
+	require.Equal(t, game.BeginNight{}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgOpenVoting, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.OpenVoting{}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgClearVotes, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.ClearVotes{}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgFinalizeVotes, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.FinalizeVotes{}, cmd)
 
 	// "join" isn't a command in the engine sense.
 	_, ok = commandFromClient(clientMsgJoin, clientJoinData{Name: "x"})

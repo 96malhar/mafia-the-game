@@ -50,15 +50,31 @@ func FactionOnly(f Faction) Visibility { return Visibility{Audience: "faction", 
 
 // --- Concrete events ---------------------------------------------------
 
-// GameCreated is the first event in every game's log.
+// GameCreated is the first event in every game's log. It carries the
+// initial lobby configuration: min/max player counts and the initial
+// mafia count. The actual per-player roster is composed at StartGame
+// from these values, so GameCreated does NOT carry a Roles slice.
 type GameCreated struct {
-	GameID GameID
-	Roles  []Role
-	Seed   int64
+	GameID     GameID
+	MinPlayers int
+	MaxPlayers int
+	MafiaCount int
+	Seed       int64
 }
 
 func (GameCreated) isEvent()               {}
 func (GameCreated) Visibility() Visibility { return Public() }
+
+// MafiaCountChanged records a host-driven tweak to the planned mafia
+// count during PhaseLobby. Public so every observer can see the
+// configured composition update in real time.
+type MafiaCountChanged struct {
+	From int
+	To   int
+}
+
+func (MafiaCountChanged) isEvent()               {}
+func (MafiaCountChanged) Visibility() Visibility { return Public() }
 
 // PlayerJoined records a successful lobby join.
 type PlayerJoined struct {
@@ -95,6 +111,37 @@ type PhaseChanged struct {
 
 func (PhaseChanged) isEvent()               {}
 func (PhaseChanged) Visibility() Visibility { return Public() }
+
+// NightTurnStarted announces that a specific role's turn has begun
+// during PhaseNight. The Deadline is unix-millis: at this wall-clock
+// time, the engine will auto-end the turn if no action has arrived.
+// Public so the moderating client knows whose turn to summon, but it
+// carries NO actor identities — only the role.
+//
+// Phantom is true when no living player holds Role at the time the
+// turn starts. The turn is still emitted (with the same narrator
+// cues) so the room can't tell which role is dead from the audio
+// alone; but no NightAction will be accepted and the room shortens
+// the timer. Phantom turns end the same way real ones do: via
+// NightTurnEnded.
+type NightTurnStarted struct {
+	Role     Role
+	Deadline int64 // unix-millis; 0 means "no deadline"
+	Phantom  bool
+}
+
+func (NightTurnStarted) isEvent()               {}
+func (NightTurnStarted) Visibility() Visibility { return Public() }
+
+// NightTurnEnded announces that the current role's night-turn has
+// concluded (whether by submitting an action, timing out, or being
+// advanced). Public; carries no per-player information.
+type NightTurnEnded struct {
+	Role Role
+}
+
+func (NightTurnEnded) isEvent()               {}
+func (NightTurnEnded) Visibility() Visibility { return Public() }
 
 // NightActionRecorded acknowledges that a role-action was submitted. It
 // is visible only to the actor's faction (so mafia members see each
@@ -172,16 +219,15 @@ type VoteRetracted struct {
 func (VoteRetracted) isEvent()               {}
 func (VoteRetracted) Visibility() Visibility { return Public() }
 
-// VoteExtended is emitted at the end of PhaseDayVote when the tally has
-// no strict plurality (a tie or no votes at all) and the day has not yet
-// been extended. The vote tally is cleared and players are given another
-// vote window before the day ends with no lynch.
-type VoteExtended struct {
+// VoteCleared is emitted when the host calls ClearVotes during
+// PhaseDayVote. The in-flight tally is wiped and clients re-render
+// with a fresh empty board so the room can vote again.
+type VoteCleared struct {
 	Day int
 }
 
-func (VoteExtended) isEvent()               {}
-func (VoteExtended) Visibility() Visibility { return Public() }
+func (VoteCleared) isEvent()               {}
+func (VoteCleared) Visibility() Visibility { return Public() }
 
 // PlayerLynched records the result of a day vote. The role of the
 // lynched player is NOT revealed; that information is withheld until

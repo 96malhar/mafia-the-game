@@ -44,11 +44,15 @@ type envelope struct {
 type clientMsgType string
 
 const (
-	clientMsgJoin         clientMsgType = "join"
-	clientMsgNightAction  clientMsgType = "nightAction"
-	clientMsgVote         clientMsgType = "vote"
-	clientMsgStartGame    clientMsgType = "startGame"
-	clientMsgAdvancePhase clientMsgType = "advancePhase"
+	clientMsgJoin          clientMsgType = "join"
+	clientMsgNightAction   clientMsgType = "nightAction"
+	clientMsgVote          clientMsgType = "vote"
+	clientMsgStartGame     clientMsgType = "startGame"
+	clientMsgBeginNight    clientMsgType = "beginNight"
+	clientMsgOpenVoting    clientMsgType = "openVoting"
+	clientMsgClearVotes    clientMsgType = "clearVotes"
+	clientMsgFinalizeVotes clientMsgType = "finalizeVotes"
+	clientMsgSetMafia      clientMsgType = "setMafia"
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled
@@ -70,6 +74,13 @@ type clientVoteData struct {
 	Target string `json:"target"`
 }
 
+// clientSetMafiaData carries a host-driven adjustment to the planned
+// mafia count during PhaseLobby. The engine validates the range; the
+// transport just forwards the number.
+type clientSetMafiaData struct {
+	Count int `json:"count"`
+}
+
 // --- Server → Client messages --------------------------------------------
 //
 // These mirror room.outbound plus a few control messages the transport
@@ -87,17 +98,26 @@ const (
 )
 
 // serverJoinedData acknowledges a successful first-time join.
+//
+// Events carries the projected event log of everything that happened
+// before this join, so a late joiner can reconstruct existing state
+// (notably: who else is in the room) without polling. The PlayerJoined
+// event for THIS join is NOT in Events; it arrives as a normal "event"
+// frame immediately after.
 type serverJoinedData struct {
-	PlayerID string `json:"playerId"`
-	Secret   string `json:"secret"`
-	RoomCode string `json:"roomCode"`
-	IsHost   bool   `json:"isHost"`
+	PlayerID string          `json:"playerId"`
+	Name     string          `json:"name"`
+	Secret   string          `json:"secret"`
+	RoomCode string          `json:"roomCode"`
+	IsHost   bool            `json:"isHost"`
+	Events   []eventEnvelope `json:"events"`
 }
 
 // serverRejoinedData acknowledges a successful rejoin and includes the
 // full filtered event log so the client can rebuild its view.
 type serverRejoinedData struct {
 	PlayerID string          `json:"playerId"`
+	Name     string          `json:"name"`
 	RoomCode string          `json:"roomCode"`
 	IsHost   bool            `json:"isHost"`
 	Events   []eventEnvelope `json:"events"`

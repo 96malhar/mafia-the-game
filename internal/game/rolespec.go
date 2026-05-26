@@ -138,13 +138,15 @@ var roleSpecs = map[Role]roleSpec{
 		Faction: FactionTown,
 		NightAction: &nightActionSpec{
 			Phase: nightPhaseSchedule,
-			Validate: func(s *GameState, actor, target *Player) error {
-				// Self-save is forbidden on night 1 (day == 0) only.
-				if actor.id == target.id && s.day == 0 {
-					return ErrSelfTarget
-				}
-				return nil
-			},
+			// The doctor can save anyone, including themselves, on
+			// any night. The earlier "no self-save on Night 1" rule
+			// is intentionally relaxed: the role is meant to be
+			// powerful, and forcing a doctor to skip themselves on
+			// the first night was a fiddly carve-out that confused
+			// new players. Validate is nil because the generic
+			// alive-actor / alive-target checks in applyNightAction
+			// are enough.
+			Validate: nil,
 			Apply: func(ctx *nightContext, actor, target *Player) {
 				ctx.saveTarget = target.id
 				ctx.hasSave = true
@@ -156,6 +158,13 @@ var roleSpecs = map[Role]roleSpec{
 	RoleDetective: {
 		Faction: FactionTown,
 		NightAction: &nightActionSpec{
+			// Detective's result is emitted at action time (see
+			// applyNightAction in rules_night.go) for an
+			// immediate-feedback UX. The reveal-phase Apply is a
+			// no-op: kept for symmetry with other roles, in case
+			// future detective abilities need to read resolved
+			// state. Phase remains nightPhaseReveal so any future
+			// post-resolve logic slots in at the right point.
 			Phase: nightPhaseReveal,
 			Validate: func(_ *GameState, actor, target *Player) error {
 				if actor.id == target.id {
@@ -163,12 +172,8 @@ var roleSpecs = map[Role]roleSpec{
 				}
 				return nil
 			},
-			Apply: func(ctx *nightContext, actor, target *Player) {
-				ctx.events = append(ctx.events, DetectiveResult{
-					Detective: actor.id,
-					Target:    target.id,
-					IsMafia:   target.role.Faction() == FactionMafia,
-				})
+			Apply: func(_ *nightContext, _, _ *Player) {
+				// no-op (see comment above)
 			},
 		},
 	},

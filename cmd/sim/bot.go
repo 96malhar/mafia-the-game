@@ -39,6 +39,19 @@ type Bot struct {
 	// phase is the current game phase, updated on phaseChanged.
 	phase string
 
+	// currentNightRole is the role whose turn it is during PhaseNight,
+	// updated on nightTurnStarted. Empty between turns and outside
+	// Night. The bot uses this to gate its night action: only act
+	// when its own role matches.
+	currentNightRole string
+
+	// dayLynchResolved mirrors the engine's same-named flag. Set when
+	// a PlayerLynched arrives during PhaseDayVote; cleared on entry
+	// into PhaseNight. The host driver uses it to choose between
+	// OpenVoting (false) and BeginNight (true) when sitting in
+	// PhaseDayDiscussion.
+	dayLynchResolved bool
+
 	conn *websocket.Conn
 }
 
@@ -157,9 +170,30 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 		var d evPhaseChanged
 		_ = json.Unmarshal(ev.Data, &d)
 		b.phase = d.To
+		b.currentNightRole = "" // cleared on every phase entry
+		// dayLynchResolved is set by PlayerLynched (below) and stays
+		// true until we re-enter Night.
+		if d.To == phaseNight {
+			b.dayLynchResolved = false
+		}
 		b.log.Debug("phase", "to", d.To, "day", d.Day)
-		// On phase entry, ask the strategy for an action.
-		b.maybeAct(ctx)
+		// On day phase entry, ask the strategy for an action. Night
+		// actions are gated on nightTurnStarted below.
+		if d.To != phaseNight {
+			b.maybeAct(ctx)
+		}
+
+	case evTagNightTurnStarted:
+		var d evNightTurnStarted
+		_ = json.Unmarshal(ev.Data, &d)
+		b.currentNightRole = d.Role
+		b.log.Debug("night turn started", "role", d.Role, "phantom", d.Phantom)
+		// Only the matching role acts; others sit out and the engine /
+		// per-turn timer skips them. Phantom turns (no living holder)
+		// accept no action — the room times them out — so don't try.
+		if !d.Phantom && d.Role == b.role {
+			b.maybeAct(ctx)
+		}
 
 	case evTagPlayerKilled:
 		var d evPlayerKilled
@@ -173,6 +207,7 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 		var d evPlayerLynched
 		_ = json.Unmarshal(ev.Data, &d)
 		delete(b.alivePlayers, d.PlayerID)
+		b.dayLynchResolved = true
 		if d.PlayerID == b.playerID {
 			b.log.Info("lynched")
 		}
@@ -216,6 +251,19 @@ func (b *Bot) maybeAct(ctx context.Context) {
 		_ = b.send(ctx, "vote", clientVote{Target: target})
 	}
 }
+
+// Phase returns the bot's current view of the game phase. The bot
+// updates this on every PhaseChanged event it sees, so it lags the
+// server by one frame plus network — fine for the host driver, which
+// uses this only to decide which advance command to send next.
+func (b *Bot) Phase() string { return b.phase }
+
+// DayLynchResolved returns true if the most recent PhaseChanged into
+// DayDiscussion was after a lynch (i.e. the day's vote has already
+// been finalized). The bot tracks this via PlayerLynched events: any
+// PlayerLynched landing during PhaseDayVote, followed by a transition
+// to DayDiscussion, sets the flag; a transition into Night clears it.
+func (b *Bot) DayLynchResolved() bool { return b.dayLynchResolved }
 
 // send marshals a typed message and writes it as a text frame.
 func (b *Bot) send(ctx context.Context, kind string, payload any) error {

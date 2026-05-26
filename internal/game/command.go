@@ -12,18 +12,45 @@ type Command interface {
 	isCommand()
 }
 
-// CreateGame initializes a new game with the given roster of roles and a
-// deterministic random seed. The seed makes role assignment reproducible
-// in tests and replays.
+// CreateGame initializes a new game with a variable-roster configuration
+// and a deterministic random seed. The actual roster (which roles get
+// dealt to whom) is composed at StartGame from the current player count
+// and mafiaCount; see applyStartGame for the formula.
+//
+// MinPlayers and MaxPlayers bound the lobby:
+//   - AddPlayer is rejected once playerCount == MaxPlayers.
+//   - StartGame is rejected unless MinPlayers ≤ playerCount ≤ MaxPlayers.
+//
+// MafiaCount is the initial configured mafia count. It can be tuned in
+// lobby via SetMafiaCount. Constraints are validated at StartGame against
+// the final player count (1 ≤ mafia ≤ playerCount - 3, reserving 1
+// Detective + 1 Doctor + ≥1 Villager).
+//
+// Zero values are normalized in applyCreateGame: MinPlayers defaults to
+// 5, MaxPlayers to 20, MafiaCount to a sensible default clamped to range.
 type CreateGame struct {
-	GameID GameID
-	// Roles is the multiset of roles to be dealt out, one per player.
-	// len(Roles) must equal the number of players added before StartGame.
-	Roles []Role
-	Seed  int64
+	GameID     GameID
+	MinPlayers int
+	MaxPlayers int
+	MafiaCount int
+	Seed       int64
 }
 
 func (CreateGame) isCommand() {}
+
+// SetMafiaCount adjusts the number of Mafia roles that will be dealt at
+// StartGame. Valid only in PhaseLobby. The value must be ≥ 1 and ≤
+// MaxPlayers - 3 (so that even a fully-loaded lobby leaves room for the
+// fixed Det + Doc + ≥1 Villager).
+//
+// We deliberately do NOT validate against the current player count here,
+// because the host typically tunes the count BEFORE the lobby is full.
+// Final validity is rechecked at StartGame.
+type SetMafiaCount struct {
+	Count int
+}
+
+func (SetMafiaCount) isCommand() {}
 
 // AddPlayer joins a player to the lobby. Only valid in PhaseLobby.
 type AddPlayer struct {
@@ -33,11 +60,49 @@ type AddPlayer struct {
 
 func (AddPlayer) isCommand() {}
 
-// StartGame transitions Lobby -> Night, shuffles Roles, and assigns one
-// role to each player using the seed from CreateGame.
+// StartGame deals roles and locks the roster. Valid only in PhaseLobby.
+// It does NOT transition to Night — the game remains in PhaseLobby with
+// every player's role assigned. The host then issues BeginNight to
+// actually start play. This split exists so the host can verbally walk
+// the room through "Everyone close your eyes" / role reveals before
+// the engine starts running night turns.
 type StartGame struct{}
 
 func (StartGame) isCommand() {}
+
+// BeginNight transitions PhaseLobby (after StartGame) or
+// PhaseDayDiscussion (after a finalized vote) into PhaseNight. The
+// engine immediately begins the night's turn sequence (Mafia → Det →
+// Doctor, with phantom turns where roles are dead). Host-only at the
+// transport layer.
+type BeginNight struct{}
+
+func (BeginNight) isCommand() {}
+
+// OpenVoting transitions PhaseDayDiscussion into PhaseDayVote, clearing
+// any stale vote tally. Valid only in PhaseDayDiscussion AND only
+// while the day has not yet had a vote finalized (i.e.
+// dayLynchResolved == false). Host-only.
+type OpenVoting struct{}
+
+func (OpenVoting) isCommand() {}
+
+// ClearVotes wipes the current PhaseDayVote tally so the room can
+// re-vote from scratch. Stays in PhaseDayVote. Host-only.
+type ClearVotes struct{}
+
+func (ClearVotes) isCommand() {}
+
+// FinalizeVotes resolves the current vote tally and ends PhaseDayVote.
+// Valid only when the tally has a unique plurality (decisive lynch);
+// otherwise rejected with ErrNoChange — the host must ClearVotes first
+// or, if everyone agrees not to lynch, just keep things deadlocked
+// while still in DayVote (a future "skip lynch" command could be
+// added). On success, transitions to PhaseDayDiscussion (post-lynch)
+// or PhaseEnded if the lynch ends the game. Host-only.
+type FinalizeVotes struct{}
+
+func (FinalizeVotes) isCommand() {}
 
 // NightAction is a generic per-role action submitted during PhaseNight:
 //
@@ -69,9 +134,10 @@ func (NightAction) isCommand() {}
 // must be alive. Votes submitted in PhaseDayDiscussion are rejected with
 // ErrWrongPhase.
 //
-// The plurality target at phase end is lynched. If no unique plurality
-// exists, the day is extended once for a re-vote; a second indecisive
-// tally ends the day with no lynch.
+// The vote phase is host-driven: the host calls FinalizeVotes when the
+// room has reached verbal consensus. The plurality target at finalize
+// time is lynched; if no unique plurality exists, FinalizeVotes is
+// rejected and the host can ClearVotes to start a fresh re-vote.
 type DayVote struct {
 	Voter  PlayerID
 	Target PlayerID
@@ -79,9 +145,12 @@ type DayVote struct {
 
 func (DayVote) isCommand() {}
 
-// AdvancePhase forces the current phase to end and the next phase to
-// begin, resolving any pending actions/votes. The engine is timeless;
-// the room layer (with its own clock) decides when to emit this command.
+// AdvancePhase forces the current PhaseNight's active role-turn to end
+// without an action (timeout semantics). It is INTERNAL: only the room
+// layer's per-turn timer should emit it, and the transport layer
+// refuses to forward it from clients. Other phases reject AdvancePhase
+// with ErrWrongPhase — daytime pacing is driven entirely by the host
+// commands (BeginNight, OpenVoting, ClearVotes, FinalizeVotes).
 type AdvancePhase struct{}
 
 func (AdvancePhase) isCommand() {}

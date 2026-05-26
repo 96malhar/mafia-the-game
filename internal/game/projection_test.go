@@ -156,16 +156,20 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 		// Construct a state where the mafia is dead. Build a fresh game
 		// where mafia gets lynched, then project the old fixture events
 		// against the new (dead-mafia) state.
+		//
+		// Night order is now Mafia → Det → Doctor. We run a complete
+		// night (saved kill) so we reach DayDiscussion, then transition
+		// to DayVote, then unanimously vote out the mafia.
 		g := fixedRoster(t)
 		_, _ = g.Apply(game.NightAction{Actor: "mafia1", Target: "town1"})
-		_, _ = g.Apply(game.NightAction{Actor: "doc", Target: "town1"}) // save
-		_, _ = g.Apply(game.AdvancePhase{})                             // -> DayDiscussion
-		_, _ = g.Apply(game.AdvancePhase{})                             // -> DayVote
+		_, _ = g.Apply(game.AdvancePhase{})                             // det timeout
+		_, _ = g.Apply(game.NightAction{Actor: "doc", Target: "town1"}) // save -> resolves night
+		_, _ = g.Apply(game.OpenVoting{})                               // host: open voting
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "doc", Target: "mafia1"})
-		_, _ = g.Apply(game.AdvancePhase{}) // -> game ends (town wins)
+		_, _ = g.Apply(game.FinalizeVotes{}) // -> game ends (town wins)
 
 		// Sanity check: mafia1 is dead in the new state.
 		var mafiaAlive bool

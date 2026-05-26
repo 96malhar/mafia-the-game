@@ -146,7 +146,14 @@ func dispatchClientMessage(
 		d := payload.(clientJoinData)
 		return r.SubmitJoin(ctx, sub, d.Name)
 
-	case clientMsgNightAction, clientMsgVote, clientMsgStartGame, clientMsgAdvancePhase:
+	case clientMsgNightAction,
+		clientMsgVote,
+		clientMsgSetMafia,
+		clientMsgStartGame,
+		clientMsgBeginNight,
+		clientMsgOpenVoting,
+		clientMsgClearVotes,
+		clientMsgFinalizeVotes:
 		cmd, ok := commandFromClient(tag, payload)
 		if !ok {
 			// Should be unreachable — commandFromClient handles every

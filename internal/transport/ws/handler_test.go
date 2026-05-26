@@ -120,9 +120,12 @@ func TestWS_JoinReceivesJoinedAndPlayerJoined(t *testing.T) {
 	var joined serverJoinedData
 	require.NoError(t, json.Unmarshal(got.Data, &joined))
 	require.NotEmpty(t, joined.PlayerID)
+	require.Equal(t, "Alice", joined.Name)
 	require.NotEmpty(t, joined.Secret)
 	require.Equal(t, code, joined.RoomCode)
 	require.True(t, joined.IsHost)
+	require.Empty(t, joined.Events,
+		"the first joiner has no prior events to replay")
 
 	// Second message: PlayerJoined event.
 	got = recvFrame(t, conn)
@@ -130,6 +133,39 @@ func TestWS_JoinReceivesJoinedAndPlayerJoined(t *testing.T) {
 	var evMsg serverEventData
 	require.NoError(t, json.Unmarshal(got.Data, &evMsg))
 	require.Equal(t, eventTagPlayerJoined, evMsg.Event.Type)
+}
+
+// TestWS_LateJoinerSeesExistingRoster proves the second player can
+// reconstruct who's already in the room from their join ack, not just
+// from future broadcasts. Without this, the late joiner's UI would
+// show an empty roster until somebody else joined after them.
+func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code := createRoom(t, ts)
+
+	// Alice joins first.
+	connA := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, connA, "join", map[string]string{"name": "Alice"})
+	_ = recvFrame(t, connA) // joined ack
+	_ = recvFrame(t, connA) // own PlayerJoined broadcast
+
+	// Bob joins second; his joined ack must carry Alice's PlayerJoined.
+	connB := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, connB, "join", map[string]string{"name": "Bob"})
+
+	ack := recvFrame(t, connB)
+	require.Equal(t, "joined", ack.Type)
+	var joined serverJoinedData
+	require.NoError(t, json.Unmarshal(ack.Data, &joined))
+	require.Equal(t, "Bob", joined.Name)
+	require.False(t, joined.IsHost)
+	require.Len(t, joined.Events, 1,
+		"Bob's join ack should carry exactly Alice's PlayerJoined")
+	require.Equal(t, eventTagPlayerJoined, joined.Events[0].Type)
+
+	// Bob's own PlayerJoined still arrives separately right after.
+	got := recvFrame(t, connB)
+	require.Equal(t, "event", got.Type)
 }
 
 func TestWS_RejoinReplaysLog(t *testing.T) {
@@ -157,6 +193,8 @@ func TestWS_RejoinReplaysLog(t *testing.T) {
 	var rejoined serverRejoinedData
 	require.NoError(t, json.Unmarshal(got.Data, &rejoined))
 	require.Equal(t, joined.PlayerID, rejoined.PlayerID)
+	require.Equal(t, "Alice", rejoined.Name,
+		"rejoin ack must echo the player's display name")
 	require.NotEmpty(t, rejoined.Events,
 		"rejoin must replay events the player can see")
 }
@@ -201,9 +239,11 @@ func TestWS_StartGameProducesPhaseChange(t *testing.T) {
 		_ = recvFrame(t, conns[0])
 	}
 
-	// Host (conn 0) starts the game. We expect a flurry of events;
-	// scan for PhaseChanged → night.
+	// Host (conn 0) starts the game (deals roles, stays in Lobby),
+	// then issues BeginNight to transition into Night. We expect a
+	// flurry of events on BeginNight; scan for PhaseChanged → night.
 	sendFrame(t, conns[0], "startGame", struct{}{})
+	sendFrame(t, conns[0], "beginNight", struct{}{})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -225,6 +265,56 @@ func TestWS_StartGameProducesPhaseChange(t *testing.T) {
 		}
 	}
 	t.Fatal("did not see phase change into night")
+}
+
+// TestWS_SetMafiaRoundTrip drives a setMafia client message and asserts
+// the resulting mafiaCountChanged event is broadcast back to the host.
+// The host is whoever joins first (the engine's per-room rule).
+func TestWS_SetMafiaRoundTrip(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code := createRoom(t, ts)
+
+	conn := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
+
+	// Drain join ack + own PlayerJoined broadcast.
+	_ = recvFrame(t, conn)
+	_ = recvFrame(t, conn)
+
+	// Default mafia count for a fresh 5-min lobby is 1; change to 3.
+	sendFrame(t, conn, "setMafia", map[string]int{"count": 3})
+
+	env := recvFrame(t, conn)
+	require.Equal(t, "event", env.Type)
+	var evMsg serverEventData
+	require.NoError(t, json.Unmarshal(env.Data, &evMsg))
+	require.Equal(t, eventTagMafiaCountChanged, evMsg.Event.Type)
+
+	var d struct {
+		From int `json:"from"`
+		To   int `json:"to"`
+	}
+	require.NoError(t, json.Unmarshal(evMsg.Event.Data, &d))
+	require.Equal(t, 1, d.From)
+	require.Equal(t, 3, d.To)
+}
+
+// TestWS_SetMafiaOutOfRangeReturnsError verifies a bad count is rejected
+// with an error frame and no event is broadcast.
+func TestWS_SetMafiaOutOfRangeReturnsError(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code := createRoom(t, ts)
+
+	conn := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
+	_ = recvFrame(t, conn)
+	_ = recvFrame(t, conn)
+
+	// MaxPlayers default is 20, so max mafia = 17. 99 is way over.
+	sendFrame(t, conn, "setMafia", map[string]int{"count": 99})
+
+	env := recvFrame(t, conn)
+	require.Equal(t, "error", env.Type)
 }
 
 // --- helpers --------------------------------------------------------------

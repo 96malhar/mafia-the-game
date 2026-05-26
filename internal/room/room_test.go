@@ -100,7 +100,7 @@ func connect(t *testing.T, r *Room, name string) (*Subscriber, OutJoined) {
 	sub := NewSubscriber()
 	require.NoError(t, r.submit(context.Background(), inJoin{From: sub, Name: name}))
 	ack := recvType[OutJoined](t, sub)
-	require.Equal(t, name, name) // placeholder; assertion below
+	require.Equal(t, name, ack.Name, "join ack must echo the requested name")
 	require.NotEmpty(t, ack.PlayerID)
 	require.NotEmpty(t, ack.Secret)
 	require.Equal(t, r.Code(), ack.RoomCode)
@@ -189,6 +189,44 @@ func TestRoom_PlayerJoinedBroadcastsToOthers(t *testing.T) {
 	_ = ackA
 }
 
+// TestRoom_JoinAckIncludesPriorRoster guards the symmetry between
+// first-time join and rejoin: a late joiner must be able to discover
+// who's already in the room from their OutJoined payload, not just
+// from live events emitted after them. Without this, the second and
+// later joiners would only see players who joined AFTER them.
+func TestRoom_JoinAckIncludesPriorRoster(t *testing.T) {
+	_, r := newTestRoom(t)
+
+	subA, ackA := connect(t, r, "Alice")
+	_ = drain(subA, 50*time.Millisecond)
+
+	// Bob's join ack should carry Alice's PlayerJoined so the new
+	// player can reconstruct the existing roster.
+	subB := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(), inJoin{From: subB, Name: "Bob"}))
+	ackB := recvType[OutJoined](t, subB)
+
+	require.Len(t, ackB.Events, 1,
+		"Bob's join ack should include exactly the events that happened before him")
+	pj, ok := ackB.Events[0].(game.PlayerJoined)
+	require.True(t, ok, "prior event must be a PlayerJoined")
+	require.Equal(t, ackA.PlayerID, pj.PlayerID, "should reference Alice")
+	require.Equal(t, "Alice", pj.Name)
+
+	// Bob's OWN PlayerJoined should still arrive as a separate
+	// broadcast event right after the ack — we did not bundle it
+	// into Events to avoid double-delivery.
+	msg := recvType[OutEvent](t, subB)
+	own, ok := msg.Event.(game.PlayerJoined)
+	require.True(t, ok)
+	require.Equal(t, "Bob", own.Name)
+
+	// And the very first joiner's ack must NOT contain prior events
+	// (there were none).
+	require.Empty(t, ackA.Events,
+		"the first joiner's ack should have no prior events")
+}
+
 // --- Rejoin ---------------------------------------------------------------
 
 func TestRoom_RejoinAcceptsCorrectSecret(t *testing.T) {
@@ -204,6 +242,7 @@ func TestRoom_RejoinAcceptsCorrectSecret(t *testing.T) {
 
 	re := recvType[OutRejoined](t, subA2)
 	require.Equal(t, ackA.PlayerID, re.PlayerID)
+	require.Equal(t, "Alice", re.Name, "rejoin ack must echo the player's name")
 	require.True(t, re.IsHost)
 	require.NotEmpty(t, re.Events, "rejoin should replay events")
 }
@@ -353,17 +392,20 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 
 // --- Phase timers --------------------------------------------------------
 
-func TestRoom_PhaseTimerAdvancesAutomatically(t *testing.T) {
-	// Short durations so the test runs quickly. We only need Night to
-	// fire; Day phases aren't reached.
+func TestRoom_NightTurnTimersAutoAdvance(t *testing.T) {
+	// Daytime is host-driven, so the only timer the room arms in
+	// production is the Night per-turn timer. This test verifies that
+	// after StartGame + BeginNight, the room walks the three night
+	// turns to a complete Night resolution without the host doing
+	// anything — purely by per-turn timeouts.
+	//
+	// We zero out the audio grace and shrink the action window to
+	// 30ms so the test runs in well under a second.
 	m := newTestManager(t)
 	r, err := m.CreateRoom(Config{
-		Logger: silentLogger(),
-		PhaseDurations: map[game.Phase]time.Duration{
-			game.PhaseNight:         40 * time.Millisecond,
-			game.PhaseDayDiscussion: 40 * time.Millisecond,
-			game.PhaseDayVote:       40 * time.Millisecond,
-		},
+		Logger:              silentLogger(),
+		NightActionDuration: 30 * time.Millisecond,
+		NightTurnGrace:      func(_ game.Role, _ int) time.Duration { return 0 },
 	})
 	require.NoError(t, err)
 
@@ -375,16 +417,26 @@ func TestRoom_PhaseTimerAdvancesAutomatically(t *testing.T) {
 		_ = drain(s, 20*time.Millisecond)
 	}
 
+	// Host (subs[0]) deals roles and begins night.
 	require.NoError(t, r.submit(context.Background(), inCommand{
 		From: subs[0], Cmd: game.StartGame{},
 	}))
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: subs[0], Cmd: game.BeginNight{},
+	}))
 
-	// Watch subs[0] for at least one PhaseChanged into PhaseNight, then
-	// another PhaseChanged OUT of night within ~150ms (40ms timer + slack).
-	sawNight := false
-	sawAdvance := false
-	deadline := time.After(500 * time.Millisecond)
-	for !sawAdvance {
+	// Expect: Lobby → Night (BeginNight) then Night → DayDiscussion
+	// (after all three turn timers fire). No further auto-advance.
+	wantSeq := []struct {
+		from game.Phase
+		to   game.Phase
+	}{
+		{from: game.PhaseLobby, to: game.PhaseNight},
+		{from: game.PhaseNight, to: game.PhaseDayDiscussion},
+	}
+	idx := 0
+	deadline := time.After(2 * time.Second)
+	for idx < len(wantSeq) {
 		select {
 		case msg, ok := <-subs[0].Outbound():
 			if !ok {
@@ -398,14 +450,26 @@ func TestRoom_PhaseTimerAdvancesAutomatically(t *testing.T) {
 			if !isPC {
 				continue
 			}
-			switch {
-			case pc.To == game.PhaseNight:
-				sawNight = true
-			case sawNight && pc.From == game.PhaseNight:
-				sawAdvance = true
+			want := wantSeq[idx]
+			if pc.From == want.from && pc.To == want.to {
+				idx++
 			}
 		case <-deadline:
-			t.Fatalf("phase timer did not advance from night (sawNight=%v)", sawNight)
+			t.Fatalf("night timer stalled after %d/%d transitions (next want %v→%v)",
+				idx, len(wantSeq), wantSeq[idx].from, wantSeq[idx].to)
+		}
+	}
+
+	// Confirm the room SITS in DayDiscussion (no auto-advance to
+	// DayVote). We drain briefly and verify no PhaseChanged out.
+	noMore := drain(subs[0], 200*time.Millisecond)
+	for _, msg := range noMore {
+		ev, ok := msg.(OutEvent)
+		if !ok {
+			continue
+		}
+		if _, isPC := ev.Event.(game.PhaseChanged); isPC {
+			t.Fatalf("day_discussion auto-advanced; host-driven flow violated: %#v", ev.Event)
 		}
 	}
 }

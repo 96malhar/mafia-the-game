@@ -73,6 +73,12 @@ type evPhaseChanged struct {
 	Day  int    `json:"day"`
 }
 
+type evNightTurnStarted struct {
+	Role     string `json:"role"`
+	Deadline int64  `json:"deadline"`
+	Phantom  bool   `json:"phantom"`
+}
+
 type evPlayerKilled struct {
 	PlayerID string `json:"playerId"`
 }
@@ -99,13 +105,14 @@ const (
 	msgEvent  = "event"
 	msgError  = "error"
 
-	evTagPlayerJoined    = "playerJoined"
-	evTagRoleAssigned    = "roleAssigned"
-	evTagPhaseChanged    = "phaseChanged"
-	evTagPlayerKilled    = "playerKilled"
-	evTagPlayerLynched   = "playerLynched"
-	evTagDetectiveResult = "detectiveResult"
-	evTagGameEnded       = "gameEnded"
+	evTagPlayerJoined     = "playerJoined"
+	evTagRoleAssigned     = "roleAssigned"
+	evTagPhaseChanged     = "phaseChanged"
+	evTagNightTurnStarted = "nightTurnStarted"
+	evTagPlayerKilled     = "playerKilled"
+	evTagPlayerLynched    = "playerLynched"
+	evTagDetectiveResult  = "detectiveResult"
+	evTagGameEnded        = "gameEnded"
 )
 
 // Phase string constants — these correspond to game.Phase values.

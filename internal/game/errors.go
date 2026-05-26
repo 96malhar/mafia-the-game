@@ -36,9 +36,15 @@ var (
 	// context that forbids it (e.g. detective investigating self).
 	ErrSelfTarget = errors.New("game: cannot target self")
 
-	// ErrRosterMismatch is returned by StartGame when the configured
-	// Roles slice length does not match the number of joined players.
-	ErrRosterMismatch = errors.New("game: number of roles does not match number of players")
+	// ErrRosterMismatch is returned by StartGame when the current
+	// player count is outside [minPlayers, maxPlayers] or the mafia
+	// count cannot produce a valid composition (i.e. not in
+	// [1, playerCount - 3] once Det + Doc + ≥1 Villager are reserved).
+	ErrRosterMismatch = errors.New("game: roster (player count or mafia count) is not valid for starting the game")
+
+	// ErrLobbyFull is returned by AddPlayer when the lobby has already
+	// reached MaxPlayers and cannot accept another joiner.
+	ErrLobbyFull = errors.New("game: lobby is full")
 
 	// ErrGameEnded is returned when any command (other than inspection)
 	// is submitted after PhaseEnded.
@@ -55,4 +61,10 @@ var (
 	// actions are commit-once per night (unlike day votes which are
 	// changeable until the timer expires).
 	ErrAlreadyActed = errors.New("game: night action already submitted this night")
+
+	// ErrNotYourTurn is returned when a player submits a NightAction
+	// during PhaseNight but their role does not match the role whose
+	// turn it currently is. Used by the strict turn-order rule that
+	// makes Nights playable in person ("Mafia wake up… now Detective").
+	ErrNotYourTurn = errors.New("game: it is not your role's turn")
 )

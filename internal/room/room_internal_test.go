@@ -4,12 +4,77 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/malhar/mafia-the-game/internal/game"
 )
+
+// TestConfig_NightTurnDuration pins the per-role-per-day duration
+// formula: NightTurnGrace(role, day) + NightActionDuration for real
+// turns; PhantomTurnDuration(role, day) for phantom turns. Defaults
+// give day-0 mafia 5.5s grace (to cover the "look around" beat) and
+// 2.5s for everything else, both with a 45s action window.
+func TestConfig_NightTurnDuration(t *testing.T) {
+	t.Run("real-turn defaults", func(t *testing.T) {
+		c := Config{}
+		c.applyDefaults()
+		require.Equal(t, 45*time.Second, c.NightActionDuration)
+		require.Equal(t, 50500*time.Millisecond, c.nightTurnDuration(game.RoleMafia, 0, false),
+			"day-0 mafia: 5.5s grace + 45s action for the 'look around' beat")
+		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleMafia, 1, false),
+			"day-1 mafia: 2.5s grace + 45s action")
+		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDetective, 0, false))
+		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDoctor, 0, false))
+	})
+
+	t.Run("phantom-turn defaults are bounded", func(t *testing.T) {
+		c := Config{}
+		c.applyDefaults()
+		// Repeat the draw so we exercise the randomness: every draw
+		// must fall in [lo, hi] for the role/day.
+		for i := 0; i < 64; i++ {
+			d := c.nightTurnDuration(game.RoleDetective, 1, true)
+			require.GreaterOrEqual(t, d, PhantomTurnMin,
+				"phantom turn must be >= PhantomTurnMin")
+			require.LessOrEqual(t, d, PhantomTurnMax,
+				"phantom turn must be <= PhantomTurnMax")
+		}
+		// Day-0 mafia phantoms have a higher floor so the longer
+		// "look around" audio always fits.
+		for i := 0; i < 64; i++ {
+			d := c.nightTurnDuration(game.RoleMafia, 0, true)
+			require.GreaterOrEqual(t, d, 7*time.Second,
+				"day-0 mafia phantom must clear the longer audio cue")
+			require.LessOrEqual(t, d, PhantomTurnMax)
+		}
+	})
+
+	t.Run("custom grace function", func(t *testing.T) {
+		c := Config{
+			NightActionDuration: 4 * time.Second,
+			NightTurnGrace: func(_ game.Role, _ int) time.Duration {
+				return time.Second
+			},
+		}
+		c.applyDefaults()
+		require.Equal(t, 5*time.Second, c.nightTurnDuration(game.RoleMafia, 0, false))
+	})
+
+	t.Run("custom phantom function", func(t *testing.T) {
+		c := Config{
+			PhantomTurnDuration: func(_ game.Role, _ int) time.Duration {
+				return 100 * time.Millisecond
+			},
+		}
+		c.applyDefaults()
+		require.Equal(t, 100*time.Millisecond,
+			c.nightTurnDuration(game.RoleDetective, 0, true))
+	})
+}
 
 // TestRoom_DisconnectSlowSubscriber verifies that when a subscriber's
 // outbound buffer fills, appendAndBroadcast drops it and closes its
@@ -32,8 +97,7 @@ func TestRoom_DisconnectSlowSubscriber(t *testing.T) {
 	// Engine needs to be in a state where Project can run. CreateGame
 	// gets us into the lobby phase with at least one role configured.
 	_, err := r.g.Apply(game.CreateGame{
-		GameID: "g",
-		Roles:  []game.Role{game.RoleMafia, game.RoleVillager, game.RoleVillager},
+		GameID: "g", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1,
 	})
 	require.NoError(t, err)
 
@@ -60,12 +124,15 @@ func TestRoom_DisconnectSlowSubscriber(t *testing.T) {
 		return game.PlayerJoined{PlayerID: "x", Name: "x"}
 	}
 
-	// Push events into the room until slow is disconnected. We use a
-	// loop bound generously larger than the buffer to allow for any
-	// per-call accounting noise.
+	// Push events into the room until slow is disconnected. We yield
+	// after each broadcast so the fast subscriber's drainer goroutine
+	// gets a chance to run — without this the test loop dominates the
+	// CPU and the drainer falls behind, causing FAST to fill its
+	// buffer and be incorrectly disconnected too.
 	disconnected := false
 	for i := 0; i < outboundChanCapacity*2; i++ {
 		r.appendAndBroadcast([]game.Event{makeEvent()})
+		runtime.Gosched()
 		if _, stillSubscribed := r.subs[slow]; !stillSubscribed {
 			disconnected = true
 			break

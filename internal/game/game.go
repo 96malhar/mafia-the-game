@@ -37,8 +37,18 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyCreateGame(c)
 	case AddPlayer:
 		return g.applyAddPlayer(c)
+	case SetMafiaCount:
+		return g.applySetMafiaCount(c)
 	case StartGame:
 		return g.applyStartGame(c)
+	case BeginNight:
+		return g.applyBeginNight(c)
+	case OpenVoting:
+		return g.applyOpenVoting(c)
+	case ClearVotes:
+		return g.applyClearVotes(c)
+	case FinalizeVotes:
+		return g.applyFinalizeVotes(c)
 	case NightAction:
 		return g.applyNightAction(c)
 	case DayVote:

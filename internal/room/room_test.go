@@ -497,6 +497,39 @@ func TestRoom_LeaveClosesChannelButKeepsPlayer(t *testing.T) {
 	_ = recvType[OutRejoined](t, subA2)
 }
 
+// --- Engine / room name agreement ----------------------------------------
+
+// TestRoom_HandleJoinStoresEngineTrimmedName pins the contract that
+// the room's playerSlot.name MATCHES whatever the engine stored
+// (i.e. the trimmed form, see applyAddPlayer). Without that, a
+// rejoin would echo the un-trimmed input back in OutRejoined.Name
+// while everyone else's roster shows the trimmed form, and the
+// rejoining player would see a different version of their own
+// name than the room sees.
+func TestRoom_HandleJoinStoresEngineTrimmedName(t *testing.T) {
+	_, r := newTestRoom(t)
+	sub := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(),
+		inJoin{From: sub, Name: "  Alice  "}))
+
+	ack := recvType[OutJoined](t, sub)
+	require.Equal(t, "Alice", ack.Name,
+		"OutJoined.Name must be the engine-trimmed form")
+
+	// Drive a rejoin to verify the room's stored slot.name is also
+	// the trimmed form. We can't peek into r.players directly from
+	// the test goroutine (it's run-loop-private), but OutRejoined
+	// echoes slot.name back to us, so the rejoin path observes it.
+	rsub := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(),
+		inRejoin{From: rsub, PlayerID: ack.PlayerID, Secret: ack.Secret}))
+
+	rack := recvType[OutRejoined](t, rsub)
+	require.Equal(t, "Alice", rack.Name,
+		"OutRejoined.Name must be the trimmed form too (engine and "+
+			"room must agree on a player's canonical name)")
+}
+
 // --- Error code mapping --------------------------------------------------
 
 func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
@@ -514,6 +547,7 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 		{game.ErrWrongPhase, wire.ErrCodeWrongPhase},
 		{game.ErrUnknownPlayer, wire.ErrCodeUnknownPlayer},
 		{game.ErrDuplicatePlayer, wire.ErrCodeDuplicatePlayer},
+		{game.ErrDuplicateName, wire.ErrCodeDuplicateName},
 		{game.ErrPlayerDead, wire.ErrCodePlayerDead},
 		{game.ErrNotYourAction, wire.ErrCodeNotYourAction},
 		{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
@@ -600,6 +634,12 @@ func TestRoom_JoinErrorForRewritesLobbyClosedMessages(t *testing.T) {
 			err:         game.ErrGameEnded,
 			wantCode:    wire.ErrCodeGameEnded,
 			wantMessage: "This game has already ended. Create a new room to play.",
+		},
+		{
+			name:        "duplicate_name becomes a join-friendly message",
+			err:         game.ErrDuplicateName,
+			wantCode:    wire.ErrCodeDuplicateName,
+			wantMessage: "That name is already taken. Pick a different name.",
 		},
 	}
 	for _, tc := range cases {

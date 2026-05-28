@@ -24,6 +24,14 @@ var (
 	// that already exists in the lobby.
 	ErrDuplicatePlayer = errors.New("game: player already in game")
 
+	// ErrDuplicateName is returned when AddPlayer is called with a Name
+	// that already belongs to another player in the lobby, compared
+	// case-insensitively and with leading/trailing whitespace trimmed.
+	// The client surface for this is the join handshake (see
+	// room.joinErrorFor); from the user's perspective it reads as
+	// "that name is taken, pick another."
+	ErrDuplicateName = errors.New("game: name already taken")
+
 	// ErrPlayerDead is returned when a command requires the actor or
 	// target to be alive but they are not.
 	ErrPlayerDead = errors.New("game: player is dead")

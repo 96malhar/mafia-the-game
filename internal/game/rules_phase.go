@@ -238,6 +238,15 @@ func (g *Game) beginNightTurns() []Event {
 // flag on the emitted event tells the room/clients to treat this turn
 // as "audio only": no action will be accepted, and the room arms a
 // shorter (randomized) wall-clock timer.
+//
+// Note on Phantom for RoleMafia: hasLivingRole(RoleMafia) is always
+// true when this function runs. checkWin (called after every
+// state-changing event) emits GameEnded the instant living mafia
+// hits zero and the phase transitions to PhaseEnded, which prevents
+// any further beginNightTurns/beginNextNightTurn calls. The
+// uniform `Phantom: !hasLivingRole(next)` computation is kept for
+// symmetry across roles — it's correct, it's just dead-on-arrival
+// for the mafia case.
 func (g *Game) beginNextNightTurn() []Event {
 	if len(g.state.nightTurnQueue) == 0 {
 		return nil

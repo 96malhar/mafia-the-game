@@ -24,6 +24,7 @@ var sentinelCodes = []struct {
 	{game.ErrWrongPhase, wire.ErrCodeWrongPhase},
 	{game.ErrUnknownPlayer, wire.ErrCodeUnknownPlayer},
 	{game.ErrDuplicatePlayer, wire.ErrCodeDuplicatePlayer},
+	{game.ErrDuplicateName, wire.ErrCodeDuplicateName},
 	{game.ErrPlayerDead, wire.ErrCodePlayerDead},
 	{game.ErrNotYourAction, wire.ErrCodeNotYourAction},
 	{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
@@ -92,6 +93,12 @@ func joinErrorFor(err error) OutError {
 		out.Message = "This room is full. Create a new room to play."
 	case wire.ErrCodeGameEnded:
 		out.Message = "This game has already ended. Create a new room to play."
+	case wire.ErrCodeDuplicateName:
+		// Engine rejects names that match (case-insensitively,
+		// after trim) someone already in the lobby. The client
+		// renders this in the join form so the user can pick a
+		// different name without losing the rest of the join flow.
+		out.Message = "That name is already taken. Pick a different name."
 	}
 	return out
 }

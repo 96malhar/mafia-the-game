@@ -3,6 +3,7 @@ package game
 import (
 	"fmt"
 	"math/rand/v2"
+	"strings"
 )
 
 // Default lobby bounds applied when CreateGame leaves them zero. These
@@ -109,8 +110,16 @@ func (g *Game) applyCreateGame(c CreateGame) ([]Event, error) {
 //   - Game must exist and be in PhaseLobby.
 //   - Roles must not have been dealt yet (StartGame closes the lobby
 //     even though the game stays in PhaseLobby until BeginNight).
-//   - PlayerID and Name must be non-empty.
+//   - PlayerID must be non-empty, and Name must be non-empty after
+//     trimming leading/trailing whitespace (so " " is rejected, not
+//     silently accepted as a blank row).
 //   - PlayerID must not already be in the game.
+//   - Name must not collide with any existing player's name (compared
+//     case-insensitively, after trimming both sides). This is a UX
+//     property: with PlayerIDs no longer rendered in the client UI,
+//     two "Alice"s would be visually indistinguishable on the
+//     Players panel. Storing the trimmed-but-case-preserved form
+//     means " Alice " becomes "Alice" on the roster.
 //   - The lobby must not already be at MaxPlayers.
 func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	if g.state.id == "" {
@@ -139,11 +148,21 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	if len(g.state.players) > 0 && g.state.players[0].role != "" {
 		return nil, ErrWrongPhase
 	}
-	if c.PlayerID == "" || c.Name == "" {
+	name := strings.TrimSpace(c.Name)
+	if c.PlayerID == "" || name == "" {
 		return nil, fmt.Errorf("game: AddPlayer requires non-empty PlayerID and Name")
 	}
 	if _, exists := g.state.findPlayer(c.PlayerID); exists {
 		return nil, ErrDuplicatePlayer
+	}
+	// Case-insensitive name dedup. n is the lobby's max size (≤20 in
+	// the default config), so the linear scan is fine and we don't
+	// maintain a side index. EqualFold avoids allocating two
+	// ToLower'd strings per comparison.
+	for i := range g.state.players {
+		if strings.EqualFold(g.state.players[i].name, name) {
+			return nil, ErrDuplicateName
+		}
 	}
 	if len(g.state.players) >= g.state.maxPlayers {
 		return nil, ErrLobbyFull
@@ -151,7 +170,7 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 
 	g.state.players = append(g.state.players, Player{
 		id:    c.PlayerID,
-		name:  c.Name,
+		name:  name,
 		alive: true,
 	})
 
@@ -159,7 +178,7 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	// when they happen to share field shapes; avoid a structural cast
 	// here so the two stay independently evolvable.
 	//nolint:gosimple // see comment above.
-	return []Event{PlayerJoined{PlayerID: c.PlayerID, Name: c.Name}}, nil
+	return []Event{PlayerJoined{PlayerID: c.PlayerID, Name: name}}, nil
 }
 
 // applySetMafiaCount adjusts the planned mafia count during PhaseLobby.

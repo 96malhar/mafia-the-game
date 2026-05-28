@@ -303,7 +303,21 @@ func (r *Room) handleJoin(m inJoin) {
 		return
 	}
 
-	slot := &playerSlot{id: pid, name: m.Name, secret: secret, sub: m.From}
+	// Read the canonical name back from the engine's PlayerJoined
+	// event rather than reusing m.Name. The engine trims leading
+	// /trailing whitespace and rejects whitespace-only names; using
+	// m.Name here would let the room's playerSlot disagree with the
+	// engine for a joiner who submitted "  Alice  " (engine sees
+	// "Alice", room would see "  Alice  "), which then surfaces as
+	// a mismatched name in OutRejoined on the next refresh.
+	// PlayerJoined is guaranteed to be the first event from
+	// applyAddPlayer on success.
+	canonicalName := m.Name
+	if pj, ok := events[0].(game.PlayerJoined); ok {
+		canonicalName = pj.Name
+	}
+
+	slot := &playerSlot{id: pid, name: canonicalName, secret: secret, sub: m.From}
 	r.players[pid] = slot
 	r.attachSubscriber(m.From)
 	m.From.setPlayerID(pid)
@@ -331,7 +345,7 @@ func (r *Room) handleJoin(m inJoin) {
 
 	r.sendOne(m.From, OutJoined{
 		PlayerID: pid,
-		Name:     m.Name,
+		Name:     canonicalName,
 		Secret:   secret,
 		RoomCode: r.code,
 		IsHost:   isHost,

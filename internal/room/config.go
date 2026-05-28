@@ -107,17 +107,36 @@ const DefaultMaxLifetime = 10 * time.Hour
 // narrator script in web/index.html — kept in sync intentionally so
 // the action window starts roughly when the spoken prompt ends.
 //
-// Day 0 mafia spans two utterances with a beat between them:
+// Every night opens with a shared "City, go to sleep" cue (~1.5s)
+// queued by narratePhaseChange, then a 5s pre-wake beat so the
+// room has time to settle before any role is named. After that
+// the mafia turn's audio plays — duration depends on whether
+// it's Night 1 (the longer "look around" beat) or any later night
+// (single "Mafia, wake up. Choose your target." cue).
 //
-//	"Mafia, wake up. Look around and recognize each other." (~2.5s)
-//	[3.6s pause]
-//	"Mafia, choose your target." (~1.5s)
+// Night 1 mafia timeline (relative to NightTurnStarted dispatch):
 //
-// So the grace there is ~5.5s. Other roles play a single short prompt
-// (~2s) and get a small buffer to round out to 2.5s.
+//	t=0       "City, go to sleep." (~1.5s)         [from narratePhaseChange]
+//	t=5s      "Mafia, wake up. Look around..." (~2.5s)
+//	t=9s      "Mafia, choose your target." (~1.5s)
+//	t=10.5s   audio complete  → grace ~10s
+//
+// Later nights collapse to a single mafia cue:
+//
+//	t=0       "City, go to sleep." (~1.5s)
+//	t=5s      "Mafia, wake up. Choose your target." (~1.5s)
+//	t=6.5s    audio complete  → grace ~7s
+//
+// Detective and doctor turns start AFTER the mafia turn ends and
+// have no "City, go to sleep" preface (the room is already
+// settled), so their grace stays at 2.5s to cover a single short
+// prompt.
 func DefaultNightTurnGrace(role game.Role, day int) time.Duration {
-	if role == game.RoleMafia && day == 0 {
-		return 5500 * time.Millisecond
+	if role == game.RoleMafia {
+		if day == 0 {
+			return 10 * time.Second
+		}
+		return 7 * time.Second
 	}
 	return 2500 * time.Millisecond
 }
@@ -133,18 +152,27 @@ const (
 
 // DefaultPhantomTurnDuration returns a uniformly-random wall-clock
 // duration in [PhantomTurnMin, PhantomTurnMax] for a phantom (dead-
-// role) night turn. We bake in the audio grace for Day 0 mafia so the
-// "look around" beat has time to play; for other roles the lower
-// bound already comfortably covers the ~2.5s prompt.
-func DefaultPhantomTurnDuration(role game.Role, day int) time.Duration {
+// role) night turn.
+//
+// Why no mafia branch: a phantom MAFIA turn is unreachable. The
+// engine's checkWin runs after every state change that can kill a
+// player; the moment living-mafia hits zero it emits GameEnded with
+// Winner=FactionTown and transitions to PhaseEnded. beginNightTurns
+// therefore can only be invoked while at least one mafia is alive,
+// so NightTurnStarted{Role: RoleMafia} always has Phantom=false and
+// is routed through NightTurnGrace + NightActionDuration in
+// nightTurnDuration — never through this function.
+//
+// Phantom turns DO occur for detective and doctor (one dies, but
+// the game continues), and their single ~2.5s prompt fits
+// comfortably inside the [PhantomTurnMin, PhantomTurnMax] bounds
+// without any role-specific floor.
+//
+// The role + day parameters are kept on the signature because the
+// custom-grace test (and future deployments) may want to override
+// based on them; the default just doesn't read them.
+func DefaultPhantomTurnDuration(_ game.Role, _ int) time.Duration {
 	lo, hi := PhantomTurnMin, PhantomTurnMax
-	if role == game.RoleMafia && day == 0 {
-		// The Day-0 mafia narration takes ~5.5s on its own; bump the
-		// floor so the phantom turn never undercuts the audio.
-		if lo < 7*time.Second {
-			lo = 7 * time.Second
-		}
-	}
 	span := hi - lo
 	if span <= 0 {
 		return lo

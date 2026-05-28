@@ -172,12 +172,62 @@ func TestAddPlayer(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrDuplicatePlayer)
 	})
 
+	t.Run("rejects duplicate name (case + whitespace insensitive)", func(t *testing.T) {
+		g := newWithCreated(t)
+		_, err := g.Apply(game.AddPlayer{PlayerID: "p1", Name: "Alice"})
+		require.NoError(t, err)
+
+		// Exact match.
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p2", Name: "Alice"})
+		require.ErrorIs(t, err, game.ErrDuplicateName, "exact match must collide")
+
+		// Case-folded match.
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p3", Name: "alice"})
+		require.ErrorIs(t, err, game.ErrDuplicateName, "case-insensitive collision")
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p4", Name: "ALICE"})
+		require.ErrorIs(t, err, game.ErrDuplicateName, "case-insensitive collision (upper)")
+
+		// Trimmed match.
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p5", Name: "  Alice  "})
+		require.ErrorIs(t, err, game.ErrDuplicateName, "whitespace-trimmed collision")
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p6", Name: "  ALICE  "})
+		require.ErrorIs(t, err, game.ErrDuplicateName, "trim + case-fold collision")
+
+		// A distinct name still works (sanity).
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p7", Name: "Bob"})
+		require.NoError(t, err, "distinct name must succeed")
+
+		// And the roster reflects exactly two players (Alice and
+		// Bob) — none of the rejected joins should have leaked.
+		require.Equal(t, 2, len(g.State().Players()))
+	})
+
+	t.Run("trims name on store", func(t *testing.T) {
+		g := newWithCreated(t)
+		evts, err := g.Apply(game.AddPlayer{PlayerID: "p1", Name: "  Alice  "})
+		require.NoError(t, err)
+		require.Equal(t, "Alice", g.State().Players()[0].Name(),
+			"stored name must have leading/trailing whitespace trimmed")
+		// The emitted PlayerJoined event carries the trimmed
+		// name too — clients shouldn't have to know about the
+		// transformation.
+		require.Len(t, evts, 1)
+		pj, ok := evts[0].(game.PlayerJoined)
+		require.True(t, ok)
+		require.Equal(t, "Alice", pj.Name)
+	})
+
 	t.Run("rejects empty fields", func(t *testing.T) {
 		g := newWithCreated(t)
 		_, err := g.Apply(game.AddPlayer{PlayerID: "", Name: "Alice"})
 		require.Error(t, err)
 		_, err = g.Apply(game.AddPlayer{PlayerID: "p1", Name: ""})
 		require.Error(t, err)
+		// Whitespace-only names trim to empty and must be
+		// rejected too — otherwise " " could create a row that
+		// looks blank in the UI.
+		_, err = g.Apply(game.AddPlayer{PlayerID: "p2", Name: "   "})
+		require.Error(t, err, "whitespace-only name must be rejected")
 	})
 
 	t.Run("rejects join when lobby reaches MaxPlayers", func(t *testing.T) {

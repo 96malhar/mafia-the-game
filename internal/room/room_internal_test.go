@@ -16,17 +16,19 @@ import (
 // TestConfig_NightTurnDuration pins the per-role-per-day duration
 // formula: NightTurnGrace(role, day) + NightActionDuration for real
 // turns; PhantomTurnDuration(role, day) for phantom turns. Defaults
-// give day-0 mafia 5.5s grace (to cover the "look around" beat) and
-// 2.5s for everything else, both with a 45s action window.
+// (see DefaultNightTurnGrace) account for the shared "City, go to
+// sleep" + 5s settle beat that opens every night, plus the role's
+// own audio. So day-0 mafia gets 10s, day>=1 mafia gets 7s, and
+// other roles (detective, doctor) get 2.5s.
 func TestConfig_NightTurnDuration(t *testing.T) {
 	t.Run("real-turn defaults", func(t *testing.T) {
 		c := Config{}
 		c.applyDefaults()
 		require.Equal(t, 45*time.Second, c.NightActionDuration)
-		require.Equal(t, 50500*time.Millisecond, c.nightTurnDuration(game.RoleMafia, 0, false),
-			"day-0 mafia: 5.5s grace + 45s action for the 'look around' beat")
-		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleMafia, 1, false),
-			"day-1 mafia: 2.5s grace + 45s action")
+		require.Equal(t, 55*time.Second, c.nightTurnDuration(game.RoleMafia, 0, false),
+			"day-0 mafia: 10s grace + 45s action (city sleep + look-around beat)")
+		require.Equal(t, 52*time.Second, c.nightTurnDuration(game.RoleMafia, 1, false),
+			"day>=1 mafia: 7s grace + 45s action (city sleep + single wake cue)")
 		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDetective, 0, false))
 		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDoctor, 0, false))
 	})
@@ -43,14 +45,14 @@ func TestConfig_NightTurnDuration(t *testing.T) {
 			require.LessOrEqual(t, d, PhantomTurnMax,
 				"phantom turn must be <= PhantomTurnMax")
 		}
-		// Day-0 mafia phantoms have a higher floor so the longer
-		// "look around" audio always fits.
-		for i := 0; i < 64; i++ {
-			d := c.nightTurnDuration(game.RoleMafia, 0, true)
-			require.GreaterOrEqual(t, d, 7*time.Second,
-				"day-0 mafia phantom must clear the longer audio cue")
-			require.LessOrEqual(t, d, PhantomTurnMax)
-		}
+		// A phantom MAFIA turn is unreachable (see
+		// DefaultPhantomTurnDuration's doc comment for the
+		// invariant): the game ends as soon as the last mafia
+		// dies, so beginNightTurns can only emit
+		// NightTurnStarted{Role: mafia, Phantom: false}. We
+		// therefore don't assert on phantom mafia bounds — the
+		// function would still return a value if called, but no
+		// real engine path reaches it.
 	})
 
 	t.Run("custom grace function", func(t *testing.T) {

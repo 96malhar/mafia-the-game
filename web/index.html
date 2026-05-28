@@ -101,8 +101,17 @@
 
       <!-- In-game view -->
       <section id="game" class="mt-6 hidden space-y-4">
-        <!-- Share strip: visible while in the room. Anyone can copy. -->
-        <div class="flex flex-col gap-2 rounded border border-emerald-700/60 bg-emerald-900/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <!--
+          Share strip: visible only while the room is still
+          accepting joins (i.e. lobby BEFORE roles are dealt). The
+          server rejects AddPlayer the moment StartGame runs, so
+          continuing to show an invite would be a UI lie. The
+          renderInviteBanner() function in JS toggles `hidden`
+          based on rolesDealt — keep this initial state visible
+          so the lobby's first paint doesn't flash.
+        -->
+        <div id="invite-banner"
+             class="flex flex-col gap-2 rounded border border-emerald-700/60 bg-emerald-900/20 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div class="min-w-0">
             <div class="text-xs uppercase tracking-wide text-emerald-300">Invite link</div>
             <div id="share-url" class="truncate font-mono text-sm">…</div>
@@ -114,12 +123,24 @@
         </div>
 
         <!--
-          Identity / room strip. Three equal columns on phones, the
-          long player name truncates rather than pushing the room
-          code off-screen. min-w-0 on each column is the magic that
-          enables truncation inside a flex parent.
+          Identity / room strip.
+
+          Mobile (default): 2 columns. ROOM and YOU share the top
+          row; ROLE takes a dedicated full-width row below
+          (col-span-2). This stops long player names from
+          truncating ROLE off-screen on phones AND gives ROLE
+          its own line so it's the easiest thing to glance at
+          during play.
+
+          Desktop (sm:): 3 equal columns, all on one row. ROLE
+          drops back to a single column (sm:col-span-1) so the
+          mobile span doesn't carry over.
+
+          min-w-0 on each cell allows truncation inside the
+          grid track (without it, the long YOU text would push
+          ROOM off-screen instead of ellipsing).
         -->
-        <div class="grid grid-cols-3 gap-3 rounded border border-slate-700 bg-slate-800/40 p-3 sm:p-4">
+        <div class="grid grid-cols-2 gap-3 rounded border border-slate-700 bg-slate-800/40 p-3 sm:grid-cols-3 sm:p-4">
           <div class="min-w-0">
             <div class="text-xs uppercase tracking-wide text-slate-400">Room</div>
             <div id="room-code" class="truncate font-mono text-xl sm:text-2xl">----</div>
@@ -128,7 +149,7 @@
             <div class="text-xs uppercase tracking-wide text-slate-400">You</div>
             <div id="me" class="truncate font-mono text-sm sm:text-base">—</div>
           </div>
-          <div class="min-w-0">
+          <div class="col-span-2 min-w-0 sm:col-span-1">
             <div class="text-xs uppercase tracking-wide text-slate-400">Role</div>
             <div id="my-role" class="truncate font-mono text-sm sm:text-base">—</div>
           </div>
@@ -201,8 +222,23 @@
         </section>
 
         <div>
+          <!--
+            Players panel header. Three slots:
+              - "Players" label (left)
+              - "Host: <name>" indicator (middle, populated by
+                renderPlayers from hostId; hidden until the
+                HostChanged event lands)
+              - alive/total counter (right)
+            We co-locate "who is the host" here so it lives in
+            ONE canonical spot instead of being repeated as a
+            badge on the host's player row, which competed with
+            the per-row action buttons for horizontal space.
+          -->
           <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-            <h2 class="text-xs uppercase tracking-wide text-slate-400">Players</h2>
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 class="text-xs uppercase tracking-wide text-slate-400">Players</h2>
+              <span id="player-host" class="hidden text-xs text-slate-400"></span>
+            </div>
             <span id="player-count" class="text-xs text-slate-500">0</span>
           </div>
           <!--
@@ -423,6 +459,22 @@
       // as the phaseChanged → day_discussion. The narrator reads it on
       // the dawn cue, then clears it. Null = "nobody died."
       let dayDiscussionPendingDeath = null;
+
+      // lastNightVictim is the same fact as dayDiscussionPendingDeath,
+      // but tracked DURABLY: it stays set across renders and survives
+      // page refreshes (rebuilt by the event replay), and is only
+      // cleared when the next night begins. The day-discussion banner
+      // uses it to surface "Last night: X was killed" as a UI chip,
+      // not just a one-shot audio cue. Null = no death last night
+      // (or we haven't seen a night yet).
+      //
+      // We keep dayDiscussionPendingDeath separate because the
+      // narrator wants single-shot semantics (don't re-narrate a
+      // death after a refresh into day_discussion); the banner
+      // wants persistent semantics (DO re-display after refresh).
+      // Trying to share one variable would mean one of those rules
+      // has to give.
+      let lastNightVictim = null;
 
       // --- TTS (narrator) ----------------------------------------------
       //
@@ -770,10 +822,16 @@
         $("share-url").textContent = shareLinkFor(code);
       }
 
-      // Renders the YOU box: "Name (p1) (host)". Name is server-truth.
-      function formatMe(name, pid, isHost) {
+      // Renders the YOU box: "Name (host)". Name is server-truth.
+      // The wire-level PlayerID (p1, p2, ...) is intentionally
+      // omitted: it cluttered the strip without giving players any
+      // useful information (they think of each other by name, and
+      // the server now rejects duplicate names case-insensitively,
+      // so visual ambiguity can't happen). pid stays on the
+      // function signature in case a future debug overlay wants it.
+      function formatMe(name, _pid, isHost) {
         const safeName = name && name.trim() ? name : "(unnamed)";
-        return `${safeName} (${pid})${isHost ? " (host)" : ""}`;
+        return `${safeName}${isHost ? " (host)" : ""}`;
       }
 
       // ----- roster reducer + render --------------------------------------
@@ -791,8 +849,10 @@
         dayLynchResolved = false;
         rolesDealt = false;
         // hostId is rebuilt from the HostChanged event in the
-        // join/rejoin replay; null it so we don't briefly render a
-        // stale Host badge from a previous session.
+        // join/rejoin replay; null it so renderPlayers hides the
+        // "Host: <name>" label until the replay re-populates it
+        // (otherwise we'd briefly show stale identity from a
+        // previous session).
         hostId = null;
         // Lobby config is event-sourced (gameCreated / mafiaCountChanged);
         // null out so the replay rebuilds it from the server's
@@ -807,6 +867,7 @@
         nightTurnUnlockMs = 0;
         currentNightTurnPhantom = false;
         dayDiscussionPendingDeath = null;
+        lastNightVictim = null;
         narrationsSeen.clear();
         stopNightCountdown();
         stopNightUnlockTimer();
@@ -821,9 +882,27 @@
       // changes (cheap: at most every few seconds) so that any UI piece
       // depending on phase + roster + votes stays consistent.
       function renderAll() {
+        renderInviteBanner();
         renderHostAudioBar();
         renderPlayers();
         renderActionPanel();
+      }
+
+      // renderInviteBanner toggles the "Invite link" strip based on
+      // whether the room is still accepting joins.
+      //
+      // Boundary: rolesDealt — set when the engine emits its first
+      // RoleAssigned event (i.e. StartGame ran). That's the same
+      // boundary applyAddPlayer uses to reject new joiners, so
+      // hiding the banner here keeps the UI honest with the server.
+      // We deliberately do NOT key on phase === "lobby" alone,
+      // because the phase stays "lobby" between StartGame and
+      // BeginNight — during that window the room is closed but the
+      // phase string would still let the banner show.
+      function renderInviteBanner() {
+        const banner = $("invite-banner");
+        if (!banner) return;
+        banner.classList.toggle("hidden", rolesDealt);
       }
 
       function upsertPlayer(pid, patch) {
@@ -844,7 +923,25 @@
       function renderPlayers() {
         const list = $("players");
         const count = $("player-count");
+        const hostLabel = $("player-host");
         list.innerHTML = "";
+
+        // "Host: <name>" lives in the panel header (one canonical
+        // spot) instead of as a per-row badge. We hide the label
+        // until HostChanged lands and the host is in our roster —
+        // showing "Host: p1" before the PlayerJoined for p1 lands
+        // would look like a bug. In practice these arrive in the
+        // same WS batch, so the hidden state is sub-frame.
+        if (hostLabel) {
+          const hp = hostId ? players.get(hostId) : null;
+          if (hp) {
+            hostLabel.textContent = `Host: ${hp.name || hostId}`;
+            hostLabel.classList.remove("hidden");
+          } else {
+            hostLabel.textContent = "";
+            hostLabel.classList.add("hidden");
+          }
+        }
 
         if (players.size === 0) {
           const empty = document.createElement("li");
@@ -892,23 +989,32 @@
         if (!p.alive) nameEl.classList.add("text-slate-500", "line-through");
         nameEl.textContent = p.name;
 
+        // Secondary line under the name. We used to lead with the
+        // server-assigned PlayerID (p1, p2, ...) for moderator
+        // disambiguation, but it cluttered every row even though
+        // players think of each other by name; engine-level wire
+        // identity doesn't belong in the player-facing UI. Now the
+        // line only renders when there's something meaningful to
+        // show (death cause, revealed role, current vote tally),
+        // and is omitted entirely otherwise so living players in
+        // ordinary phases get a clean single-line row.
         const subEl = document.createElement("div");
         subEl.className = "truncate font-mono text-xs text-slate-500";
-        const bits = [p.id];
+        const bits = [];
         if (!p.alive) {
           bits.push(p.deathCause === "lynched" ? "lynched by vote" : "killed in the night");
         }
         if (p.revealedRole) bits.push(p.revealedRole);
-        // Day-vote tally count alongside the pid. Computed each render
-        // from the votes Map; cheap (n=5 today).
         if (phase === "day_vote" && p.alive) {
           const n = tallyFor(p.id);
           if (n > 0) bits.push(`${n} vote${n === 1 ? "" : "s"}`);
         }
-        subEl.textContent = bits.join(" · ");
 
         left.appendChild(nameEl);
-        left.appendChild(subEl);
+        if (bits.length > 0) {
+          subEl.textContent = bits.join(" · ");
+          left.appendChild(subEl);
+        }
 
         const right = document.createElement("div");
         right.className = "flex shrink-0 items-center gap-1";
@@ -919,10 +1025,10 @@
         if (btn) right.appendChild(btn);
 
         if (p.id === myId) right.appendChild(badge("You", "bg-emerald-700 text-emerald-100"));
-        // Host badge is rendered on the host's row for every viewer,
-        // not just for the host themselves. hostId is set by the
-        // server's HostChanged event (see handleEvent).
-        if (p.id === hostId) right.appendChild(badge("Host", "bg-indigo-700 text-indigo-100"));
+        // No per-row "Host" badge: who-is-host lives in the
+        // Players panel header (see renderPlayers). The previous
+        // badge competed with the row's action button (Vote /
+        // Target) for horizontal space on narrow screens.
 
         li.appendChild(left);
         li.appendChild(right);
@@ -1012,8 +1118,16 @@
           b.className = isMyTarget
             ? `${rowBtnBase} bg-rose-600 text-white`
             : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          // Tap the active selection again to retract — same button
+          // does both jobs. The engine treats target:"" as a retract
+          // (rules_day.go applyDayVote) and emits VoteRetracted.
+          // The action-panel hint ("Tap your current selection to
+          // retract") teaches the gesture; the button label stays
+          // clean.
           b.textContent = isMyTarget ? "Voted ✓" : "Vote";
-          b.addEventListener("click", () => send("vote", { target: p.id }));
+          b.addEventListener("click", () =>
+            send("vote", { target: isMyTarget ? "" : p.id })
+          );
           return b;
         }
 
@@ -1219,6 +1333,20 @@
               } else {
                 hint.textContent = "You're out. The living debate without you.";
               }
+              // Surface last night's outcome as a chip alongside
+              // the discussion controls. The chip persists across
+              // renders + refreshes (lastNightVictim is rebuilt
+              // from the event log), unlike the dawn narration
+              // which fires once. Hidden when the night was
+              // quiet (doctor saved, or no kill at all).
+              if (lastNightVictim) {
+                const v = players.get(lastNightVictim);
+                const name = v ? v.name : lastNightVictim;
+                extras.appendChild(noteChip(
+                  `Last night: ${name} was killed`,
+                  "bg-rose-700/60",
+                ));
+              }
               if (myIsHost) {
                 extras.appendChild(actionButton(
                   "Open voting",
@@ -1237,13 +1365,14 @@
             } else {
               const myVote = votes.get(myId);
               hint.textContent = myVote
-                ? "Vote locked in. Tap another player to change, or retract."
+                ? "Vote locked in. Tap another player to change, or tap your current selection to retract."
                 : "Pick a player to lynch on the Players panel below.";
               if (myVote) {
+                // The "Your vote: X" chip stays as a one-glance
+                // summary; the retract action moved onto the
+                // selected player's row itself (tap-to-undo).
                 const t = players.get(myVote);
                 extras.appendChild(noteChip(`Your vote: ${t ? t.name : myVote}`, "bg-rose-700/60"));
-                extras.appendChild(actionButton("Retract", "bg-slate-700 hover:bg-slate-600",
-                  () => send("vote", { target: "" })));
               }
             }
             // Host-only vote-management buttons. Finalize resolves the
@@ -1548,10 +1677,14 @@
               alive: false,
               deathCause: "killed",
             });
-            // Stash the death so the day_discussion narration can
-            // announce it. The phaseChanged → day_discussion event
-            // arrives in the SAME batch and will read + clear this.
+            // Stash the death twice: dayDiscussionPendingDeath
+            // drives the (single-shot) dawn narration and is
+            // consumed by narratePhaseChange; lastNightVictim
+            // drives the (persistent) day-discussion banner chip
+            // and is only cleared when the next night begins
+            // (see the to === "night" branch in phaseChanged).
             dayDiscussionPendingDeath = env.data.playerId;
+            lastNightVictim = env.data.playerId;
             break;
 
           case "playerLynched":
@@ -1589,6 +1722,13 @@
               stopNightCountdown();
               stopNightUnlockTimer();
               dayLynchResolved = false;
+              // A new night invalidates the previous night's
+              // victim — the banner chip ("Last night: X was
+              // killed") should not survive into the next day's
+              // discussion. If this night produces no death,
+              // lastNightVictim stays null and the chip stays
+              // hidden, which is correct.
+              lastNightVictim = null;
             }
             renderAll();
 
@@ -1650,13 +1790,19 @@
             // receiving any RoleAssigned is enough to know roles
             // have been dealt (server-side projection guarantees the
             // event only fires for us). The host UI uses this to
-            // swap "Start game" → "Begin night".
+            // swap "Start game" → "Begin night", and the invite
+            // banner hides because the room is now closed to joins.
             rolesDealt = true;
             if (env.data.playerId === myId) {
               myRole = env.data.role;
               $("my-role").textContent = env.data.role;
-              renderActionPanel(); // role unlocks new action-panel content
             }
+            // Re-render everything: rolesDealt flips multiple
+            // surfaces (action panel + invite banner + player
+            // count framing on next phase). One renderAll() is
+            // cheaper to reason about than tracking which
+            // surfaces care about which fields.
+            renderAll();
             break;
 
           case "nightActionRecorded":
@@ -1669,16 +1815,24 @@
 
           case "detectiveResult": {
             // Server-side projection (PrivateTo) guarantees only the
-            // detective receives this event — no extra gating needed
-            // here. We show on REPLAY too: if the detective just
-            // refreshed mid-game, the replay carries every prior
-            // investigation and each call to showDetectiveToast
-            // overwrites the previous one, so the modal ends up
-            // showing the most recent result (which is what the
-            // detective wants to be reminded of).
-            const t = players.get(env.data.target);
-            const name = t ? t.name : env.data.target;
-            showDetectiveToast(name, !!env.data.isMafia);
+            // detective ever receives this event. We deliberately
+            // suppress the modal on REPLAY: the modal is a one-shot
+            // pacing signal tied to the live moment of investigation
+            // (read → "Got it" → night continues). Re-showing it on
+            // every refresh turns it into a persistent reminder
+            // the detective can't dismiss for the rest of the game.
+            //
+            // The detective is expected to remember (or note down)
+            // their finding the first time. We don't currently
+            // surface investigation history anywhere — if that
+            // turns out to be needed, it should be its own
+            // explicit "Past investigations" UI, not a modal that
+            // pops up every refresh.
+            if (!replaying) {
+              const t = players.get(env.data.target);
+              const name = t ? t.name : env.data.target;
+              showDetectiveToast(name, !!env.data.isMafia);
+            }
             break;
           }
 
@@ -1735,13 +1889,13 @@
 
       function narratePhaseChange(from, to, dayNum) {
         if (to === "night") {
-          // First night uses the "everybody close your eyes" preface.
-          // The nightTurnStarted that arrives in the same batch will
-          // immediately follow with "Mafia, wake up…", with a short
-          // pause between them.
-          if (dayNum === 0) {
-            narrate("Everybody, close your eyes.");
-          }
+          // Every night opens with the same "city, go to sleep" cue.
+          // The nightTurnStarted event arrives in the same batch and
+          // queues "Mafia, wake up..." with a deliberate ~5-second
+          // pauseBefore so the room has time to actually close eyes
+          // and settle before the mafia are asked to act. See
+          // narrateNightTurnStarted for the mafia-side pacing.
+          narrate("City, go to sleep.");
         } else if (to === "day_discussion") {
           // day_discussion is entered from TWO places:
           //   1. night → day_discussion: morning narration after the
@@ -1775,12 +1929,33 @@
 
       function narrateNightTurnStarted(role, dayNum) {
         if (role === "mafia") {
+          // Every night opens with "City, go to sleep" (queued by
+          // narratePhaseChange). We then wait long enough that the
+          // room has visibly settled before naming the mafia.
+          //
+          // IMPORTANT: pauseBefore values here are ABSOLUTE offsets
+          // from t=0 (the moment NightTurnStarted is handled), not
+          // relative to the previous narrate() call. Each narrate()
+          // internally does setTimeout(fire, pauseBefore) and those
+          // timers run independently from the same t=0. The
+          // speechSynthesis API then plays utterances in the order
+          // they are enqueued, so the offsets must be MONOTONIC to
+          // preserve speech order — otherwise a later line's
+          // setTimeout could fire first and jump the queue.
+          //
+          // Night 1 schedule (relative to NightTurnStarted):
+          //   t=5s : "Mafia, wake up. Look around..."  (~2.5s)
+          //   t=9s : "Mafia, choose your target."      (~1.5s)
+          // Grace in DefaultNightTurnGrace tracks this (~10s).
+          const wakePause = 5000;
           if (dayNum === 0) {
-            narrate("Mafia, wake up. Look around and recognize each other.", { pauseBefore: 600 });
-            // ~3s beat for eye-contact, then the action prompt.
-            narrate("Mafia, choose your target.", { pauseBefore: 3600 });
+            narrate("Mafia, wake up. Look around and recognize each other.", { pauseBefore: wakePause });
+            // 9000ms (not 5000+3600) so this stays AFTER the
+            // "look around" cue in the speech queue. See comment
+            // above re: absolute-vs-relative offsets.
+            narrate("Mafia, choose your target.", { pauseBefore: 9000 });
           } else {
-            narrate("Mafia, wake up. Choose your target.");
+            narrate("Mafia, wake up. Choose your target.", { pauseBefore: wakePause });
           }
         } else if (role === "detective") {
           narrate("Detective, wake up. Choose someone to investigate.");

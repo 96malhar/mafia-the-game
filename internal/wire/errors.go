@@ -36,6 +36,7 @@ const (
 	ErrCodeWrongPhase      ErrorCode = "wrong_phase"
 	ErrCodeUnknownPlayer   ErrorCode = "unknown_player"
 	ErrCodeDuplicatePlayer ErrorCode = "duplicate_player"
+	ErrCodeDuplicateName   ErrorCode = "duplicate_name"
 	ErrCodePlayerDead      ErrorCode = "player_dead"
 	ErrCodeNotYourAction   ErrorCode = "not_your_action"
 	ErrCodeNotYourTurn     ErrorCode = "not_your_turn"
@@ -90,6 +91,7 @@ var ErrorCodes = []ErrorCode{
 	ErrCodeWrongPhase,
 	ErrCodeUnknownPlayer,
 	ErrCodeDuplicatePlayer,
+	ErrCodeDuplicateName,
 	ErrCodePlayerDead,
 	ErrCodeNotYourAction,
 	ErrCodeNotYourTurn,

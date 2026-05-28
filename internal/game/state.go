@@ -67,21 +67,94 @@ type GameState struct {
 	// --- Night turn state ----------------------------------------------
 	//
 	// Nights are strictly turn-ordered: one role acts at a time, in
-	// nightTurnQueue order. The currently-active role is at index 0
-	// (currentNightRole), and the deadline below is when its turn
-	// auto-passes if no action arrives. Cleared (zero values) any time
-	// the game is not in PhaseNight, or when the queue is exhausted
-	// just before resolveNight runs.
+	// nightTurnQueue order, and each role's turn walks a small linear
+	// sub-state machine (see NightSubPhase). The currently-active role
+	// is at index 0 (currentNightRole); currentNightSubPhase says
+	// where in that role's lifecycle we are. The deadline below is
+	// when the active sub-phase auto-elapses if no action arrives.
+	// All four are cleared (zero values) any time the game is not in
+	// PhaseNight, or when the queue is exhausted just before
+	// resolveNight runs.
+	//
+	// nightSubmitted records whether the active turn's actor submitted
+	// an action (true) or the turn is going to/already timed out
+	// (false). The room reads this when sizing the post-act ponder
+	// duration: submitted → short fixed pause, timed-out → skip
+	// straight to sleep, phantom → randomized "ponder" instead of an
+	// act sub-phase at all.
 	//
 	// We keep these as ENGINE-OWNED state because the engine is the
-	// authority on "whose turn is it"; the room layer only schedules
-	// wall-clock callbacks against the deadline. The deadline is stored
-	// as unix-millis to keep the engine free of time.Time imports and
-	// to keep the wire encoding trivial.
+	// authority on "whose turn is it AND what part of it"; the room
+	// layer only schedules wall-clock callbacks against the deadline.
+	// The deadline is stored as unix-millis to keep the engine free
+	// of time.Time imports and to keep the wire encoding trivial.
 	currentNightRole        Role
+	currentNightSubPhase    NightSubPhase
 	nightTurnDeadlineMillis int64
 	nightTurnQueue          []Role
+	nightSubmitted          bool
 }
+
+// NightSubPhase is the sub-state during PhaseNight. Every night opens
+// with a one-shot NightSubOpening ("City, go to sleep." + pre-wake
+// silence), then each role's turn walks a five-step linear state
+// machine:
+//
+//	opening ─▶ first role's narrate
+//	narrate ─▶ act ─[submit]─▶ ponder(2s) ─▶ sleep ─▶ settle(2s) ─▶ next role
+//	narrate ─▶ act ─[timer]──▶                sleep ─▶ settle(2s) ─▶ next role
+//	narrate ──────────────────▶ ponder(5–10s)─▶ sleep ─▶ settle(2s) ─▶ next role   (phantom)
+//
+// Each transition is driven by a single AdvancePhase command from the
+// room layer (whose timer fires at the end of the sub-phase) OR, for
+// the act→ponder edge, by the actor submitting a NightAction. The
+// engine itself is timeless; the room translates wall-clock into
+// AdvancePhase. Phantom turns substitute `ponder` for `act` so the
+// audio cues (narrate + sleep) still play, but no action can be
+// submitted.
+//
+// Note that NightSubOpening is a NIGHT-scoped sub-phase (no
+// currentNightRole during it); all others are role-scoped.
+//
+// The zero value NightSubPhase("") means "not in any night sub-phase";
+// it's the value returned outside PhaseNight or between role turns.
+type NightSubPhase string
+
+const (
+	// NightSubOpening is the one-shot start-of-night beat that happens
+	// AFTER PhaseChanged→night and BEFORE the first role's narrate.
+	// It's the "City, go to sleep." cue plus a fixed pre-wake silence
+	// so the room has time to settle before any role is named. No
+	// action accepted, currentNightRole is empty.
+	NightSubOpening NightSubPhase = "opening"
+
+	// NightSubNarrate is the opening audio cue ("Mafia, wake up...").
+	// No action accepted. Duration is sized to cover the spoken cue.
+	NightSubNarrate NightSubPhase = "narrate"
+
+	// NightSubAct is the actor's decision window. Real turns only;
+	// phantom turns substitute NightSubPonder. NightAction submissions
+	// are accepted only during this sub-phase (engine returns
+	// ErrNotYourTurn otherwise).
+	NightSubAct NightSubPhase = "act"
+
+	// NightSubPonder is a short pause between the actor finishing and
+	// the "go to sleep" outro. For real turns it gives the room a
+	// breath to absorb that an action was just submitted; for phantom
+	// turns it stands in for the missing act window so the cadence
+	// can't be used to deduce that a role is dead. No action accepted.
+	NightSubPonder NightSubPhase = "ponder"
+
+	// NightSubSleep is the closing audio cue ("Mafia, go to sleep.").
+	// No action accepted. Sized to cover the spoken cue.
+	NightSubSleep NightSubPhase = "sleep"
+
+	// NightSubSettle is a short fixed pause after sleep before the
+	// next role's narrate (or, for the last role, before the
+	// night→day transition). Lets the "go to sleep" cue land cleanly
+	// before the next narrator line begins. No action accepted.
+	NightSubSettle NightSubPhase = "settle"
+)
 
 // newState constructs an empty state in PhaseLobby. Unexported because
 // callers should always go through Game.Apply(CreateGame{...}).
@@ -135,25 +208,39 @@ func (s *GameState) DayLynchResolved() bool { return s.dayLynchResolved }
 // PhaseNight, or the empty Role between turns / outside of Night.
 func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
 
+// CurrentNightSubPhase returns the active sub-phase within the current
+// role's night turn (narrate / act / ponder / sleep / settle), or the
+// empty NightSubPhase outside of an active turn. See NightSubPhase
+// for the per-role state machine.
+func (s *GameState) CurrentNightSubPhase() NightSubPhase { return s.currentNightSubPhase }
+
 // NightTurnDeadlineMillis returns the unix-millis deadline at which the
-// current night-turn auto-passes, or 0 if no turn is active.
+// current night SUB-phase auto-elapses, or 0 if no sub-phase is active.
+// Named "TurnDeadline" rather than "SubPhaseDeadline" because the
+// concept it expresses to the wire layer hasn't changed — there's
+// always exactly one active deadline during PhaseNight, regardless of
+// which sub-phase owns it.
 func (s *GameState) NightTurnDeadlineMillis() int64 { return s.nightTurnDeadlineMillis }
 
-// CurrentNightTurnIsPhantom reports whether the active night turn has
-// no living player holding its role. Such turns are still emitted (so
-// the moderator audio doesn't leak which role is dead) but accept no
-// NightAction. Returns false when there is no active turn or when at
-// least one player of the current role is alive.
-func (s *GameState) CurrentNightTurnIsPhantom() bool {
-	if s.currentNightRole == "" {
-		return false
-	}
+// NightTurnSubmitted reports whether an actor has submitted a
+// NightAction during the current role's act window. Used by the room
+// when sizing the post-act ponder duration: true → short fixed beat
+// to absorb the submission; false → ponder is skipped (timeout) or
+// uses the phantom-substitute random window. Always returns false
+// outside of PhaseNight.
+func (s *GameState) NightTurnSubmitted() bool { return s.nightSubmitted }
+
+// HasLivingRole reports whether at least one living player holds the
+// given role. Exported so the room layer can size phantom-vs-real
+// ponder durations without re-walking the player list. Mirrors the
+// engine's internal hasLivingRole helper.
+func (s *GameState) HasLivingRole(r Role) bool {
 	for i := range s.players {
-		if s.players[i].alive && s.players[i].role == s.currentNightRole {
-			return false
+		if s.players[i].alive && s.players[i].role == r {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // findPlayer returns a pointer to the player record and true, or nil and

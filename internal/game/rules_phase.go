@@ -1,18 +1,38 @@
 package game
 
-// applyAdvancePhase ends the current night turn (PhaseNight only). It
-// is an INTERNAL command, invoked by the room's per-turn timer when a
-// real role times out or a phantom turn elapses. Daytime pacing is no
-// longer driven by AdvancePhase: hosts use BeginNight / OpenVoting /
-// ClearVotes / FinalizeVotes for those transitions.
+// applyAdvancePhase elapses the current night SUB-phase (PhaseNight
+// only). It is an INTERNAL command, invoked by the room's wall-clock
+// timer when the active sub-phase's deadline is reached. Daytime
+// pacing is NOT driven by AdvancePhase: hosts use BeginNight /
+// OpenVoting / ClearVotes / FinalizeVotes for those transitions.
 //
-// Transition summary:
+// Each AdvancePhase advances exactly one sub-phase boundary. The five-
+// step state machine per role turn is:
+//
+//	narrate ─▶ act ─[submit]─▶ ponder(short) ─▶ sleep ─▶ settle ─▶ next role
+//	narrate ─▶ act ─[timer]──▶                  sleep ─▶ settle ─▶ next role
+//	narrate ────────────────▶ ponder(random)──▶ sleep ─▶ settle ─▶ next role   (phantom)
+//
+// Submission (NightAction) drives the act→ponder edge directly; every
+// other edge is driven by AdvancePhase. After the last role's settle,
+// the engine runs resolveNight and transitions to PhaseDayDiscussion
+// (or PhaseEnded if a faction won).
+//
+// Transition summary by current sub-phase:
 //
 //	Lobby / DayDiscussion / DayVote -> ErrWrongPhase
 //	Ended                           -> ErrGameEnded
-//	Night, midQueue                 -> NightTurnEnded + NightTurnStarted (next role)
-//	Night, lastTurn                 -> NightTurnEnded + resolveNight;
-//	                                   if not won -> DayDiscussion (Day N+1).
+//	Night, narrate                  -> NightActionStarted (real) OR
+//	                                   NightPonderStarted (phantom)
+//	Night, act    (timeout)         -> NightSleepStarted
+//	Night, ponder                   -> NightSleepStarted
+//	Night, sleep                    -> NightSettleStarted
+//	Night, settle (midQueue)        -> NightNarrationStarted (next role)
+//	Night, settle (lastRole)        -> resolveNight + PhaseChanged
+//
+// AdvancePhase received during NightSubAct counts as the timeout
+// branch: no submission was recorded for this turn, so we skip
+// ponder and go straight to sleep.
 func (g *Game) applyAdvancePhase(_ AdvancePhase) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -21,41 +41,149 @@ func (g *Game) applyAdvancePhase(_ AdvancePhase) ([]Event, error) {
 	case PhaseEnded:
 		return nil, ErrGameEnded
 	case PhaseNight:
-		return g.advanceFromNight(), nil
+		return g.advanceNightSubPhase(), nil
 	default:
 		// Day phases are host-driven; AdvancePhase is invalid here.
 		return nil, ErrWrongPhase
 	}
 }
 
-// advanceFromNight ends the current role's turn. If more roles remain
-// in the night-turn queue, it pops the next one and emits
-// NightTurnStarted. Otherwise it runs resolveAndExitNight which
-// handles resolution + win-check + transition to DayDiscussion.
-func (g *Game) advanceFromNight() []Event {
-	var events []Event
-	if g.state.currentNightRole != "" {
-		events = append(events, NightTurnEnded{Role: g.state.currentNightRole})
-		g.state.currentNightRole = ""
-		g.state.nightTurnDeadlineMillis = 0
+// advanceNightSubPhase implements one tick of the per-role state
+// machine described on applyAdvancePhase. It assumes:
+//   - g.state.phase == PhaseNight, AND
+//   - g.state.currentNightRole and currentNightSubPhase are non-zero
+//     (i.e. we're mid-turn).
+//
+// If currentNightSubPhase is empty (shouldn't happen in normal flow)
+// the function returns no events, leaving state untouched.
+func (g *Game) advanceNightSubPhase() []Event {
+	sub := g.state.currentNightSubPhase
+	if sub == "" {
+		// Defensive: shouldn't happen — beginNightTurns always
+		// populates a sub-phase before returning. If it does, no-op
+		// rather than panicking, since this is reachable from a
+		// wall-clock timer that we don't want to be load-bearing on
+		// engine invariants.
+		return nil
 	}
+	// Note: currentNightRole IS empty during NightSubOpening (the
+	// night-scoped beat that precedes any role's turn), so we do
+	// NOT short-circuit on it.
+	role := g.state.currentNightRole
 
-	if len(g.state.nightTurnQueue) > 0 {
-		events = append(events, g.beginNextNightTurn()...)
-		return events
+	switch sub {
+	case NightSubOpening:
+		// Opening elapsed: pop the first role and enter its narrate.
+		// nightTurnQueue is guaranteed non-empty here because
+		// beginNightTurns populates it before entering opening.
+		g.state.currentNightSubPhase = ""
+		g.state.nightTurnDeadlineMillis = 0
+		return g.beginNextNightTurn()
+
+	case NightSubNarrate:
+		// narrate → act (real) OR narrate → ponder (phantom).
+		// hasLivingRole determines which branch; real turns wait
+		// for either the actor's submission or this AdvancePhase
+		// firing again at the end of NightSubAct.
+		if g.state.HasLivingRole(role) {
+			return g.enterNightSubPhase(NightSubAct)
+		}
+		return g.enterNightSubPhase(NightSubPonder)
+
+	case NightSubAct:
+		// Reaching here means AdvancePhase fired during the act
+		// window — i.e. the timer expired without a submission.
+		// We still pass through ponder so the audio cadence and
+		// sub-phase sequence are uniform across submit/timeout. The
+		// room's Ponder function reads nightSubmitted (false here)
+		// to pick an appropriate post-timeout duration; the default
+		// reuses the post-submit beat (~2s) so observers can't
+		// distinguish submit from timeout by listening alone.
+		g.state.nightSubmitted = false
+		return g.enterNightSubPhase(NightSubPonder)
+
+	case NightSubPonder:
+		// ponder → sleep, both for real turns (post-submit) and
+		// for phantom turns (post-narrate).
+		return g.enterNightSubPhase(NightSubSleep)
+
+	case NightSubSleep:
+		// sleep → settle. Universal; runs after every role's sleep
+		// including the last one (whose settle precedes the
+		// night → day transition).
+		return g.enterNightSubPhase(NightSubSettle)
+
+	case NightSubSettle:
+		// End of this role's turn. Pop the next role from the queue
+		// and start it at narrate; or, if the queue is empty,
+		// resolve the night and transition to DayDiscussion.
+		g.state.currentNightRole = ""
+		g.state.currentNightSubPhase = ""
+		g.state.nightTurnDeadlineMillis = 0
+		g.state.nightSubmitted = false
+		if len(g.state.nightTurnQueue) > 0 {
+			return g.beginNextNightTurn()
+		}
+		return g.resolveAndExitNight()
 	}
-	events = append(events, g.resolveAndExitNight()...)
-	return events
+	return nil
 }
 
-// resolveAndExitNight is the common Night-end path shared by:
-//   - advanceFromNight when the queue is exhausted by skip/timeout;
-//   - applyNightAction when the action ended the last turn in the queue.
-//
-// It runs resolveNight, checks for a win, and transitions to
+// enterNightSubPhase mutates state to enter the given sub-phase for
+// the current role and returns the matching event. Deadline is left
+// at 0 — the room layer stamps a wall-clock value before broadcasting.
+// Called from advanceNightSubPhase (timer-driven edges) and from
+// applyNightAction (the act → ponder edge driven by submission).
+func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
+	role := g.state.currentNightRole
+	day := g.state.day
+	g.state.currentNightSubPhase = sub
+	g.state.nightTurnDeadlineMillis = 0
+
+	switch sub {
+	case NightSubNarrate:
+		return []Event{NightNarrationStarted{
+			Role:     role,
+			Day:      day,
+			Deadline: 0,
+			Phantom:  !g.state.HasLivingRole(role),
+		}}
+	case NightSubAct:
+		return []Event{NightActionStarted{
+			Role:     role,
+			Day:      day,
+			Deadline: 0,
+		}}
+	case NightSubPonder:
+		return []Event{NightPonderStarted{
+			Role:     role,
+			Day:      day,
+			Deadline: 0,
+			Phantom:  !g.state.HasLivingRole(role),
+		}}
+	case NightSubSleep:
+		return []Event{NightSleepStarted{
+			Role:     role,
+			Day:      day,
+			Deadline: 0,
+		}}
+	case NightSubSettle:
+		return []Event{NightSettleStarted{
+			Role:     role,
+			Day:      day,
+			Deadline: 0,
+		}}
+	}
+	return nil
+}
+
+// resolveAndExitNight is the common Night-end path: it's called from
+// advanceNightSubPhase when the last role's settle completes (queue
+// empty). It runs resolveNight, checks for a win, and transitions to
 // DayDiscussion (or PhaseEnded). The day counter is incremented when
-// entering DayDiscussion. Caller is responsible for emitting any
-// NightTurnEnded events for the prior turn before calling this.
+// entering DayDiscussion. Sub-phase state must already be cleared by
+// the caller before this runs (advanceNightSubPhase does this when
+// it leaves NightSubSettle with an empty queue).
 //
 // DayDiscussion is entered with dayLynchResolved=false so the host's
 // OpenVoting command is enabled; the only way out of DayDiscussion
@@ -90,7 +218,10 @@ func (g *Game) resolveAndExitNight() []Event {
 //     before transitioning to the next DayDiscussion).
 //
 // In both cases the engine emits PhaseChanged{To: PhaseNight} followed
-// by the first NightTurnStarted (mafia, or its phantom).
+// by NightOpeningStarted (the one-shot "City, go to sleep." beat).
+// After the room's opening timer elapses, AdvancePhase drives the
+// transition to the first role's NightSubNarrate; see NightSubPhase
+// for the per-role state machine that follows.
 func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -215,12 +346,16 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 // beginNightTurns is called whenever the game enters PhaseNight. It
 // builds the night turn queue with ALL acting roles in the canonical
 // order (Mafia → Detective → Doctor), regardless of whether any
-// player of that role is still alive. Turns for roles with no living
-// holder are emitted as "phantom" turns: they take a (shorter,
-// randomized) wall-clock duration on the room side and accept no
-// NightAction, but the moderator narration still plays — otherwise
-// the room would deduce a role is dead just from the missing audio
-// cue. The night ends when the whole queue is exhausted.
+// player of that role is still alive. It then enters NightSubOpening
+// — the one-shot "City, go to sleep." beat that precedes any role's
+// narration — without populating currentNightRole. The room's
+// opening timer fires AdvancePhase, which pops the first role and
+// enters its NightSubNarrate (see advanceNightSubPhase).
+//
+// Each role's turn walks the five-step NightSubPhase state machine;
+// roles with no living holder substitute NightSubPonder for the act
+// window so the audio cadence still narrates them. The night ends
+// when the whole queue is exhausted.
 //
 // Returns the events to be appended after PhaseChanged.
 func (g *Game) beginNightTurns() []Event {
@@ -229,24 +364,34 @@ func (g *Game) beginNightTurns() []Event {
 	// most information about who's been targeted.
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue,
 		RoleMafia, RoleDetective, RoleDoctor)
-	return g.beginNextNightTurn()
+	// Enter the night-scoped opening sub-phase. currentNightRole
+	// stays empty until the opening elapses and advanceNightSubPhase
+	// pops the first role.
+	g.state.currentNightRole = ""
+	g.state.currentNightSubPhase = NightSubOpening
+	g.state.nightTurnDeadlineMillis = 0
+	g.state.nightSubmitted = false
+	return []Event{NightOpeningStarted{
+		Day:      g.state.day,
+		Deadline: 0,
+	}}
 }
 
-// beginNextNightTurn pops the front of the queue and sets it as the
-// current role. Deadline is left at 0 — the engine is timeless; the
-// room layer stamps a real deadline before broadcasting. The Phantom
-// flag on the emitted event tells the room/clients to treat this turn
-// as "audio only": no action will be accepted, and the room arms a
-// shorter (randomized) wall-clock timer.
+// beginNextNightTurn pops the front of the queue, sets it as the
+// current role, and enters NightSubNarrate (the opening audio cue).
+// Subsequent sub-phases are driven by AdvancePhase (from the room's
+// wall-clock timer) or NightAction (the actor's submission). The
+// room layer stamps a real Deadline before broadcasting; the engine
+// is timeless and emits Deadline=0.
 //
-// Note on Phantom for RoleMafia: hasLivingRole(RoleMafia) is always
+// Note on Phantom for RoleMafia: HasLivingRole(RoleMafia) is always
 // true when this function runs. checkWin (called after every
 // state-changing event) emits GameEnded the instant living mafia
 // hits zero and the phase transitions to PhaseEnded, which prevents
-// any further beginNightTurns/beginNextNightTurn calls. The
-// uniform `Phantom: !hasLivingRole(next)` computation is kept for
-// symmetry across roles — it's correct, it's just dead-on-arrival
-// for the mafia case.
+// any further beginNightTurns/beginNextNightTurn calls. The uniform
+// `Phantom: !HasLivingRole(next)` computation in enterNightSubPhase
+// is kept for symmetry across roles — it's correct, it's just
+// dead-on-arrival for the mafia case.
 func (g *Game) beginNextNightTurn() []Event {
 	if len(g.state.nightTurnQueue) == 0 {
 		return nil
@@ -254,23 +399,8 @@ func (g *Game) beginNextNightTurn() []Event {
 	next := g.state.nightTurnQueue[0]
 	g.state.nightTurnQueue = g.state.nightTurnQueue[1:]
 	g.state.currentNightRole = next
-	g.state.nightTurnDeadlineMillis = 0
-	return []Event{NightTurnStarted{
-		Role:     next,
-		Deadline: 0,
-		Phantom:  !g.hasLivingRole(next),
-	}}
-}
-
-// hasLivingRole reports whether at least one living player holds the
-// given role.
-func (g *Game) hasLivingRole(r Role) bool {
-	for i := range g.state.players {
-		if g.state.players[i].alive && g.state.players[i].role == r {
-			return true
-		}
-	}
-	return false
+	g.state.nightSubmitted = false
+	return g.enterNightSubPhase(NightSubNarrate)
 }
 
 // checkWin evaluates win conditions and, if a faction has won, returns

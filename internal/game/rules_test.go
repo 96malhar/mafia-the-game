@@ -422,10 +422,15 @@ func TestStartGame(t *testing.T) {
 		require.Equal(t, game.PhaseNight, pc.To)
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 
-		// First NightTurnStarted (mafia) should be in the batch.
-		ts, ok := findEvent[game.NightTurnStarted](evts)
-		require.True(t, ok)
-		require.Equal(t, game.RoleMafia, ts.Role)
+		// BeginNight emits the night-scoped opening sub-phase event,
+		// NOT a NightNarrationStarted for the mafia. The first role's
+		// narrate fires when AdvancePhase elapses the opening
+		// (see rules_phase.go's advanceNightSubPhase).
+		_, ok = findEvent[game.NightOpeningStarted](evts)
+		require.True(t, ok, "BeginNight must emit NightOpeningStarted")
+		_, narrate := findEvent[game.NightNarrationStarted](evts)
+		require.False(t, narrate,
+			"BeginNight must NOT emit NightNarrationStarted; opening comes first")
 	})
 
 	t.Run("BeginNight before StartGame is rejected", func(t *testing.T) {

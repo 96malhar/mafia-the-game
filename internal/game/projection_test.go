@@ -161,10 +161,14 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 		// night (saved kill) so we reach DayDiscussion, then transition
 		// to DayVote, then unanimously vote out the mafia.
 		g := fixedRoster(t)
-		_, _ = g.Apply(game.NightAction{Actor: "mafia1", Target: "town1"})
-		_, _ = g.Apply(game.AdvancePhase{})                             // det timeout
-		_, _ = g.Apply(game.NightAction{Actor: "doc", Target: "town1"}) // save -> resolves night
-		_, _ = g.Apply(game.OpenVoting{})                               // host: open voting
+		// Use playNight to walk through the full Night state machine
+		// (mafia → det timeout → doc save → resolve) without having
+		// to spell out each sub-phase transition explicitly.
+		playNight(t, g, map[game.Role]game.PlayerID{
+			game.RoleMafia:  "town1",
+			game.RoleDoctor: "town1", // save -> resolves night
+		})
+		_, _ = g.Apply(game.OpenVoting{}) // host: open voting
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"})

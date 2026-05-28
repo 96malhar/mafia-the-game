@@ -9,78 +9,122 @@ import (
 // This file owns the room → subscribers fan-out path and the
 // per-connection lifecycle helpers (attach/detach/shutdown).
 //
-// appendAndBroadcast is the central choke point: every engine
-// event the room emits flows through here in batches. It does four
-// things in order:
+// appendAndBroadcast is the central choke point: every engine event
+// the room emits flows through here in batches. It does four things
+// in order:
 //
-//  1. stampNightDeadlines: rewrites NightTurnStarted.Deadline from 0
+//  1. stampNightDeadlines: rewrites Night*Started.Deadline from 0
 //     (the engine is timeless) to a wall-clock millis value so all
 //     viewers — current and future, via the replayed log — see the
 //     same timing.
 //  2. r.events = append(...): commits the batch to the canonical log.
 //  3. broadcastToSubs: projects the batch per viewer and writes to
 //     each subscriber's outbound channel; slow subs are dropped.
-//  4. scheduleTimers: scans the batch's structural events
-//     (PhaseChanged, NightTurnStarted, etc.) and (re)arms timers.
+//  4. scheduleTimers: scans the batch for Night sub-phase events and
+//     (re)arms the room's single phaseTimer to fire at the active
+//     sub-phase's deadline.
 
 // appendAndBroadcast records events to the canonical log, fans them
-// out to all subscribers (projected per viewer), and (re)arms any
-// phase/turn timers implied by the batch.
+// out to all subscribers (projected per viewer), and (re)arms the
+// night sub-phase timer implied by the batch.
 //
-// If a subscriber's outbound buffer is full, we consider them too slow
-// and disconnect them; the room continues. This is a hard "fail closed"
-// stance — better to drop a flaky connection than to back-pressure the
-// whole room.
+// If a subscriber's outbound buffer is full, we consider them too
+// slow and disconnect them; the room continues. This is a hard
+// "fail closed" stance — better to drop a flaky connection than to
+// back-pressure the whole room.
 func (r *Room) appendAndBroadcast(events []game.Event) {
 	if len(events) == 0 {
 		return
 	}
 
-	lastNightTurnPhantom := r.stampNightDeadlines(events)
+	r.stampNightDeadlines(events)
 	r.events = append(r.events, events...)
 	r.broadcastToSubs(events)
-	r.scheduleTimers(events, lastNightTurnPhantom)
+	r.scheduleTimers(events)
 }
 
-// stampNightDeadlines rewrites any NightTurnStarted events in the
-// batch to carry a wall-clock deadline. The engine emits them with
-// Deadline=0 because it is intentionally timeless; the room is the
-// authoritative clock.
+// stampNightDeadlines rewrites the Deadline field on every Night
+// sub-phase-started event in the batch to carry a wall-clock millis
+// value. The engine emits them with Deadline=0 because it is
+// intentionally timeless; the room is the authoritative clock.
 //
 // We do this BEFORE appending to r.events so the canonical log
 // stores the real deadlines — late joiners reconstructing state from
 // the projected event stream see the same timing original viewers
 // saw.
 //
-// Returns the Phantom flag from the LAST NightTurnStarted in the
-// batch, so the timer-arming pass can pick the right timer mode
-// (real grace+action vs. shorter phantom window). If no
-// NightTurnStarted is in the batch the return value is unused.
-func (r *Room) stampNightDeadlines(events []game.Event) (lastPhantom bool) {
-	// State.Day() at this point reflects the night currently in
-	// progress: Day 0 for the first night, Day 1 for the second, etc.
-	// We pass it to nightTurnDuration so the grace can scale (Night 1
-	// mafia gets a longer audio grace for the "look around" beat).
-	day := r.g.State().Day()
+// The function mutates each event in place by replacing the slice
+// element (events are values, not pointers). All six sub-phase
+// events share the same Deadline+Day shape; we type-switch and
+// rebuild each one with the stamped deadline. Day comes from the
+// event itself (it's always set by the engine), so this function
+// never reads engine state.
+func (r *Room) stampNightDeadlines(events []game.Event) {
+	now := time.Now()
+	// All sizing context (role, day, phantom-vs-real) rides on the
+	// event itself. `submitted` is the only extra signal — it tells
+	// subPhaseDuration whether a Ponder beat is after a real
+	// submission vs a timeout, which today's defaults treat
+	// identically but an override may not. Engine state, post-Apply,
+	// already reflects the just-applied command's nightSubmitted
+	// flag, so reading it here is correct.
+	submitted := r.g.State().NightTurnSubmitted()
+
 	for i := range events {
-		ts, ok := events[i].(game.NightTurnStarted)
-		if !ok {
+		dur := r.cfg.subPhaseDuration(events[i], submitted)
+		if dur <= 0 {
 			continue
 		}
-		if ts.Deadline == 0 {
-			dur := r.cfg.nightTurnDuration(ts.Role, day, ts.Phantom)
-			ts.Deadline = time.Now().Add(dur).UnixMilli()
-			events[i] = ts
-		}
-		lastPhantom = ts.Phantom
+		deadline := now.Add(dur).UnixMilli()
+		events[i] = stampDeadline(events[i], deadline)
 	}
-	return lastPhantom
 }
 
-// broadcastToSubs projects the batch per viewer and writes it to
-// each subscriber's outbound channel. A subscriber whose channel is
-// full is treated as too slow and disconnected — better to drop one
-// flaky connection than block the whole room.
+// stampDeadline returns a copy of evt with its Deadline field set to
+// the given unix-millis value. Events that don't have a Deadline are
+// passed through unchanged. Splitting this out from
+// stampNightDeadlines keeps the per-type field assignments readable
+// and isolates the type switch from the timing math.
+func stampDeadline(evt game.Event, deadline int64) game.Event {
+	switch e := evt.(type) {
+	case game.NightOpeningStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	case game.NightNarrationStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	case game.NightActionStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	case game.NightPonderStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	case game.NightSleepStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	case game.NightSettleStarted:
+		if e.Deadline == 0 {
+			e.Deadline = deadline
+		}
+		return e
+	}
+	return evt
+}
+
+// broadcastToSubs projects the batch per viewer and writes it to each
+// subscriber's outbound channel. A subscriber whose channel is full
+// is treated as too slow and disconnected — better to drop one flaky
+// connection than block the whole room.
 func (r *Room) broadcastToSubs(events []game.Event) {
 	for sub := range r.subs {
 		viewer := sub.PlayerID()
@@ -94,49 +138,38 @@ func (r *Room) broadcastToSubs(events []game.Event) {
 	}
 }
 
-// scheduleTimers inspects the structural events in the batch
-// (PhaseChanged, NightTurnStarted, NightTurnEnded, DetectiveResult)
-// and (re)arms the room's single phaseTimer in the appropriate mode.
-// See timers.go for the three modes.
-func (r *Room) scheduleTimers(events []game.Event, lastNightTurnPhantom bool) {
-	var phaseChanged, nightTurnStarted, nightTurnEnded, detectiveResult bool
+// scheduleTimers inspects the batch for night sub-phase events and
+// (re)arms the room's single phaseTimer. There's exactly one active
+// deadline at any time during PhaseNight; the latest sub-phase event
+// in the batch wins (the engine emits at most one per batch, but
+// applyNightAction can emit DetectiveResult + NightPonderStarted in
+// one shot, so we still scan).
+//
+// On PhaseChanged we clear any active timer first so a stale night
+// timer can't leak across a phase change. PhaseDayDiscussion /
+// PhaseDayVote are host-driven and have no timer.
+func (r *Room) scheduleTimers(events []game.Event) {
+	var phaseChanged bool
+	var lastSubPhaseEvent game.Event
 	for _, e := range events {
 		switch e.(type) {
 		case game.PhaseChanged:
 			phaseChanged = true
-		case game.NightTurnStarted:
-			nightTurnStarted = true
-		case game.NightTurnEnded:
-			nightTurnEnded = true
-		case game.DetectiveResult:
-			detectiveResult = true
+		case game.NightOpeningStarted,
+			game.NightNarrationStarted,
+			game.NightActionStarted,
+			game.NightPonderStarted,
+			game.NightSleepStarted,
+			game.NightSettleStarted:
+			lastSubPhaseEvent = e
 		}
 	}
 
 	if phaseChanged {
 		r.resetPhaseTimer()
 	}
-	if nightTurnStarted {
-		r.resetNightTurnTimer(lastNightTurnPhantom)
-	}
-	if nightTurnEnded && !nightTurnStarted && !phaseChanged {
-		// NightTurnEnded with no immediate NightTurnStarted is the
-		// engine signalling a deliberate pause — currently this only
-		// happens after a detective action. We arm a short timer
-		// here; when it fires, handlePhaseTimer sends AdvancePhase
-		// which pops the next queued role (engine's advanceFromNight
-		// handles the "currentNightRole=='' but queue non-empty"
-		// case as "start next turn"). Without this timer the night
-		// would silently hang.
-		//
-		// If something else ever produces NightTurnEnded without
-		// NightTurnStarted, double-check this branch — for now,
-		// detectiveResult is the only known producer.
-		if detectiveResult {
-			r.armDetectivePauseTimer()
-		} else {
-			r.stopPhaseTimer()
-		}
+	if lastSubPhaseEvent != nil {
+		r.armSubPhaseTimer(lastSubPhaseEvent)
 	}
 }
 

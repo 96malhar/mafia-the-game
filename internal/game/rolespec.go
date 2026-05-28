@@ -1,6 +1,8 @@
 package game
 
-import "sort"
+import (
+	"sort"
+)
 
 // This file defines how new roles plug into the engine.
 //
@@ -105,6 +107,21 @@ type nightActionSpec struct {
 // fact about the role) and an optional NightAction. As we add more
 // role-shapes (passive roles, day actions, group voting), this struct
 // gains more optional hooks.
+//
+// What does NOT live here: the wall-clock duration of the role's
+// "wake up" / "go to sleep" audio cues. Those used to live as
+// Narrate/Sleep function fields on roleSpec, but were moved out to
+// internal/room/config.go so that ALL wall-clock timing is owned by
+// the room layer in one place. The engine remains timeless; the room
+// is the sole arbiter of when sub-phases begin and end.
+//
+// Trade-off (named explicitly so future readers don't reconsider this
+// without context): adding a new role with custom narration timing
+// now requires editing BOTH rolespec.go (to register the role) AND
+// room/config.go (to register the role's per-day Narrate/Sleep
+// duration). The "one file per role" property is broken specifically
+// for timing. The benefit is that the room layer is the single
+// authority on wall-clock policy.
 type roleSpec struct {
 	Faction     Faction
 	NightAction *nightActionSpec
@@ -120,6 +137,11 @@ var roleSpecs = map[Role]roleSpec{
 
 	RoleMafia: {
 		Faction: FactionMafia,
+		// Narrate/Sleep durations live in internal/room/config.go's
+		// DefaultNarrate / DefaultSleep. Mafia has a per-day Narrate
+		// variant (Day 0 includes the "look around, recognize each
+		// other" beat); see DefaultNarrate for the value and the
+		// client-coupling comment.
 		NightAction: &nightActionSpec{
 			Phase: nightPhaseSchedule,
 			Validate: func(_ *GameState, _, target *Player) error {
@@ -139,6 +161,8 @@ var roleSpecs = map[Role]roleSpec{
 
 	RoleDoctor: {
 		Faction: FactionTown,
+		// Narrate/Sleep durations live in internal/room/config.go.
+		// Doctor uses the universal defaults (no per-day variant).
 		NightAction: &nightActionSpec{
 			Phase: nightPhaseSchedule,
 			// The doctor can save anyone, including themselves, on
@@ -160,6 +184,8 @@ var roleSpecs = map[Role]roleSpec{
 
 	RoleDetective: {
 		Faction: FactionTown,
+		// Narrate/Sleep durations live in internal/room/config.go.
+		// Detective uses the universal defaults (no per-day variant).
 		NightAction: &nightActionSpec{
 			// Detective's result is emitted at action time (see
 			// applyNightAction in rules_night.go) for an

@@ -199,15 +199,20 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 			b.maybeAct(ctx)
 		}
 
-	case evTagNightTurnStarted:
-		var d evNightTurnStarted
+	case evTagNightActionStarted:
+		// The action window — and ONLY the action window — is when
+		// the engine will accept a NightAction. Narrate / ponder /
+		// sleep / settle / opening are all server-driven via the
+		// engine's sub-phase timers; the bot ignores them.
+		//
+		// Phantom turns never reach evTagNightActionStarted (the
+		// engine substitutes ponder for act), so we don't need a
+		// phantom-flag guard here.
+		var d evNightActionStarted
 		_ = json.Unmarshal(ev.Data, &d)
 		b.currentNightRole = d.Role
-		b.log.Debug("night turn started", "role", d.Role, "phantom", d.Phantom)
-		// Only the matching role acts; others sit out and the engine /
-		// per-turn timer skips them. Phantom turns (no living holder)
-		// accept no action — the room times them out — so don't try.
-		if !d.Phantom && d.Role == b.role {
+		b.log.Debug("night action window opened", "role", d.Role)
+		if d.Role == b.role {
 			b.maybeAct(ctx)
 		}
 

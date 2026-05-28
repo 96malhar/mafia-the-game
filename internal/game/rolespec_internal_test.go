@@ -58,3 +58,9 @@ func TestRegistry_NightActionPhasesAreKnown(t *testing.T) {
 			"role %q has unknown nightPhase %d in NightAction.Phase", r, spec.NightAction.Phase)
 	}
 }
+
+// Note: narrate/sleep timing assertions used to live here but were
+// moved to internal/room/config_test.go alongside DefaultNarrate /
+// DefaultSleep when wall-clock-duration ownership migrated to the
+// room layer. See the package comment at the top of rolespec.go and
+// the design note in NightSubPhaseDurations for the rationale.

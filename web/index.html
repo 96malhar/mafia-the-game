@@ -211,9 +211,18 @@
           <div id="night-banner" class="hidden mt-3 rounded border border-indigo-500/40 bg-indigo-950/60 p-3">
             <div class="flex items-baseline justify-between gap-3">
               <div id="night-banner-text" class="text-sm font-medium text-indigo-100"></div>
-              <div id="night-banner-countdown" class="font-mono text-xs text-indigo-300"></div>
+              <!--
+                Countdown text + bar are gated to the actor only (see
+                viewerOwnsCurrentTimer in renderActionPanel /
+                renderNightCountdownFrame). Shown only to the actor
+                during the "act" sub-phase — narrate / ponder / sleep
+                / settle have nothing actionable to time, and showing
+                a draining bar to spectators would reveal the actor's
+                deliberation pace.
+              -->
+              <div id="night-banner-countdown" class="hidden font-mono text-xs text-indigo-300"></div>
             </div>
-            <div class="mt-2 h-1.5 overflow-hidden rounded bg-indigo-950">
+            <div id="night-banner-bar-wrap" class="mt-2 hidden h-1.5 overflow-hidden rounded bg-indigo-950">
               <div id="night-banner-bar" class="h-full bg-indigo-400 transition-all" style="width: 100%"></div>
             </div>
           </div>
@@ -386,44 +395,40 @@
       let lobbyMaxPlayers = null;
       let mafiaCount = null;
 
-      // --- Night turn state (mirrors the engine's currentNightRole) ---
+      // --- Night turn state (mirrors the engine's per-role sub-phase) ---
       //
-      // During PhaseNight only one role acts at a time, in canonical
-      // order Mafia → Detective → Doctor. The currently-acting role
-      // (and its deadline) drive the spectator banner, the per-row
-      // Target buttons, the countdown bar, and — for the host — the
-      // audio narration cues.
+      // During PhaseNight each role flows through a five-step sub-phase
+      // sequence (narrate → act → ponder → sleep → settle), preceded
+      // once per night by a global "opening" sub-phase. The engine is
+      // the single source of truth for sub-phase transitions; the
+      // client never advances on its own. Every transition arrives as
+      // a typed event (nightOpeningStarted, nightNarrationStarted,
+      // nightActionStarted, nightPonderStarted, nightSleepStarted,
+      // nightSettleStarted) with a deadline stamped by the room.
       //
-      // currentNightRole is the engine's authoritative answer: "" between
-      // turns and outside Night, otherwise one of "mafia" / "detective"
-      // / "doctor". nightTurnDeadlineMs is unix-millis at which the
-      // turn auto-passes (engine + room contract; the room stamps the
-      // wall-clock deadline before broadcasting).
+      // currentNightRole is the role for whom the current sub-phase
+      // fires. "" outside a role's sub-phases (i.e. during opening
+      // and between roles). nightTurnDeadlineMs is unix-millis at which
+      // the CURRENT sub-phase auto-advances on the server. We rebind
+      // it on every Night*Started event so the countdown bar tracks
+      // the live sub-phase.
       let currentNightRole = "";
       let nightTurnDeadlineMs = 0;
+      // currentNightSubPhase mirrors the engine's NightSubPhase value.
+      // Drives the audio cue selection (narrate/sleep speak; act/ponder/
+      // settle/opening are silent or already-spoken) and the visibility
+      // of Target buttons (only during "act" with a living actor).
+      // Possible values: "" | "opening" | "narrate" | "act" | "ponder"
+      //                | "sleep" | "settle".
+      let currentNightSubPhase = "";
       // currentNightTurnPhantom mirrors the engine's per-turn Phantom
-      // flag. True when no living player holds currentNightRole; the
+      // flag (carried by nightNarrationStarted / nightPonderStarted).
+      // True when no living player holds currentNightRole; the
       // moderator audio still plays (so the room can't deduce which
       // role is dead from the absence of cues) but no NightAction is
       // accepted on the server, and no Target buttons render on any
       // client.
       let currentNightTurnPhantom = false;
-
-      // NIGHT_ACTION_WINDOW_MS mirrors the server's NightActionDuration
-      // (internal/room.DefaultNightActionDuration). The server stamps
-      // a deadline of (turn start + grace + action window); we derive
-      // the moment when the audio prompt is expected to finish — and
-      // therefore the moment when the Target buttons unlock — by
-      // subtracting this constant from the deadline. Keep these two
-      // in sync.
-      const NIGHT_ACTION_WINDOW_MS = 45000;
-      // nightTurnUnlockMs is unix-millis at which the actor's Target
-      // buttons become tappable for the current turn. 0 means "no
-      // active turn" or "unlock already passed".
-      let nightTurnUnlockMs = 0;
-      // nightUnlockTimer fires once per turn to repaint the UI when
-      // the unlock moment arrives.
-      let nightUnlockTimer = null;
 
       // narratorEnabled gates whether THIS device speaks. Only the host
       // narrates — having every player's phone narrate would yield
@@ -523,7 +528,8 @@
       // don't repeat the cue when an event arrives twice (once during
       // join replay, once during the live broadcast that immediately
       // follows). Live events that should ALWAYS speak (e.g. a fresh
-      // nightTurnStarted) pass key=null.
+      // nightOpeningStarted / nightNarrationStarted / nightSleepStarted)
+      // pass key=null.
       function narrate(text, { key = null, pauseBefore = 0 } = {}) {
         if (key !== null) {
           if (narrationsSeen.has(key)) return;
@@ -608,12 +614,18 @@
       // The night banner shows a per-turn countdown that ticks down to
       // the engine-stamped deadline. Updates ~10×/second so the bar
       // smoothly drains and the seconds number is responsive.
+      //
+      // Only the actor ticks the countdown, and only during the "act"
+      // sub-phase — see viewerOwnsCurrentTimer for the rationale
+      // (narrate/ponder/sleep/settle are passive for the actor, and
+      // showing timing to non-actors leaks deliberation pace).
       let nightCountdownInterval = null;
       let nightCountdownTotalMs = 0; // initial duration for the bar's %
 
       function startNightCountdown(deadlineMs) {
         stopNightCountdown();
         if (!deadlineMs) return;
+        if (!viewerOwnsCurrentTimer()) return;
         nightCountdownTotalMs = Math.max(1, deadlineMs - Date.now());
         renderNightCountdownFrame();
         nightCountdownInterval = setInterval(renderNightCountdownFrame, 100);
@@ -626,55 +638,51 @@
         }
       }
 
-      // --- Night audio-gate (Target buttons unlock after the prompt) ---
+      // The countdown is shown ONLY to the actor of the current
+      // sub-phase, AND only while we're in the "act" sub-phase — the
+      // window during which they actually need to make a decision.
       //
-      // The engine deadline already accounts for the spoken-prompt
-      // grace + the 45s action window, so the unlock moment is just
-      // (deadline - NIGHT_ACTION_WINDOW_MS). On replay or when the
-      // server's grace was zero, this can fall in the past — in that
-      // case the buttons are already unlocked.
-      function scheduleNightUnlock(deadlineMs) {
-        stopNightUnlockTimer();
-        if (!deadlineMs) {
-          nightTurnUnlockMs = 0;
-          return;
-        }
-        nightTurnUnlockMs = deadlineMs - NIGHT_ACTION_WINDOW_MS;
-        const wait = nightTurnUnlockMs - Date.now();
-        if (wait <= 0) return;
-        nightUnlockTimer = setTimeout(() => {
-          nightUnlockTimer = null;
-          // Repaint: the actor's Target buttons depend on
-          // nightAudioReady() flipping to true.
-          renderActionPanel();
-          renderPlayers();
-        }, wait);
-      }
-
-      function stopNightUnlockTimer() {
-        if (nightUnlockTimer) {
-          clearTimeout(nightUnlockTimer);
-          nightUnlockTimer = null;
-        }
-        nightTurnUnlockMs = 0;
-      }
-
-      function nightAudioReady() {
-        if (!nightTurnUnlockMs) return true;
-        return Date.now() >= nightTurnUnlockMs;
-      }
-
-      function nightUnlockSecondsLeft() {
-        if (!nightTurnUnlockMs) return 0;
-        return Math.max(0, Math.ceil((nightTurnUnlockMs - Date.now()) / 1000));
+      // Two reasons to gate this tightly:
+      //
+      //   1. Information leak. Showing a draining bar to spectators
+      //      would tell the room exactly how long the actor took to
+      //      decide (60s of deliberation vs an instant click is
+      //      meaningful signal that could be used against them in
+      //      the next discussion). Dead former-actors are spectators
+      //      here too — the alive check covers them.
+      //
+      //   2. Signal-to-noise. During the actor's OWN narrate /
+      //      ponder / sleep / settle sub-phases, there's nothing to
+      //      decide — they're just listening to audio or sitting in
+      //      a brief pause. A countdown bar in those windows is
+      //      visual noise that suggests urgency where there is none.
+      //      The only window where the seconds-remaining is
+      //      actionable information for the actor is "act".
+      //
+      // Opening is global ("City, go to sleep"), has no actor, and
+      // similarly has nothing actionable — so no countdown either.
+      function viewerOwnsCurrentTimer() {
+        if (currentNightSubPhase !== "act") return false;
+        if (!currentNightRole || currentNightRole !== myRole) return false;
+        const me = players.get(myId);
+        return !!(me && me.alive);
       }
 
       function renderNightCountdownFrame() {
+        const text = $("night-banner-countdown");
+        const bar = $("night-banner-bar");
+        if (!viewerOwnsCurrentTimer()) {
+          if (text) text.textContent = "";
+          if (bar) bar.style.width = "0%";
+          // Stop ticking entirely outside the act window — the next
+          // sub-phase event will re-arm the interval if/when this
+          // viewer becomes the actor again.
+          stopNightCountdown();
+          return;
+        }
         const remaining = Math.max(0, nightTurnDeadlineMs - Date.now());
         const seconds = Math.ceil(remaining / 1000);
         const pct = Math.max(0, Math.min(100, (remaining / nightCountdownTotalMs) * 100));
-        const text = $("night-banner-countdown");
-        const bar = $("night-banner-bar");
         if (text) text.textContent = `${seconds}s`;
         if (bar) bar.style.width = `${pct}%`;
         if (remaining <= 0) stopNightCountdown();
@@ -864,13 +872,12 @@
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
-        nightTurnUnlockMs = 0;
+        currentNightSubPhase = "";
         currentNightTurnPhantom = false;
         dayDiscussionPendingDeath = null;
         lastNightVictim = null;
         narrationsSeen.clear();
         stopNightCountdown();
-        stopNightUnlockTimer();
         // Clear any open detective modal so a refresh doesn't carry
         // a stale "X IS a mafia member" card into the new session.
         hideDetectiveToast();
@@ -1060,19 +1067,19 @@
         const iAmAlive = !!(me && me.alive);
 
         // Night Target buttons are gated by the strict turn-order
-        // rule: only show them when it's THIS role's turn. Outside the
-        // turn, the engine would reject the action with ErrNotYourTurn
-        // anyway — hiding the buttons makes the UX match the rules.
+        // rule: only show them when it's THIS role's turn AND we're
+        // in the "act" sub-phase. Outside the turn or in any other
+        // sub-phase (narrate / ponder / sleep / settle / opening) the
+        // engine would reject the action with ErrNotYourTurn or
+        // ErrWrongPhase, so hiding the buttons makes the UX match
+        // the rules. The act sub-phase is the engine's authoritative
+        // "actor may submit" window; it begins only after the role's
+        // narration has fully played out.
         //
-        // They're also hidden until the moderator prompt finishes
-        // (nightAudioReady), so the actor can't pre-empt the audio
-        // cue. This keeps the in-person flow tight: listen first,
-        // then choose.
-        //
-        // Phantom turns (no living holder of the role) never show
-        // Target buttons — by definition there's no live player who
-        // could be the actor, but we guard explicitly to keep the
-        // intent obvious.
+        // Phantom turns (no living holder of the role) skip the act
+        // sub-phase entirely on the server, so currentNightSubPhase
+        // never reaches "act" for them — but we keep the explicit
+        // phantom guard for defense-in-depth.
         // Row buttons (Target / Vote) are sized to clear the 44px
         // iOS HIG tap-target minimum. The previous px-2/py-1/text-xs
         // styling looked nice on desktop but produced ~24×16px hit
@@ -1094,8 +1101,8 @@
           iAmAlive &&
           canActAtNight() &&
           currentNightRole === myRole &&
+          currentNightSubPhase === "act" &&
           !currentNightTurnPhantom &&
-          nightAudioReady() &&
           p.alive &&
           canTargetThisRow
         ) {
@@ -1173,23 +1180,55 @@
         dayEl.textContent = phase === "lobby" || phase === "ended" ? "" : `Day ${day}`;
         extras.innerHTML = "";
 
-        // Show the night banner only when we're in Night AND a turn is
-        // active. Between turns or outside Night, hide it so the panel
-        // doesn't display stale countdowns.
-        if (phase === "night" && currentNightRole) {
-          banner.classList.remove("hidden");
-          const display = capitalize(currentNightRole);
-          const youAct = currentNightRole === myRole;
-          bannerText.textContent = youAct
-            ? `Your turn — ${display}. Pick a target on the Players panel below.`
-            : `${display} is choosing. Eyes closed.`;
-        } else {
-          banner.classList.add("hidden");
-        }
-
         const me = players.get(myId);
         const iAmAlive = !!(me && me.alive);
         const total = players.size;
+
+        // Show the night banner only when we're in Night AND a turn is
+        // active. Between turns or outside Night, hide it so the panel
+        // doesn't display stale countdowns.
+        //
+        // The countdown number + draining bar are nested inside the
+        // banner but are FURTHER gated by viewerOwnsCurrentTimer: only
+        // the actor sees them, and only during the "act" sub-phase
+        // when the seconds-remaining is actually actionable. During
+        // narrate / ponder / sleep / settle the actor is just
+        // listening or waiting — a draining bar would falsely
+        // suggest urgency. Showing the timer to spectators in any
+        // sub-phase would also leak deliberation timing.
+        //
+        // The banner HEADING (text) is broader: it reflects whose
+        // role-turn is in flight across all of that role's
+        // sub-phases, so "Your turn — Mafia" stays visible from
+        // narrate through settle for the mafia, giving them context
+        // even when they can't yet click.
+        const countdownEl = $("night-banner-countdown");
+        const barWrapEl = $("night-banner-bar-wrap");
+        if (phase === "night" && currentNightRole) {
+          banner.classList.remove("hidden");
+          const display = capitalize(currentNightRole);
+          const youArePlayingThisRole =
+            currentNightRole === myRole && !!(me && me.alive);
+          if (youArePlayingThisRole) {
+            bannerText.textContent =
+              currentNightSubPhase === "act"
+                ? `Your turn — ${display}. Pick a target on the Players panel below.`
+                : `Your turn — ${display}. Listen to the moderator…`;
+          } else {
+            bannerText.textContent = `${display} is choosing. Eyes closed.`;
+          }
+          if (viewerOwnsCurrentTimer()) {
+            countdownEl.classList.remove("hidden");
+            barWrapEl.classList.remove("hidden");
+          } else {
+            countdownEl.classList.add("hidden");
+            barWrapEl.classList.add("hidden");
+          }
+        } else {
+          banner.classList.add("hidden");
+          countdownEl.classList.add("hidden");
+          barWrapEl.classList.add("hidden");
+        }
 
         switch (phase) {
           case "lobby": {
@@ -1289,12 +1328,11 @@
                 hint.textContent = "Submitted. The next role will be summoned shortly.";
                 const t = players.get(myAction);
                 extras.appendChild(noteChip(`Targeted: ${t ? t.name : myAction}`, "bg-amber-700/60"));
-              } else if (!nightAudioReady()) {
-                const s = nightUnlockSecondsLeft();
-                hint.textContent =
-                  s > 0
-                    ? `Listen to the moderator… ${s}s`
-                    : "Listen to the moderator…";
+              } else if (currentNightSubPhase !== "act") {
+                // We're in narrate / ponder / sleep / settle (or it's
+                // the global opening). The action window hasn't opened
+                // yet (or has already closed). Keep the actor listening.
+                hint.textContent = "Listen to the moderator…";
               } else {
                 hint.textContent = "Pick your target on the Players panel below.";
               }
@@ -1713,14 +1751,14 @@
             myAction = null;
             votes = new Map();
             // Going INTO night clears any prior turn state; the
-            // accompanying nightTurnStarted event in the same batch
-            // will set it.
+            // accompanying nightOpeningStarted / nightNarrationStarted
+            // events in the same batch will set the new sub-phase.
             if (to === "night") {
               currentNightRole = "";
               nightTurnDeadlineMs = 0;
+              currentNightSubPhase = "";
               currentNightTurnPhantom = false;
               stopNightCountdown();
-              stopNightUnlockTimer();
               dayLynchResolved = false;
               // A new night invalidates the previous night's
               // victim — the banner chip ("Last night: X was
@@ -1738,50 +1776,109 @@
             break;
           }
 
-          case "nightTurnStarted": {
-            // Engine-stamped deadline (room substitutes the wall-clock
-            // value before broadcasting). On replay this may be in the
-            // past, which is fine — the countdown just shows 0s.
-            currentNightRole = env.data.role || "";
+          case "nightOpeningStarted": {
+            // One-shot global "City, go to sleep" sub-phase that fires
+            // exactly once per night, BEFORE any role's narrate. No
+            // role is associated with it (the event carries only day
+            // and deadline). The room arms a timer for the sub-phase
+            // duration; when it elapses the engine transitions to
+            // mafia's narrate.
+            currentNightRole = "";
+            currentNightSubPhase = "opening";
+            currentNightTurnPhantom = false;
             nightTurnDeadlineMs = env.data.deadline || 0;
-            // Phantom turns happen when no living player holds the
-            // current role. Audio still plays (to avoid leaking which
-            // role is dead) but no one can submit; we use a shorter
-            // server-side timer for them so the night doesn't drag.
-            currentNightTurnPhantom = !!env.data.phantom;
             if (!replaying) {
               startNightCountdown(nightTurnDeadlineMs);
-              // Target buttons stay hidden until the spoken prompt
-              // finishes. We approximate "prompt finished" as
-              // (deadline - 45s), which exactly matches the server's
-              // (grace + 45s) deadline math. Phantom turns have no
-              // actor to gate, so the unlock isn't scheduled.
-              if (!currentNightTurnPhantom) {
-                scheduleNightUnlock(nightTurnDeadlineMs);
-              } else {
-                stopNightUnlockTimer();
-              }
-              narrateNightTurnStarted(currentNightRole, day);
-            } else {
-              nightTurnUnlockMs = 0;
+              narrateNightOpening();
             }
             renderActionPanel();
             renderPlayers();
             break;
           }
 
-          case "nightTurnEnded": {
-            const endedRole = env.data.role || "";
-            currentNightRole = "";
-            nightTurnDeadlineMs = 0;
-            currentNightTurnPhantom = false;
-            stopNightCountdown();
-            stopNightUnlockTimer();
+          case "nightNarrationStarted": {
+            // Role's wake-up narration. No action is accepted yet —
+            // the host's phone speaks the cue while the room listens.
+            // The engine will transition us to "act" (or directly to
+            // "ponder" for phantom turns) when this sub-phase's
+            // server-side timer elapses.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "narrate";
+            currentNightTurnPhantom = !!env.data.phantom;
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+              narrateRoleWake(currentNightRole, day);
+            }
             renderActionPanel();
             renderPlayers();
+            break;
+          }
+
+          case "nightActionStarted": {
+            // The actor's submission window. Target buttons render
+            // for the matching role (gated in renderPlayerRow on
+            // currentNightSubPhase === "act"). Phantom turns never
+            // enter this sub-phase server-side, so we don't need to
+            // re-check the phantom flag here.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "act";
+            nightTurnDeadlineMs = env.data.deadline || 0;
             if (!replaying) {
-              narrateNightTurnEnded(endedRole);
+              startNightCountdown(nightTurnDeadlineMs);
             }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightPonderStarted": {
+            // Brief silent pause after a submission (or a timeout, or
+            // the phantom random delay). The Target buttons are
+            // gone — the actor either submitted or the window
+            // expired — and the room sits in silence waiting for
+            // the sleep cue. Detective's result modal also has time
+            // to be read during this sub-phase.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "ponder";
+            currentNightTurnPhantom = !!env.data.phantom;
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightSleepStarted": {
+            // Role's "go to sleep" narration. Speak the role-specific
+            // cue; the engine will transition to settle on this
+            // sub-phase's timer.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "sleep";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+              narrateRoleSleep(currentNightRole);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightSettleStarted": {
+            // Brief silent pause between roles. No audio cue. The
+            // engine transitions to the next role's narrate (or to
+            // night resolution) when the timer elapses.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "settle";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+            }
+            renderActionPanel();
+            renderPlayers();
             break;
           }
 
@@ -1889,13 +1986,12 @@
 
       function narratePhaseChange(from, to, dayNum) {
         if (to === "night") {
-          // Every night opens with the same "city, go to sleep" cue.
-          // The nightTurnStarted event arrives in the same batch and
-          // queues "Mafia, wake up..." with a deliberate ~5-second
-          // pauseBefore so the room has time to actually close eyes
-          // and settle before the mafia are asked to act. See
-          // narrateNightTurnStarted for the mafia-side pacing.
-          narrate("City, go to sleep.");
+          // "City, go to sleep." used to fire here. It now rides on
+          // the engine's nightOpeningStarted sub-phase event so that
+          // the audio cadence is server-driven and tracked by the
+          // same timer that gates the rest of the night. See the
+          // nightOpeningStarted handler in handleEvent.
+          // (Nothing to speak on the phase boundary itself.)
         } else if (to === "day_discussion") {
           // day_discussion is entered from TWO places:
           //   1. night → day_discussion: morning narration after the
@@ -1927,51 +2023,101 @@
         }
       }
 
-      function narrateNightTurnStarted(role, dayNum) {
-        if (role === "mafia") {
-          // Every night opens with "City, go to sleep" (queued by
-          // narratePhaseChange). We then wait long enough that the
-          // room has visibly settled before naming the mafia.
-          //
-          // IMPORTANT: pauseBefore values here are ABSOLUTE offsets
-          // from t=0 (the moment NightTurnStarted is handled), not
-          // relative to the previous narrate() call. Each narrate()
-          // internally does setTimeout(fire, pauseBefore) and those
-          // timers run independently from the same t=0. The
-          // speechSynthesis API then plays utterances in the order
-          // they are enqueued, so the offsets must be MONOTONIC to
-          // preserve speech order — otherwise a later line's
-          // setTimeout could fire first and jump the queue.
-          //
-          // Night 1 schedule (relative to NightTurnStarted):
-          //   t=5s : "Mafia, wake up. Look around..."  (~2.5s)
-          //   t=9s : "Mafia, choose your target."      (~1.5s)
-          // Grace in DefaultNightTurnGrace tracks this (~10s).
-          const wakePause = 5000;
-          if (dayNum === 0) {
-            narrate("Mafia, wake up. Look around and recognize each other.", { pauseBefore: wakePause });
-            // 9000ms (not 5000+3600) so this stays AFTER the
-            // "look around" cue in the speech queue. See comment
-            // above re: absolute-vs-relative offsets.
-            narrate("Mafia, choose your target.", { pauseBefore: 9000 });
-          } else {
-            narrate("Mafia, wake up. Choose your target.", { pauseBefore: wakePause });
-          }
-        } else if (role === "detective") {
-          narrate("Detective, wake up. Choose someone to investigate.");
-        } else if (role === "doctor") {
-          narrate("Doctor, wake up. Choose someone to save.");
+      // --- Role narration lookup -----------------------------------------
+      //
+      // Adding a new role? Add a row to each of ROLE_NARRATION (wake
+      // cue) and ROLE_SLEEP (sleep cue). The matching engine-side
+      // duration lives in internal/game/rolespec.go's roleSpec.Narrate
+      // / Sleep function fields. Keep these two surfaces in sync: the
+      // narration TEXT is owned by the client (so we can edit copy
+      // without touching the server), the narration DURATION is owned
+      // by the engine (so the server's timer pacing matches the
+      // spoken cue's length).
+      //
+      // Entries support per-day variants. The lookup tries `day${N}`
+      // first, then falls back to `default`. Mafia gets a longer Day 0
+      // line ("Look around and recognize each other") because that
+      // first night they need to identify each other; subsequent
+      // nights skip straight to the target prompt.
+      //
+      // If a role arrives that isn't in the table — e.g. a new role
+      // shipped in a server-only update before the client was
+      // redeployed — we fall back to a generic "${role}, wake up."
+      // line and log a warning. That keeps the in-person game
+      // playable while the missing entry gets added.
+      //
+      // COUPLING WARNING: each text entry below has a matching
+      // duration in internal/room/config.go — universal narrate/
+      // sleep timing lives at DefaultNarrateDuration /
+      // DefaultSleepDuration, and per-role variants (mafia Day 0,
+      // future role overrides) live at DefaultNarrate /
+      // DefaultSleep. If you make a cue longer (more words,
+      // slower cadence), bump the matching duration there or the
+      // engine will advance to the next sub-phase mid-sentence.
+      // Test on the slowest TTS voice you support (iOS Safari
+      // "Samantha" is a good worst-case anchor) and add ~500ms
+      // slop.
+      const ROLE_NARRATION = {
+        mafia: {
+          day0:    "Mafia, wake up. Look around and recognize each other. Then choose your target.",
+          default: "Mafia, wake up. Choose your target.",
+        },
+        detective: {
+          default: "Detective, wake up. Choose someone to investigate.",
+        },
+        doctor: {
+          default: "Doctor, wake up. Choose someone to save.",
+        },
+      };
+
+      const ROLE_SLEEP = {
+        mafia:     "Mafia, go to sleep.",
+        detective: "Detective, go to sleep.",
+        doctor:    "Doctor, go to sleep.",
+      };
+
+      function lookupRoleNarration(role, dayNum) {
+        const entry = ROLE_NARRATION[role];
+        if (!entry) {
+          console.warn(`narration: no wake-up cue for role "${role}" — using generic fallback`);
+          return `${capitalize(role)}, wake up.`;
         }
+        const dayKey = `day${dayNum}`;
+        return entry[dayKey] || entry.default || `${capitalize(role)}, wake up.`;
       }
 
-      function narrateNightTurnEnded(role) {
-        if (role === "mafia") {
-          narrate("Mafia, go to sleep.");
-        } else if (role === "detective") {
-          narrate("Detective, go to sleep.");
-        } else if (role === "doctor") {
-          narrate("Doctor, go to sleep.");
+      function lookupRoleSleep(role) {
+        const text = ROLE_SLEEP[role];
+        if (!text) {
+          console.warn(`narration: no sleep cue for role "${role}" — using generic fallback`);
+          return `${capitalize(role)}, go to sleep.`;
         }
+        return text;
+      }
+
+      // Cues are fired the moment the matching sub-phase event lands;
+      // the engine's sub-phase timer (set per role in rolespec.go) is
+      // long enough for the utterance to finish before the next
+      // transition. No client-side pauseBefore scheduling — the
+      // server owns the cadence.
+      // The opening cue is short (~1.5s) but the sub-phase intentionally
+      // runs longer (DefaultOpeningDuration in internal/room/config.go,
+      // currently 7s) so the room has time to actually close their
+      // eyes and settle before mafia narrate begins. If you change
+      // this string to something substantially longer, bump
+      // DefaultOpeningDuration too.
+      function narrateNightOpening() {
+        narrate("City, go to sleep.");
+      }
+
+      function narrateRoleWake(role, dayNum) {
+        if (!role) return;
+        narrate(lookupRoleNarration(role, dayNum));
+      }
+
+      function narrateRoleSleep(role) {
+        if (!role) return;
+        narrate(lookupRoleSleep(role));
       }
 
       function connect(code, name, creds) {

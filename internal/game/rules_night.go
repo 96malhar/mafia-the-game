@@ -1,36 +1,42 @@
 package game
 
-// applyNightAction records one role-specific night action AND advances
-// the turn machinery.
+// applyNightAction records one role-specific night action AND drives
+// the act → ponder edge of the per-role state machine. All other
+// edges are driven by AdvancePhase from the room's wall-clock timer
+// (see advanceNightSubPhase).
 //
 // This handler is a thin wrapper over the role registry in rolespec.go:
 // generic structural checks live here, and role-specific validation
 // lives in each role's NightAction.Validate hook.
 //
 // Generic validation:
-//   - PhaseNight only.
+//   - PhaseNight only AND currentNightSubPhase == NightSubAct (i.e.
+//     the actor's window is open). Submissions during narrate /
+//     ponder / sleep / settle are rejected with ErrNotYourTurn so
+//     the wire and UI can keep "wrong time" distinct from "wrong
+//     role" (ErrNotYourAction).
 //   - Actor and Target must be known and alive.
 //   - Actor's role must equal currentNightRole — the strict turn-order
-//     gate that makes the game playable in person ("Mafia, wake up…
-//     now Detective"). The error is ErrNotYourTurn (distinct from
-//     ErrNotYourAction so the UI can tell "wrong role" from "wrong
-//     time").
-//   - Actor must be a role with a NightAction in the registry.
+//     gate that makes the game playable in person.
+//   - Actor must be a role with a NightAction in the registry
+//     (villagers are rejected with ErrNotYourAction).
 //   - For the mafia turn the "actor" may be any living mafia (faction-
 //     collective); first valid submission locks the kill target and
-//     ends the turn for the whole faction.
+//     ends the act window for the whole faction.
 //   - Each actor commits once per night (ErrAlreadyActed).
 //
 // Role-specific validation is delegated to spec.NightAction.Validate.
 //
-// Emitted events (atomic batch):
+// Emitted events (atomic batch on success):
 //
 //	NightActionRecorded{actor, target, faction}    — faction-only
-//	NightTurnEnded{role: currentNightRole}         — public
-//	NightTurnStarted{role: nextRole}               — public, if queue non-empty
+//	DetectiveResult{...}                           — detective only, private
+//	NightPonderStarted{role, day, phantom: false}  — public
 //
-// If the queue is now empty, the room will follow up with an
-// AdvancePhase to resolve the night.
+// After ponder elapses (room's timer), AdvancePhase drives ponder →
+// sleep → settle → next role. The detective's read-modal pause is
+// folded into the ponder duration (sized by the room's per-role
+// Ponder function) rather than a separate timer hook.
 func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -64,6 +70,12 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if actor.role != g.state.currentNightRole {
 		return nil, ErrNotYourTurn
 	}
+	// And we must be in the act sub-phase. Submissions during narrate
+	// / ponder / sleep / settle (or between turns) collapse onto the
+	// same "wrong time" error.
+	if g.state.currentNightSubPhase != NightSubAct {
+		return nil, ErrNotYourTurn
+	}
 
 	if c.Target == "" {
 		return nil, ErrUnknownPlayer
@@ -90,7 +102,7 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	}
 	g.state.pendingNight[c.Actor] = c.Target
 
-	// First valid submission ends the turn. For mafia (faction-
+	// First valid submission ends the act window. For mafia (faction-
 	// collective), this is intentional: only one kill per night,
 	// decided by whichever mafia submits first.
 	events := []Event{
@@ -102,12 +114,11 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	}
 
 	// Detective gets immediate private feedback ("X IS / is NOT a
-	// mafia member"). We emit it BEFORE NightTurnEnded so the modal
-	// pops the moment the action is recorded — much better UX than
-	// waiting for the whole night to resolve. The detective's
-	// reveal-phase Apply is now a no-op (see rolespec.go); the
-	// information is purely role-based (target.role.Faction()), so
-	// it doesn't depend on the resolve step at all.
+	// mafia member"). We emit it BEFORE the ponder transition so the
+	// modal pops the moment the action is recorded. The detective's
+	// reveal-phase Apply is a no-op (see rolespec.go); the information
+	// is purely role-based (target.role.Faction()), so it doesn't
+	// depend on the resolve step at all.
 	if actor.role == RoleDetective {
 		events = append(events, DetectiveResult{
 			Detective: actor.id,
@@ -116,30 +127,13 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		})
 	}
 
-	events = append(events, NightTurnEnded{Role: g.state.currentNightRole})
-	g.state.currentNightRole = ""
-	g.state.nightTurnDeadlineMillis = 0
-
-	// After a detective action we INTENTIONALLY do not start the next
-	// turn here. The engine state has currentNightRole="" with the
-	// queue still populated; the room layer schedules a brief pause
-	// (so the detective can read their result modal) and then sends
-	// AdvancePhase to pop the next role. Tests that drive the engine
-	// directly must do the same — see playNight in rules_phase_test.go.
-	if actor.role == RoleDetective {
-		return events, nil
-	}
-
-	// If the queue still has roles to act, pop the next one. Otherwise
-	// — this was the last role's turn — resolve the night now so the
-	// behaviour matches the "final skip resolves the night" case. This
-	// removes a footgun where a caller would have to know whether the
-	// last turn was an action vs a timeout.
-	if next := g.beginNextNightTurn(); len(next) > 0 {
-		events = append(events, next...)
-		return events, nil
-	}
-	events = append(events, g.resolveAndExitNight()...)
+	// Drive act → ponder. The submitted flag is set so the room can
+	// look it up when sizing the ponder duration (short fixed beat
+	// post-submit, vs longer for detective so the modal lands, vs
+	// random for phantom — but phantom turns never enter NightSubAct
+	// in the first place).
+	g.state.nightSubmitted = true
+	events = append(events, g.enterNightSubPhase(NightSubPonder)...)
 	return events, nil
 }
 

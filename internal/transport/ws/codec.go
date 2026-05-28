@@ -49,12 +49,24 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.PhaseChanged:
 		tag = wire.EventPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
-	case game.NightTurnStarted:
-		tag = wire.EventNightTurnStarted
-		data = kv{"role": string(v.Role), "deadline": v.Deadline, "phantom": v.Phantom}
-	case game.NightTurnEnded:
-		tag = wire.EventNightTurnEnded
-		data = kv{"role": string(v.Role)}
+	case game.NightOpeningStarted:
+		tag = wire.EventNightOpeningStarted
+		data = kv{"day": v.Day, "deadline": v.Deadline}
+	case game.NightNarrationStarted:
+		tag = wire.EventNightNarrationStarted
+		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+	case game.NightActionStarted:
+		tag = wire.EventNightActionStarted
+		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+	case game.NightPonderStarted:
+		tag = wire.EventNightPonderStarted
+		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+	case game.NightSleepStarted:
+		tag = wire.EventNightSleepStarted
+		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+	case game.NightSettleStarted:
+		tag = wire.EventNightSettleStarted
+		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
 	case game.NightActionRecorded:
 		tag = wire.EventNightActionRecorded
 		data = kv{"actor": string(v.Actor), "target": string(v.Target), "faction": string(v.Faction)}

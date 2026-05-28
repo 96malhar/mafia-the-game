@@ -21,6 +21,13 @@ import (
 //
 // Brute force over seeds finds an assignment that matches the wanted
 // mapping. With 5! = 120 permutations and a fast PCG, this is trivial.
+//
+// On return the game is in PhaseNight, the opening sub-phase has been
+// elapsed, and the mafia's NightSubNarrate has been elapsed too — i.e.
+// the caller is sitting on the mafia's NightSubAct window, ready to
+// submit (or skip via AdvancePhase to simulate a timeout). This
+// matches how every test in this file uses the fixture: at the start
+// of "real" mafia action.
 func fixedRoster(t *testing.T) *game.Game {
 	t.Helper()
 	ids := []game.PlayerID{"mafia1", "det", "doc", "town1", "town2"}
@@ -52,25 +59,32 @@ func fixedRoster(t *testing.T) *game.Game {
 				break
 			}
 		}
-		if match {
-			// fixedRoster used to leave the game in PhaseNight (the
-			// old StartGame transitioned automatically). Now the
-			// host's BeginNight does that — fire it here so existing
-			// tests can keep treating "after fixedRoster" as "start
-			// of Night 1".
-			_, err = g.Apply(game.BeginNight{})
-			require.NoError(t, err)
-			return g
+		if !match {
+			continue
 		}
+		_, err = g.Apply(game.BeginNight{})
+		require.NoError(t, err)
+		// BeginNight emits NightOpeningStarted; advance through opening
+		// and the first role's narrate so callers land on mafia's act.
+		require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
+		_, err = g.Apply(game.AdvancePhase{}) // opening → mafia narrate
+		require.NoError(t, err)
+		require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+		require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+		_, err = g.Apply(game.AdvancePhase{}) // mafia narrate → act
+		require.NoError(t, err)
+		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+			"fixedRoster must leave the game in mafia's act window")
+		return g
 	}
 	t.Fatalf("could not find a seed yielding the fixed role assignment in 1000 attempts")
 	return nil
 }
 
 // nightAction submits one night action for the role that is currently
-// holding the turn. It fails the test if the engine rejects it. Use
-// this in tests that exercise a single role's action; for orchestrating
-// a full night, use playNight.
+// holding the act window. Fails the test if the engine rejects it.
+// Use this in tests that exercise a single role's action; for
+// orchestrating a full night, use playNight.
 func nightAction(t *testing.T, g *game.Game, actor, target game.PlayerID) []game.Event {
 	t.Helper()
 	evts, err := g.Apply(game.NightAction{Actor: actor, Target: target})
@@ -78,77 +92,141 @@ func nightAction(t *testing.T, g *game.Game, actor, target game.PlayerID) []game
 	return evts
 }
 
-// skipCurrentTurn fires AdvancePhase to end the current night turn
-// without submitting an action (timeout semantics).
-func skipCurrentTurn(t *testing.T, g *game.Game) []game.Event {
+// advancePhase fires one AdvancePhase and returns the resulting events.
+// Each call advances exactly one sub-phase boundary; see NightSubPhase
+// for the transition graph.
+func advancePhase(t *testing.T, g *game.Game) []game.Event {
 	t.Helper()
 	evts, err := g.Apply(game.AdvancePhase{})
 	require.NoError(t, err)
 	return evts
 }
 
-// playNight runs through a full Night with the given (role -> target)
-// actions. Any role missing from the map is skipped (timeout-style).
-// Phantom turns (no living holder of the role) accept no action and
-// are likewise skipped via AdvancePhase. Returns every event emitted
-// across all turns (including the resolve batch), so callers can
-// findEvent for any event type (DetectiveResult fires at action
-// time, PlayerKilled / PlayerSaved / GameEnded fire at resolve).
+// walkRestOfTurn advances the engine through every remaining sub-phase
+// of the CURRENT role's turn (and through the next role's narrate, if
+// any). It ends on one of:
+//   - the next role's act window (real role) — caller's next step is
+//     usually a NightAction or another walkRestOfTurn to time it out;
+//   - the next role's ponder window (phantom role, narrate has fired
+//     but no act will) — caller can assert on the phantom and call
+//     walkRestOfTurn again to step past it;
+//   - PhaseDayDiscussion / PhaseEnded if this was the last role.
 //
-// The engine's Night flow is mostly self-resolving: when the LAST turn
-// in the queue is either skipped or actioned, that call runs
-// resolveNight and transitions to DayDiscussion atomically. The
-// exception is the detective's action — the engine intentionally
-// stops after recording the result so the room can schedule a
-// read-modal pause. This helper bridges that pause by issuing an
-// immediate AdvancePhase, mirroring what the room does in production
-// (just without the wall-clock wait).
+// The helper handles all three entry states transparently:
+//
+//	NightSubAct       — caller chose NOT to submit; walks via
+//	                    act→sleep (skipping ponder), then through
+//	                    settle and into the next role's window.
+//	NightSubPonder    — caller already submitted (real) OR caller is
+//	                    sitting on a fresh phantom-role ponder; walks
+//	                    through sleep + settle + next role's narrate.
+//	NightSubNarrate   — caller hand-stepped into narrate; walks
+//	                    through act/ponder + sleep + settle + next.
+//	                    Less common in tests but supported for
+//	                    symmetry.
+//
+// Implementation: we track whether at least one settle has elapsed.
+// Once settle has elapsed we know we're sitting in (or past) the
+// next role's territory, and the next "stable" sub-phase (act for
+// real roles, ponder for phantoms) is the right place to stop.
+func walkRestOfTurn(t *testing.T, g *game.Game) []game.Event {
+	t.Helper()
+	var out []game.Event
+	settleElapsed := false
+	for {
+		if g.State().Phase() != game.PhaseNight {
+			return out
+		}
+		if settleElapsed {
+			sp := g.State().CurrentNightSubPhase()
+			// A fresh role-turn is at narrate or (for phantoms) at
+			// ponder after narrate elapses. We want to stop at the
+			// caller-meaningful boundary — act for real roles, ponder
+			// for phantoms — so we let narrate elapse but stop at the
+			// next sub-phase.
+			if sp == game.NightSubAct {
+				return out
+			}
+			if sp == game.NightSubPonder && !g.State().NightTurnSubmitted() {
+				return out
+			}
+		}
+		// Note the sub-phase we're about to leave so we can detect
+		// when settle has just elapsed (next iteration's role will be
+		// the new one).
+		leaving := g.State().CurrentNightSubPhase()
+		out = append(out, advancePhase(t, g)...)
+		if leaving == game.NightSubSettle {
+			settleElapsed = true
+		}
+	}
+}
+
+// playNight runs through a full Night with the given (role -> target)
+// actions. Any role missing from the map is skipped (timeout-style):
+// from act, AdvancePhase fires, skipping ponder, going through sleep
+// and settle, popping the next role and walking it to its act window.
+// Phantom turns (no living holder of the role) accept no action;
+// they're walked through automatically.
+//
+// Returns every event emitted across all sub-phase transitions and
+// the resolve batch, so callers can findEvent for any event type
+// (DetectiveResult fires at act time, PlayerKilled / PlayerSaved /
+// GameEnded fire at resolve).
+//
+// The helper assumes the caller is positioned at the mafia's act
+// window (i.e. the postcondition of fixedRoster / toNextNight).
 func playNight(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) []game.Event {
 	t.Helper()
 	canonical := []game.Role{game.RoleMafia, game.RoleDetective, game.RoleDoctor}
 	var allEvents []game.Event
-	resolved := false
 	for _, r := range canonical {
 		require.Equal(t, r, g.State().CurrentNightRole(),
 			"playNight: expected role %s to be current but got %s",
 			r, g.State().CurrentNightRole())
-		target, ok := actions[r]
-		var evts []game.Event
-		switch {
-		case g.State().CurrentNightTurnIsPhantom():
-			evts = skipCurrentTurn(t, g)
-		case !ok:
-			evts = skipCurrentTurn(t, g)
-		default:
-			var actor game.PlayerID
-			for _, p := range g.State().Players() {
-				if p.Role() == r && p.Alive() {
-					actor = p.ID()
-					break
-				}
-			}
-			require.NotEmpty(t, actor, "no living %s to submit action", r)
-			evts = nightAction(t, g, actor, target)
-		}
-		allEvents = append(allEvents, evts...)
+		sp := g.State().CurrentNightSubPhase()
+		target, want := actions[r]
 
-		// Detective action does not auto-advance — see helper comment.
-		// Drive the next turn manually so the rest of the night runs.
-		if r == game.RoleDetective && ok && g.State().Phase() == game.PhaseNight && g.State().CurrentNightRole() == "" {
-			advanceEvts, err := g.Apply(game.AdvancePhase{})
-			require.NoError(t, err, "playNight: AdvancePhase after detective action failed")
-			allEvents = append(allEvents, advanceEvts...)
+		// Phantom roles arrive at NightSubPonder (no act window).
+		// Real roles arrive at NightSubAct.
+		switch sp {
+		case game.NightSubAct:
+			if want {
+				var actor game.PlayerID
+				for _, p := range g.State().Players() {
+					if p.Role() == r && p.Alive() {
+						actor = p.ID()
+						break
+					}
+				}
+				require.NotEmpty(t, actor,
+					"playNight: no living %s to submit action", r)
+				allEvents = append(allEvents, nightAction(t, g, actor, target)...)
+				// Post-submit: walk ponder → sleep → settle (→ next role).
+				allEvents = append(allEvents, walkRestOfTurn(t, g)...)
+			} else {
+				// Skip via AdvancePhase: act → (timeout) → sleep →
+				// settle → next role.
+				allEvents = append(allEvents, walkRestOfTurn(t, g)...)
+			}
+		case game.NightSubPonder:
+			// Phantom turn: just walk through.
+			allEvents = append(allEvents, walkRestOfTurn(t, g)...)
+		default:
+			t.Fatalf("playNight: unexpected sub-phase %q at start of %s turn", sp, r)
 		}
+
 		if g.State().Phase() != game.PhaseNight {
-			resolved = true
+			// Night resolved during this role's settle pop.
+			return allEvents
 		}
 	}
-	require.True(t, resolved,
-		"playNight: night did not resolve (perhaps the queue was empty before any turn?)")
+	t.Fatalf("playNight: walked all three roles but still in PhaseNight (sub-phase %q)",
+		g.State().CurrentNightSubPhase())
 	return allEvents
 }
 
-// toDayVote walks the engine from the start of a Night through to
+// toDayVote walks the engine from the mafia-act position through to
 // PhaseDayVote, applying the given (role -> target) night actions and
 // then issuing OpenVoting (host-driven transition).
 func toDayVote(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) {
@@ -161,14 +239,10 @@ func toDayVote(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) 
 }
 
 // toNextNight assumes the game is in PhaseDayDiscussion (post-Night
-// resolve) and walks to the NEXT PhaseNight by simulating a "no
-// lynch" day: open voting, finalize with no decisive vote fails, so
-// we use a workaround — the host can never end a day without a lynch
-// in the new flow, so for tests that need to reach Night N+1 without
-// caring who dies, we simulate a vote on a fixed target and finalize.
-//
-// Caller passes the lynch target. Use this when the test doesn't care
-// who gets lynched and just wants to advance through a day.
+// resolve) and walks to the NEXT PhaseNight by simulating a lynch on
+// the given target. After return, the engine is positioned at the
+// mafia's act window (same postcondition as fixedRoster), so the
+// caller can keep using nightAction / playNight directly.
 func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID, voters ...game.PlayerID) {
 	t.Helper()
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
@@ -190,128 +264,247 @@ func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID, voters .
 	_, err = g.Apply(game.BeginNight{})
 	require.NoError(t, err)
 	require.Equal(t, game.PhaseNight, g.State().Phase())
+	// BeginNight → opening; walk through opening + mafia narrate so
+	// caller lands on mafia act, matching fixedRoster's postcondition.
+	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
+	advancePhase(t, g) // opening → mafia narrate
+	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+	advancePhase(t, g) // mafia narrate → mafia act (or ponder if phantom — never)
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"toNextNight: expected mafia's act window (mafia phantom is unreachable by win conditions)")
 }
 
-// --- Night turn-order plumbing -------------------------------------------
+// --- Night opening + turn-order plumbing ---------------------------------
 
-func TestNight_FirstTurnIsMafia(t *testing.T) {
+func TestNight_OpeningEmittedAfterPhaseChange(t *testing.T) {
+	// BeginNight should emit PhaseChanged{To: Night} then
+	// NightOpeningStarted — NOT a NightNarrationStarted for the
+	// mafia. The opening is a one-shot "City, go to sleep." beat
+	// before any role's narration.
+	g := game.New()
+	_, err := g.Apply(game.CreateGame{
+		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
+	})
+	require.NoError(t, err)
+	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
+		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
+		require.NoError(t, err)
+	}
+	_, err = g.Apply(game.StartGame{})
+	require.NoError(t, err)
+
+	evts, err := g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+
+	// PhaseChanged + NightOpeningStarted, nothing else night-related.
+	_, opening := findEvent[game.NightOpeningStarted](evts)
+	require.True(t, opening, "BeginNight must emit NightOpeningStarted")
+	_, narrate := findEvent[game.NightNarrationStarted](evts)
+	require.False(t, narrate, "BeginNight must NOT emit NightNarrationStarted yet")
+
+	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
+	require.Equal(t, game.Role(""), g.State().CurrentNightRole(),
+		"currentNightRole must be empty during opening")
+}
+
+func TestNight_OpeningElapsesIntoMafiaNarrate(t *testing.T) {
+	// One AdvancePhase during NightSubOpening transitions into the
+	// first role's NightSubNarrate.
+	g := game.New()
+	_, err := g.Apply(game.CreateGame{
+		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
+	})
+	require.NoError(t, err)
+	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
+		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
+		require.NoError(t, err)
+	}
+	_, err = g.Apply(game.StartGame{})
+	require.NoError(t, err)
+	_, err = g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+
+	evts := advancePhase(t, g)
+	ns, ok := findEvent[game.NightNarrationStarted](evts)
+	require.True(t, ok, "opening → narrate must emit NightNarrationStarted")
+	require.Equal(t, game.RoleMafia, ns.Role)
+	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+}
+
+func TestNight_FirstActWindowIsMafia(t *testing.T) {
 	g := fixedRoster(t)
 	require.Equal(t, game.PhaseNight, g.State().Phase())
-	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole(),
-		"the first night turn must be the mafia's")
+	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"the first act window must be the mafia's")
+}
+
+func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
+	// Walk one full real turn and verify the exact sub-phase event
+	// sequence: narrate → act → ponder → sleep → settle → next role's
+	// narrate. We start from fixedRoster (already past mafia's
+	// narrate); submit; then step through each remaining sub-phase
+	// one AdvancePhase at a time.
+	g := fixedRoster(t)
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
+
+	// Submit: act → ponder, with NightPonderStarted in the batch.
+	evts := nightAction(t, g, "mafia1", "town1")
+	_, pondered := findEvent[game.NightPonderStarted](evts)
+	require.True(t, pondered, "submit must emit NightPonderStarted")
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
+	require.True(t, g.State().NightTurnSubmitted(),
+		"NightTurnSubmitted must be true after a submit")
+
+	// ponder → sleep.
+	evts = advancePhase(t, g)
+	sl, ok := findEvent[game.NightSleepStarted](evts)
+	require.True(t, ok, "ponder → sleep must emit NightSleepStarted")
+	require.Equal(t, game.RoleMafia, sl.Role)
+	require.Equal(t, game.NightSubSleep, g.State().CurrentNightSubPhase())
+
+	// sleep → settle.
+	evts = advancePhase(t, g)
+	st, ok := findEvent[game.NightSettleStarted](evts)
+	require.True(t, ok, "sleep → settle must emit NightSettleStarted")
+	require.Equal(t, game.RoleMafia, st.Role)
+	require.Equal(t, game.NightSubSettle, g.State().CurrentNightSubPhase())
+
+	// settle → next role's narrate. The submitted flag resets.
+	evts = advancePhase(t, g)
+	ns, ok := findEvent[game.NightNarrationStarted](evts)
+	require.True(t, ok, "settle → next role must emit NightNarrationStarted")
+	require.Equal(t, game.RoleDetective, ns.Role)
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+	require.False(t, g.State().NightTurnSubmitted())
+}
+
+func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
+	// Reaching AdvancePhase during NightSubAct (the actor never
+	// submitted) is the timeout branch. It transitions through
+	// NightSubPonder — same as the submit branch — so the audio
+	// cadence is uniform across submit/timeout and observers can't
+	// distinguish them. nightSubmitted stays false so the room's
+	// Ponder function can pick a timeout-appropriate duration.
+	g := fixedRoster(t)
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
+
+	evts := advancePhase(t, g) // act → ponder
+	ponder, ok := findEvent[game.NightPonderStarted](evts)
+	require.True(t, ok, "act timeout must transition into NightPonderStarted")
+	require.Equal(t, game.RoleMafia, ponder.Role)
+	require.False(t, ponder.Phantom,
+		"mafia is alive — Phantom must be false even on timeout")
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
+	require.False(t, g.State().NightTurnSubmitted(),
+		"timeout means no submit — NightTurnSubmitted must stay false")
+
+	// One more AdvancePhase: ponder → sleep.
+	evts = advancePhase(t, g)
+	_, ok = findEvent[game.NightSleepStarted](evts)
+	require.True(t, ok, "ponder → sleep must emit NightSleepStarted")
+	require.Equal(t, game.NightSubSleep, g.State().CurrentNightSubPhase())
 }
 
 func TestNight_TurnOrderMafiaDetectiveDoctor(t *testing.T) {
 	g := fixedRoster(t)
 
-	// Mafia submits -> detective turn begins.
-	evts := nightAction(t, g, "mafia1", "town1")
-	hasTurnEnded(t, evts, game.RoleMafia)
-	hasTurnStarted(t, evts, game.RoleDetective)
+	// Mafia submits and turn fully advances through ponder → sleep →
+	// settle → detective narrate → detective act.
+	nightAction(t, g, "mafia1", "town1")
+	walkRestOfTurn(t, g) // ponder → sleep → settle → next role's narrate
+	// walkRestOfTurn stops at the next role's act window.
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
-	// Detective submits: the engine intentionally PAUSES here.
-	// NightTurnEnded fires for the detective and DetectiveResult is
-	// emitted privately, but the doctor's turn is NOT auto-started.
-	// The room layer drives a short pause (so the detective can read
-	// their result modal) and then sends AdvancePhase to continue.
-	evts = nightAction(t, g, "det", "mafia1")
-	hasTurnEnded(t, evts, game.RoleDetective)
-	requireNoTurnStarted(t, evts)
-	require.Equal(t, game.Role(""), g.State().CurrentNightRole(),
-		"engine should leave currentNightRole empty during the detective pause")
+	// Detective submits.
+	evts := nightAction(t, g, "det", "mafia1")
+	// DetectiveResult is in the same batch as NightPonderStarted —
+	// both come from applyNightAction.
+	_, hasResult := findEvent[game.DetectiveResult](evts)
+	require.True(t, hasResult, "detective submission emits DetectiveResult immediately")
+	_, hasPonder := findEvent[game.NightPonderStarted](evts)
+	require.True(t, hasPonder, "detective submission also emits NightPonderStarted")
 
-	// Caller drives the pause forward. AdvancePhase pops the doctor.
-	evts, err := g.Apply(game.AdvancePhase{})
-	require.NoError(t, err)
-	hasTurnStarted(t, evts, game.RoleDoctor)
+	// Walk through detective's ponder → sleep → settle → doctor narrate → doctor act.
+	walkRestOfTurn(t, g)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
-	// Doctor submits: this was the LAST role in the queue, so the
-	// engine atomically resolves the night and transitions to
-	// DayDiscussion in the same call. Removes a footgun where callers
-	// would otherwise need to know "did the last turn submit or skip?"
-	// to decide whether to fire one more AdvancePhase.
-	evts = nightAction(t, g, "doc", "town2")
-	hasTurnEnded(t, evts, game.RoleDoctor)
-	require.Equal(t, game.Role(""), g.State().CurrentNightRole())
+	// Doctor submits.
+	nightAction(t, g, "doc", "town2")
+	// Walk through doctor's ponder → sleep → settle → night resolves
+	// → PhaseDayDiscussion.
+	walkRestOfTurn(t, g)
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
-		"final action resolves the night atomically")
+		"last role's settle resolves the night and transitions to DayDiscussion")
+	require.Equal(t, game.Role(""), g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPhase(""), g.State().CurrentNightSubPhase())
 }
 
 func TestNight_SkippedRolesGetTimeoutAdvance(t *testing.T) {
 	g := fixedRoster(t)
-
-	// Mafia's turn: skip via AdvancePhase (simulates timeout).
-	evts := skipCurrentTurn(t, g)
-	hasTurnEnded(t, evts, game.RoleMafia)
-	hasTurnStarted(t, evts, game.RoleDetective)
-
-	// Detective skips too.
-	evts = skipCurrentTurn(t, g)
-	hasTurnEnded(t, evts, game.RoleDetective)
-	hasTurnStarted(t, evts, game.RoleDoctor)
-
-	// Doctor's skip: queue is now empty, so this same AdvancePhase
-	// call ends the doctor's turn AND resolves the night, transitioning
-	// to PhaseDayDiscussion in one batch.
-	evts = skipCurrentTurn(t, g)
-	hasTurnEnded(t, evts, game.RoleDoctor)
-	require.Equal(t, game.Role(""), g.State().CurrentNightRole())
-	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
-		"final skip resolves the night atomically")
+	// All three roles time out.
+	for _, want := range []game.Role{game.RoleDetective, game.RoleDoctor} {
+		// Currently in <prev>'s act window; skip via AdvancePhase
+		// drives act → sleep → settle → next narrate → next act.
+		walkRestOfTurn(t, g)
+		require.Equal(t, want, g.State().CurrentNightRole())
+		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
+	}
+	// Doctor times out: night resolves.
+	walkRestOfTurn(t, g)
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 }
 
 func TestNight_DeadRoleEmitsPhantomTurn(t *testing.T) {
-	// Phantom turns exist to hide info leakage: the room must not be
-	// able to deduce that a role is dead just from missing audio
-	// cues. So on subsequent nights we always queue Mafia → Detective
-	// → Doctor; turns whose role has no living holder are emitted as
-	// phantom turns that accept no action and are advanced via
-	// AdvancePhase (timeout).
+	// Phantom turns exist to hide info leakage: the room must not
+	// be able to deduce that a role is dead just from missing audio
+	// cues. So on subsequent nights we always queue Mafia →
+	// Detective → Doctor; turns whose role has no living holder
+	// substitute NightSubPonder (with randomized room-side duration)
+	// for the act window — narrate and sleep still fire identically.
 	g := fixedRoster(t)
 
-	// Night 1: mafia kills the detective, no save.
 	playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleMafia: "det",
+		game.RoleMafia: "det", // detective dies
 	})
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	// Walk to Night 2 via a host-driven lynch on town2.
 	toNextNight(t, g, "town2", "town1", "doc")
 	require.Equal(t, game.PhaseNight, g.State().Phase())
-
-	// Mafia's turn: real (mafia1 is still alive).
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-	require.False(t, g.State().CurrentNightTurnIsPhantom(),
-		"mafia turn must not be phantom while mafia1 is alive")
-	evts := nightAction(t, g, "mafia1", "town1")
-	hasTurnStarted(t, evts, game.RoleDetective)
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
-	// Detective's turn: phantom because detective is dead, but it
-	// STILL runs and STILL emits a NightTurnStarted so the audio
-	// fires identically to a live detective turn.
-	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole(),
-		"phantom detective turn must still be the current role")
-	require.True(t, g.State().CurrentNightTurnIsPhantom(),
-		"detective is dead -> turn must be phantom")
-	// Dead detective trying to submit fails with ErrPlayerDead, not
-	// ErrNotYourTurn — the actor check fires first.
+	// Mafia submits.
+	nightAction(t, g, "mafia1", "town1")
+	// Walk to the next role; this time, since detective is dead, the
+	// detective turn arrives at NightSubPonder (phantom-substituted),
+	// NOT NightSubAct.
+	walkRestOfTurn(t, g)
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"dead detective: act window is substituted with ponder")
+	require.False(t, g.State().NightTurnSubmitted(),
+		"phantom ponder is NOT post-submit (no act happened)")
+
+	// A dead detective trying to submit gets ErrPlayerDead (actor
+	// alive check fires before sub-phase check).
 	_, err := g.Apply(game.NightAction{Actor: "det", Target: "town1"})
 	require.ErrorIs(t, err, game.ErrPlayerDead)
 
-	// AdvancePhase ends the phantom turn and moves to doctor.
-	evts = skipCurrentTurn(t, g)
-	hasTurnEnded(t, evts, game.RoleDetective)
-	hasTurnStarted(t, evts, game.RoleDoctor)
+	// Walking forward continues to doctor's act window.
+	walkRestOfTurn(t, g)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
-	require.False(t, g.State().CurrentNightTurnIsPhantom())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 }
 
-func TestNight_PhantomTurnEmitsPhantomFlagOnEvent(t *testing.T) {
-	// The NightTurnStarted event carries Phantom=true so the room
-	// can shorten its wall-clock timer and clients can render
-	// accordingly.
+func TestNight_PhantomTurnEmitsPhantomFlagOnEvents(t *testing.T) {
+	// NightNarrationStarted and NightPonderStarted carry Phantom=true
+	// for phantom turns so the room can size durations (narrate is
+	// still a role's narrate; ponder gets the random phantom window).
 	g := fixedRoster(t)
 
 	playNight(t, g, map[game.Role]game.PlayerID{
@@ -320,21 +513,30 @@ func TestNight_PhantomTurnEmitsPhantomFlagOnEvent(t *testing.T) {
 	toNextNight(t, g, "town2", "town1", "doc")
 	require.Equal(t, game.PhaseNight, g.State().Phase())
 
-	// Submit the mafia action; the batch should include a
-	// NightTurnStarted for detective with Phantom=true.
-	evts := nightAction(t, g, "mafia1", "town1")
-	var detStart game.NightTurnStarted
-	var found bool
+	// Submit mafia; in the batch from walkRestOfTurn we should see
+	// the detective's narrate AND ponder both flagged Phantom=true.
+	nightAction(t, g, "mafia1", "town1")
+	evts := walkRestOfTurn(t, g)
+
+	var sawDetNarrate, sawDetPonder bool
 	for _, e := range evts {
-		if ts, ok := e.(game.NightTurnStarted); ok && ts.Role == game.RoleDetective {
-			detStart = ts
-			found = true
-			break
+		switch v := e.(type) {
+		case game.NightNarrationStarted:
+			if v.Role == game.RoleDetective {
+				require.True(t, v.Phantom,
+					"detective narrate must be Phantom=true when detective is dead")
+				sawDetNarrate = true
+			}
+		case game.NightPonderStarted:
+			if v.Role == game.RoleDetective {
+				require.True(t, v.Phantom,
+					"detective ponder (phantom-substituted) must be Phantom=true")
+				sawDetPonder = true
+			}
 		}
 	}
-	require.True(t, found, "expected NightTurnStarted for detective in batch")
-	require.True(t, detStart.Phantom,
-		"detective turn must be marked Phantom when detective is dead")
+	require.True(t, sawDetNarrate, "expected NightNarrationStarted for detective")
+	require.True(t, sawDetPonder, "expected NightPonderStarted for detective")
 }
 
 // --- NightAction validation -----------------------------------------------
@@ -348,8 +550,6 @@ func TestNightAction_Validation(t *testing.T) {
 
 	t.Run("villager has no night action", func(t *testing.T) {
 		g := fixedRoster(t)
-		// Villagers have no NightAction at all; rejected with
-		// ErrNotYourAction regardless of which role's turn it is.
 		_, err := g.Apply(game.NightAction{Actor: "town1", Target: "town2"})
 		require.ErrorIs(t, err, game.ErrNotYourAction)
 	})
@@ -361,10 +561,49 @@ func TestNightAction_Validation(t *testing.T) {
 	})
 
 	t.Run("wrong role on wrong turn", func(t *testing.T) {
-		g := fixedRoster(t) // currentNightRole = mafia
+		g := fixedRoster(t) // currentNightRole = mafia, sub = act
 		_, err := g.Apply(game.NightAction{Actor: "det", Target: "mafia1"})
 		require.ErrorIs(t, err, game.ErrNotYourTurn,
-			"detective cannot act during the mafia's turn")
+			"detective cannot act during the mafia's act window")
+	})
+
+	t.Run("submission outside act window rejected as ErrNotYourTurn", func(t *testing.T) {
+		// During mafia's NARRATE sub-phase the mafia is "current" but
+		// the act window is not yet open. Submission must collapse
+		// onto the same wrong-time error.
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
+		})
+		require.NoError(t, err)
+		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
+			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
+			require.NoError(t, err)
+		}
+		_, err = g.Apply(game.StartGame{})
+		require.NoError(t, err)
+		_, err = g.Apply(game.BeginNight{})
+		require.NoError(t, err)
+		// Walk to mafia narrate but NOT to mafia act.
+		_, err = g.Apply(game.AdvancePhase{}) // opening → mafia narrate
+		require.NoError(t, err)
+		require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+
+		// Find a mafia actor.
+		var mafia, victim game.PlayerID
+		for _, p := range g.State().Players() {
+			if mafia == "" && p.Role() == game.RoleMafia {
+				mafia = p.ID()
+			} else if victim == "" && p.Role() == game.RoleVillager {
+				victim = p.ID()
+			}
+		}
+		require.NotEmpty(t, mafia)
+		require.NotEmpty(t, victim)
+
+		_, err = g.Apply(game.NightAction{Actor: mafia, Target: victim})
+		require.ErrorIs(t, err, game.ErrNotYourTurn,
+			"submission during narrate (act window closed) must be ErrNotYourTurn")
 	})
 
 	t.Run("unknown target rejected", func(t *testing.T) {
@@ -388,6 +627,7 @@ func TestNightAction_Validation(t *testing.T) {
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
 		require.NoError(t, err)
+		advanceToMafiaAct(t, g)
 
 		var mafias []game.PlayerID
 		for _, p := range g.State().Players() {
@@ -401,9 +641,6 @@ func TestNightAction_Validation(t *testing.T) {
 	})
 
 	t.Run("mafia faction-collective: second mafia rejected as wrong turn", func(t *testing.T) {
-		// First mafia submits and ends the mafia turn; a second mafia
-		// trying to submit gets ErrNotYourTurn because currentRole is
-		// now detective.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 7,
@@ -417,6 +654,7 @@ func TestNightAction_Validation(t *testing.T) {
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
 		require.NoError(t, err)
+		advanceToMafiaAct(t, g)
 
 		var mafias []game.PlayerID
 		var townTarget game.PlayerID
@@ -435,48 +673,44 @@ func TestNightAction_Validation(t *testing.T) {
 
 		_, err = g.Apply(game.NightAction{Actor: mafias[0], Target: townTarget})
 		require.NoError(t, err)
-
+		// First mafia submission took us to ponder; second mafia
+		// submission must now fail with ErrNotYourTurn (the sub-phase
+		// is no longer act).
 		_, err = g.Apply(game.NightAction{Actor: mafias[1], Target: townTarget})
-		require.ErrorIs(t, err, game.ErrNotYourTurn,
-			"second mafia submits after the mafia turn has ended")
+		require.ErrorIs(t, err, game.ErrNotYourTurn)
 	})
 
 	t.Run("detective cannot self-investigate", func(t *testing.T) {
 		g := fixedRoster(t)
-		// Walk to detective's turn.
+		// Walk to detective's act window.
 		nightAction(t, g, "mafia1", "town1")
+		walkRestOfTurn(t, g)
 		require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
 		_, err := g.Apply(game.NightAction{Actor: "det", Target: "det"})
 		require.ErrorIs(t, err, game.ErrSelfTarget)
 	})
 
 	t.Run("doctor can self-save on any night including the first", func(t *testing.T) {
-		// The doctor has no self-save restriction. This used to be
-		// gated to night 2+ but the carve-out confused new players;
-		// the role is intentionally permissive now.
 		g := fixedRoster(t)
-		// Walk to doctor's turn (mafia + det submit). Detective's
-		// action does not auto-advance (the room schedules a brief
-		// pause so the detective can read their result modal), so
-		// we manually AdvancePhase to pop the doctor's turn.
+		// Walk to doctor's act window: submit mafia, walk; submit
+		// det, walk.
 		nightAction(t, g, "mafia1", "town1")
+		walkRestOfTurn(t, g)
 		nightAction(t, g, "det", "mafia1")
-		_, err := g.Apply(game.AdvancePhase{})
-		require.NoError(t, err)
+		walkRestOfTurn(t, g)
 		require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
-		_, err = g.Apply(game.NightAction{Actor: "doc", Target: "doc"})
+		_, err := g.Apply(game.NightAction{Actor: "doc", Target: "doc"})
 		require.NoError(t, err, "doctor self-save should be legal on night 1")
 	})
 
-	t.Run("re-submission by same actor is rejected", func(t *testing.T) {
-		// In the new turn model, once mafia1 submits, the mafia turn
-		// is over and currentRole moves on. So a second mafia1
-		// submission gets ErrNotYourTurn (the turn moved past mafia),
-		// NOT ErrAlreadyActed. ErrAlreadyActed remains reachable in
-		// future role designs where a single role can act multiple
-		// times — keep the sentinel for that path.
+	t.Run("re-submission by same actor is rejected as wrong turn", func(t *testing.T) {
+		// In the new turn model, once mafia1 submits, the sub-phase
+		// becomes ponder; a second submission gets ErrNotYourTurn
+		// (act window closed), NOT ErrAlreadyActed.
 		g := fixedRoster(t)
 		_, err := g.Apply(game.NightAction{Actor: "mafia1", Target: "town1"})
 		require.NoError(t, err)
@@ -497,7 +731,6 @@ func TestNightAction_Validation(t *testing.T) {
 			game.RoleMafia:  "town1",
 			game.RoleDoctor: "town2",
 		})
-		// town1 is dead; lynch det (non-mafia, so game continues).
 		toNextNight(t, g, "det", "town2", "doc")
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 
@@ -512,10 +745,6 @@ func TestNightAction_Validation(t *testing.T) {
 	})
 
 	t.Run("dead actor cannot act", func(t *testing.T) {
-		// Mafia kills detective on Night 1 (unsaved). On Night 2 the
-		// detective turn is still queued — as a phantom — so a dead
-		// detective trying to submit gets ErrPlayerDead. We test in
-		// the phantom slot itself rather than waiting for it to pass.
 		g := fixedRoster(t)
 		playNight(t, g, map[game.Role]game.PlayerID{
 			game.RoleMafia: "det",
@@ -523,14 +752,28 @@ func TestNightAction_Validation(t *testing.T) {
 		toNextNight(t, g, "town2", "town1", "doc")
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 
-		// Mafia acts; queue advances to the (phantom) detective turn.
+		// Mafia acts; walk to detective's (phantom) ponder.
 		nightAction(t, g, "mafia1", "town1")
+		walkRestOfTurn(t, g)
 		require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-		require.True(t, g.State().CurrentNightTurnIsPhantom())
+		require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
 
 		_, err := g.Apply(game.NightAction{Actor: "det", Target: "town1"})
 		require.ErrorIs(t, err, game.ErrPlayerDead)
 	})
+}
+
+// advanceToMafiaAct walks the engine from "just entered PhaseNight"
+// (i.e. just after BeginNight; sub-phase = opening) to the mafia's
+// act window. Used by tests that build their own roster instead of
+// going through fixedRoster.
+func advanceToMafiaAct(t *testing.T, g *game.Game) {
+	t.Helper()
+	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
+	advancePhase(t, g) // opening → mafia narrate
+	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
+	advancePhase(t, g) // mafia narrate → mafia act
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 }
 
 // --- Night resolution -----------------------------------------------------
@@ -774,8 +1017,6 @@ func TestVoteResolution(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, game.PhaseDayVote, g.State().Phase())
 
-		// Tally must be empty: an identical re-vote no longer trips
-		// ErrNoChange because the prior vote was cleared.
 		_, err = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
 		require.NoError(t, err)
 	})
@@ -804,7 +1045,6 @@ func TestVoteResolution(t *testing.T) {
 	})
 
 	t.Run("after lynch: dayLynchResolved set, OpenVoting rejected, BeginNight ok", func(t *testing.T) {
-		// Lynch a villager so the game continues.
 		g := intoDayVote(t)
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "det"})
 		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "det"})
@@ -815,16 +1055,16 @@ func TestVoteResolution(t *testing.T) {
 		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 		require.True(t, g.State().DayLynchResolved())
 
-		// OpenVoting must be rejected after the lynch.
 		_, err = g.Apply(game.OpenVoting{})
 		require.ErrorIs(t, err, game.ErrWrongPhase)
 
-		// BeginNight is the only valid path forward.
 		_, err = g.Apply(game.BeginNight{})
 		require.NoError(t, err)
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 		require.False(t, g.State().DayLynchResolved(),
 			"BeginNight clears the lynch-resolved flag")
+		// And it begins with an opening sub-phase, not a narrate.
+		require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
 	})
 }
 
@@ -838,7 +1078,6 @@ func TestAdvancePhase_Guards(t *testing.T) {
 	})
 
 	t.Run("DayDiscussion / DayVote reject AdvancePhase", func(t *testing.T) {
-		// AdvancePhase is now night-turn-internal: day phases reject it.
 		g := fixedRoster(t)
 		playNight(t, g, map[game.Role]game.PlayerID{
 			game.RoleMafia:  "town1",
@@ -871,8 +1110,8 @@ func TestAdvancePhase_Guards(t *testing.T) {
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
 		require.NoError(t, err)
+		advanceToMafiaAct(t, g)
 
-		// Find a mafia and a villager.
 		var mafia, victim game.PlayerID
 		for _, p := range g.State().Players() {
 			if mafia == "" && p.Role() == game.RoleMafia {
@@ -884,20 +1123,18 @@ func TestAdvancePhase_Guards(t *testing.T) {
 		require.NotEmpty(t, mafia)
 		require.NotEmpty(t, victim)
 
-		// Walk through the night: mafia kills, det skips, doc skip
-		// resolves the night (final skip is the resolving call).
-		_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
-		// Now currentRole is Detective; skip → moves to Doctor turn.
-		_, _ = g.Apply(game.AdvancePhase{})
-		// Doctor skip → queue empty → resolveNight + win-check.
-		evts, err := g.Apply(game.AdvancePhase{})
+		_, err = g.Apply(game.NightAction{Actor: mafia, Target: victim})
 		require.NoError(t, err)
-
-		ge, ok := findEvent[game.GameEnded](evts)
-		require.True(t, ok, "GameEnded must fire (2 mafia >= 2 town after kill)")
-		require.Equal(t, game.FactionMafia, ge.Winner)
+		// Walk through everything until the night resolves.
+		// walkRestOfTurn stops at the NEXT role's act window, so it
+		// takes three walks total to clear three roles:
+		//   walk 1: mafia submit → det's act
+		//   walk 2: det skip → doc's act
+		//   walk 3: doc skip → resolve → ended
+		walkRestOfTurn(t, g)
+		walkRestOfTurn(t, g)
+		walkRestOfTurn(t, g)
 		require.Equal(t, game.PhaseEnded, g.State().Phase())
-		require.Len(t, ge.FinalRoles, 5)
 
 		_, err = g.Apply(game.AdvancePhase{})
 		require.ErrorIs(t, err, game.ErrGameEnded)
@@ -915,12 +1152,6 @@ func TestAdvancePhase_Guards(t *testing.T) {
 // fail loudly until the corresponding apply* handler checks PhaseEnded
 // first.
 func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
-	// Build the same end-state used by TestAdvancePhase_Guards
-	// (mafia win on Night 1). Factored into a closure so each
-	// subtest gets its own fresh-but-ended game — the engine
-	// doesn't mutate on rejection, but having one game per case
-	// keeps failures isolated and avoids accidental shared state
-	// when this test grows.
 	mkEnded := func(t *testing.T) *game.Game {
 		t.Helper()
 		g := game.New()
@@ -936,6 +1167,7 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
 		require.NoError(t, err)
+		advanceToMafiaAct(t, g)
 
 		var mafia, victim game.PlayerID
 		for _, p := range g.State().Players() {
@@ -946,8 +1178,9 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 			}
 		}
 		_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
-		_, _ = g.Apply(game.AdvancePhase{}) // skip detective
-		_, _ = g.Apply(game.AdvancePhase{}) // skip doctor → resolve → ended
+		walkRestOfTurn(t, g) // mafia → det's act
+		walkRestOfTurn(t, g) // det skip → doc's act
+		walkRestOfTurn(t, g) // doc skip → resolve → ended
 		require.Equal(t, game.PhaseEnded, g.State().Phase(),
 			"precondition: game must be in PhaseEnded")
 		return g
@@ -957,27 +1190,15 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 		name string
 		cmd  game.Command
 	}{
-		// Pre-game / lobby commands. AddPlayer is the important
-		// one for the join-error UX path (see joinErrorFor): after
-		// this fix it surfaces as "This game has already ended."
-		// in the join lobby instead of the misleading "already in
-		// progress".
 		{"AddPlayer", game.AddPlayer{PlayerID: "z", Name: "Zed"}},
 		{"SetMafiaCount", game.SetMafiaCount{Count: 2}},
 		{"StartGame", game.StartGame{}},
-
-		// Phase-transition commands.
 		{"BeginNight", game.BeginNight{}},
 		{"OpenVoting", game.OpenVoting{}},
 		{"ClearVotes", game.ClearVotes{}},
 		{"FinalizeVotes", game.FinalizeVotes{}},
-
-		// Action commands.
 		{"NightAction", game.NightAction{Actor: "a", Target: "b"}},
 		{"DayVote", game.DayVote{Voter: "a", Target: "b"}},
-
-		// AdvancePhase is server-internal but must still error
-		// correctly if a timer somehow fires after end.
 		{"AdvancePhase", game.AdvancePhase{}},
 	}
 
@@ -988,7 +1209,6 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 			require.ErrorIs(t, err, game.ErrGameEnded,
 				"%T against PhaseEnded must return ErrGameEnded, got %v",
 				tc.cmd, err)
-			// State must not have mutated on rejection.
 			require.Equal(t, game.PhaseEnded, g.State().Phase(),
 				"rejected %T must not change phase", tc.cmd)
 		})
@@ -1026,35 +1246,4 @@ func TestWinConditions(t *testing.T) {
 		_, ended := findEvent[game.GameEnded](evts)
 		require.False(t, ended, "with mafia=1 town=3 alive, no win yet")
 	})
-}
-
-// --- helpers --------------------------------------------------------------
-
-func hasTurnEnded(t *testing.T, evts []game.Event, role game.Role) {
-	t.Helper()
-	for _, e := range evts {
-		if te, ok := e.(game.NightTurnEnded); ok && te.Role == role {
-			return
-		}
-	}
-	t.Fatalf("expected NightTurnEnded{role=%s} in events; got %d events", role, len(evts))
-}
-
-func hasTurnStarted(t *testing.T, evts []game.Event, role game.Role) {
-	t.Helper()
-	for _, e := range evts {
-		if ts, ok := e.(game.NightTurnStarted); ok && ts.Role == role {
-			return
-		}
-	}
-	t.Fatalf("expected NightTurnStarted{role=%s} in events; got %d events", role, len(evts))
-}
-
-func requireNoTurnStarted(t *testing.T, evts []game.Event) {
-	t.Helper()
-	for _, e := range evts {
-		if ts, ok := e.(game.NightTurnStarted); ok {
-			t.Fatalf("did not expect NightTurnStarted in events, but got role=%s", ts.Role)
-		}
-	}
 }

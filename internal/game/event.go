@@ -134,36 +134,112 @@ type PhaseChanged struct {
 func (PhaseChanged) isEvent()               {}
 func (PhaseChanged) Visibility() Visibility { return Public() }
 
-// NightTurnStarted announces that a specific role's turn has begun
-// during PhaseNight. The Deadline is unix-millis: at this wall-clock
-// time, the engine will auto-end the turn if no action has arrived.
-// Public so the moderating client knows whose turn to summon, but it
-// carries NO actor identities — only the role.
+// NightOpeningStarted announces the one-shot start-of-night beat that
+// precedes the first role's narrate. Carries the "City, go to sleep."
+// cue plus a fixed pre-wake silence so the room has time to settle
+// before any role is named. No action accepted; currentNightRole is
+// empty during this sub-phase.
+//
+// Emitted by applyBeginNight immediately after PhaseChanged{To: Night}.
+// After Deadline elapses, AdvancePhase pops the first role from the
+// night queue and enters its NightSubNarrate.
+//
+// Public visibility: every observer hears the cue.
+type NightOpeningStarted struct {
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
+}
+
+func (NightOpeningStarted) isEvent()               {}
+func (NightOpeningStarted) Visibility() Visibility { return Public() }
+
+// NightNarrationStarted announces the start of a role's "wake up"
+// audio cue. Sized to cover the spoken prompt. No action accepted.
+// Carries the Role (so the client narrates the right script) and
+// a wall-clock Deadline (unix-millis) at which the sub-phase auto-
+// elapses. Day is carried explicitly so clients can replay a
+// projection without re-deriving it from the surrounding events.
 //
 // Phantom is true when no living player holds Role at the time the
-// turn starts. The turn is still emitted (with the same narrator
-// cues) so the room can't tell which role is dead from the audio
-// alone; but no NightAction will be accepted and the room shortens
-// the timer. Phantom turns end the same way real ones do: via
-// NightTurnEnded.
-type NightTurnStarted struct {
+// narrate starts. Narration still plays (so the room can't deduce
+// which role is dead from missing audio), but the subsequent sub-
+// phase will be NightPonderStarted (with a randomized duration)
+// instead of NightActionStarted — see NightSubPhase.
+//
+// Public visibility: every observer sees the cue land.
+type NightNarrationStarted struct {
 	Role     Role
-	Deadline int64 // unix-millis; 0 means "no deadline"
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
 	Phantom  bool
 }
 
-func (NightTurnStarted) isEvent()               {}
-func (NightTurnStarted) Visibility() Visibility { return Public() }
+func (NightNarrationStarted) isEvent()               {}
+func (NightNarrationStarted) Visibility() Visibility { return Public() }
 
-// NightTurnEnded announces that the current role's night-turn has
-// concluded (whether by submitting an action, timing out, or being
-// advanced). Public; carries no per-player information.
-type NightTurnEnded struct {
-	Role Role
+// NightActionStarted announces that the actor's decision window is now
+// open. Emitted only for non-phantom turns (phantom turns substitute
+// NightPonderStarted directly after narrate). NightAction submissions
+// from the current role are accepted between this event and either
+// the engine emitting NightPonderStarted (early submission) or the
+// room driving AdvancePhase at Deadline (timeout).
+//
+// Public so all clients can render countdown chrome; only the actor's
+// client renders the Target buttons.
+type NightActionStarted struct {
+	Role     Role
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
 }
 
-func (NightTurnEnded) isEvent()               {}
-func (NightTurnEnded) Visibility() Visibility { return Public() }
+func (NightActionStarted) isEvent()               {}
+func (NightActionStarted) Visibility() Visibility { return Public() }
+
+// NightPonderStarted is the post-act / phantom-substitute pause. For
+// real turns where the actor submitted, this is a short fixed beat
+// (default 2s) that gives the room a moment to absorb the action
+// before sleep. For phantom turns, this is a randomized 5–10s pause
+// that stands in for the missing act window — making the night
+// cadence statistically indistinguishable from a real turn so the
+// city can't deduce a role is dead.
+//
+// No action accepted in this sub-phase. Real turns that timed out
+// (no submission) skip ponder and go straight to sleep.
+type NightPonderStarted struct {
+	Role     Role
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
+	Phantom  bool
+}
+
+func (NightPonderStarted) isEvent()               {}
+func (NightPonderStarted) Visibility() Visibility { return Public() }
+
+// NightSleepStarted announces the start of a role's "go to sleep"
+// audio cue. Sized to cover the spoken prompt. No action accepted.
+// Public so every observer hears the cue land.
+type NightSleepStarted struct {
+	Role     Role
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
+}
+
+func (NightSleepStarted) isEvent()               {}
+func (NightSleepStarted) Visibility() Visibility { return Public() }
+
+// NightSettleStarted is the post-sleep pause before the next role's
+// narrate (or, for the last role of the night, before the
+// night→day_discussion transition). A short fixed beat (default 2s)
+// that lets the "go to sleep" cue land cleanly before the next
+// narrator line begins. No action accepted.
+type NightSettleStarted struct {
+	Role     Role
+	Day      int
+	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
+}
+
+func (NightSettleStarted) isEvent()               {}
+func (NightSettleStarted) Visibility() Visibility { return Public() }
 
 // NightActionRecorded acknowledges that a role-action was submitted. It
 // is visible only to the actor's faction (so mafia members see each

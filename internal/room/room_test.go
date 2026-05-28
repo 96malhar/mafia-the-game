@@ -675,13 +675,28 @@ func TestRoom_NightTurnTimersAutoAdvance(t *testing.T) {
 	// turns to a complete Night resolution without the host doing
 	// anything — purely by per-turn timeouts.
 	//
-	// We zero out the audio grace and shrink the action window to
-	// 30ms so the test runs in well under a second.
+	// We shrink every night sub-phase to a few milliseconds so the
+	// test runs in well under a second. All six sub-phases (opening +
+	// narrate + act + ponder + sleep + settle) × 3 roles × 1 night
+	// dominate the wall-clock here; tiny durations turn this from a
+	// 10s-plus integration into a sub-second unit test.
+	//
+	// Narrate and Sleep override the role-spec defaults via the
+	// test-only seam on NightSubPhaseDurations; production code
+	// leaves both fields nil and reads from game.NarrateDuration /
+	// game.SleepDuration.
+	tiny := func() time.Duration { return time.Millisecond }
 	m := newTestManager(t)
 	r, err := m.CreateRoom(Config{
-		Logger:              silentLogger(),
-		NightActionDuration: 30 * time.Millisecond,
-		NightTurnGrace:      func(_ game.Role, _ int) time.Duration { return 0 },
+		Logger: silentLogger(),
+		NightSubPhases: NightSubPhaseDurations{
+			Opening: tiny,
+			Narrate: func(_ game.Role, _ int) time.Duration { return time.Millisecond },
+			Action:  tiny,
+			Ponder:  func(_ game.Role, _, _ bool) time.Duration { return time.Millisecond },
+			Sleep:   func(_ game.Role, _ int) time.Duration { return time.Millisecond },
+			Settle:  tiny,
+		},
 	})
 	require.NoError(t, err)
 

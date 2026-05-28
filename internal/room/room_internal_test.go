@@ -13,68 +13,147 @@ import (
 	"github.com/malhar/mafia-the-game/internal/game"
 )
 
-// TestConfig_NightTurnDuration pins the per-role-per-day duration
-// formula: NightTurnGrace(role, day) + NightActionDuration for real
-// turns; PhantomTurnDuration(role, day) for phantom turns. Defaults
-// (see DefaultNightTurnGrace) account for the shared "City, go to
-// sleep" + 5s settle beat that opens every night, plus the role's
-// own audio. So day-0 mafia gets 10s, day>=1 mafia gets 7s, and
-// other roles (detective, doctor) get 2.5s.
-func TestConfig_NightTurnDuration(t *testing.T) {
-	t.Run("real-turn defaults", func(t *testing.T) {
+// TestConfig_SubPhaseDuration pins the per-sub-phase duration map.
+// All six sub-phases resolve through c.NightSubPhases, which is the
+// single source of wall-clock truth (no engine fallback). This test
+// verifies the routing AND that defaults match the constants
+// documented in config.go.
+func TestConfig_SubPhaseDuration(t *testing.T) {
+	t.Run("defaults route to package-level constants", func(t *testing.T) {
 		c := Config{}
 		c.applyDefaults()
-		require.Equal(t, 45*time.Second, c.NightActionDuration)
-		require.Equal(t, 55*time.Second, c.nightTurnDuration(game.RoleMafia, 0, false),
-			"day-0 mafia: 10s grace + 45s action (city sleep + look-around beat)")
-		require.Equal(t, 52*time.Second, c.nightTurnDuration(game.RoleMafia, 1, false),
-			"day>=1 mafia: 7s grace + 45s action (city sleep + single wake cue)")
-		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDetective, 0, false))
-		require.Equal(t, 47500*time.Millisecond, c.nightTurnDuration(game.RoleDoctor, 0, false))
+
+		// Opening: universal, day-independent.
+		require.Equal(t, DefaultOpeningDuration,
+			c.subPhaseDuration(game.NightOpeningStarted{Day: 0}, false),
+			"opening default")
+		require.Equal(t, DefaultOpeningDuration,
+			c.subPhaseDuration(game.NightOpeningStarted{Day: 3}, false),
+			"opening default is day-independent today")
+
+		// Narrate: mafia has a Day-0 variant; everyone else is universal.
+		mafiaNarrateDay0 := c.subPhaseDuration(
+			game.NightNarrationStarted{Role: game.RoleMafia, Day: 0}, false)
+		mafiaNarrateDay1 := c.subPhaseDuration(
+			game.NightNarrationStarted{Role: game.RoleMafia, Day: 1}, false)
+		require.Equal(t, DefaultMafiaNarrateDay0, mafiaNarrateDay0,
+			"mafia Day 0 narrate uses the day-0 constant")
+		require.Equal(t, DefaultMafiaNarrateDayN, mafiaNarrateDay1,
+			"mafia Day N>0 narrate uses the later-night constant")
+		require.Greater(t, mafiaNarrateDay0, mafiaNarrateDay1,
+			"day-0 mafia narrate must be longer than later-night")
+
+		// Detective and doctor use the universal default for every day.
+		for _, r := range []game.Role{game.RoleDetective, game.RoleDoctor} {
+			for _, day := range []int{0, 1, 5} {
+				require.Equal(t, DefaultNarrateDuration,
+					c.subPhaseDuration(game.NightNarrationStarted{Role: r, Day: day}, false),
+					"role %q day %d should use DefaultNarrateDuration", r, day)
+			}
+		}
+
+		// Action: universal.
+		require.Equal(t, DefaultActionDuration,
+			c.subPhaseDuration(game.NightActionStarted{Role: game.RoleMafia, Day: 0}, false))
+
+		// Settle: universal.
+		require.Equal(t, DefaultSettleDuration,
+			c.subPhaseDuration(game.NightSettleStarted{Role: game.RoleMafia, Day: 0}, false))
+
+		// Sleep: every shipped role uses the universal default.
+		for _, r := range []game.Role{game.RoleMafia, game.RoleDetective, game.RoleDoctor} {
+			require.Equal(t, DefaultSleepDuration,
+				c.subPhaseDuration(game.NightSleepStarted{Role: r, Day: 0}, false),
+				"role %q sleep should use DefaultSleepDuration", r)
+		}
 	})
 
-	t.Run("phantom-turn defaults are bounded", func(t *testing.T) {
+	t.Run("ponder default - submitted real role is the short beat", func(t *testing.T) {
+		c := Config{}
+		c.applyDefaults()
+		dur := c.subPhaseDuration(
+			game.NightPonderStarted{Role: game.RoleMafia, Day: 0, Phantom: false},
+			true)
+		require.Equal(t, DefaultPonderRealSubmit, dur,
+			"submitted non-detective: short post-submit beat")
+	})
+
+	t.Run("ponder default - detective gets a longer beat", func(t *testing.T) {
+		c := Config{}
+		c.applyDefaults()
+		dur := c.subPhaseDuration(
+			game.NightPonderStarted{Role: game.RoleDetective, Day: 0, Phantom: false},
+			true)
+		require.Equal(t, DefaultPonderDetectiveSubmit, dur,
+			"detective ponder is sized for read-modal pause")
+	})
+
+	t.Run("ponder default - timeout matches submit (audio-cadence parity)", func(t *testing.T) {
+		c := Config{}
+		c.applyDefaults()
+		dur := c.subPhaseDuration(
+			game.NightPonderStarted{Role: game.RoleDoctor, Day: 0, Phantom: false},
+			false)
+		require.Equal(t, DefaultPonderRealSubmit, dur,
+			"timeout uses the same beat as submit so observers can't distinguish them")
+	})
+
+	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {
 		c := Config{}
 		c.applyDefaults()
 		// Repeat the draw so we exercise the randomness: every draw
-		// must fall in [lo, hi] for the role/day.
+		// must fall in [lo, hi].
 		for i := 0; i < 64; i++ {
-			d := c.nightTurnDuration(game.RoleDetective, 1, true)
-			require.GreaterOrEqual(t, d, PhantomTurnMin,
-				"phantom turn must be >= PhantomTurnMin")
-			require.LessOrEqual(t, d, PhantomTurnMax,
-				"phantom turn must be <= PhantomTurnMax")
+			d := c.subPhaseDuration(
+				game.NightPonderStarted{Role: game.RoleDetective, Day: 1, Phantom: true},
+				false)
+			require.GreaterOrEqual(t, d, DefaultPhantomPonderMin,
+				"phantom ponder must be >= DefaultPhantomPonderMin")
+			require.LessOrEqual(t, d, DefaultPhantomPonderMax,
+				"phantom ponder must be <= DefaultPhantomPonderMax")
 		}
-		// A phantom MAFIA turn is unreachable (see
-		// DefaultPhantomTurnDuration's doc comment for the
-		// invariant): the game ends as soon as the last mafia
-		// dies, so beginNightTurns can only emit
-		// NightTurnStarted{Role: mafia, Phantom: false}. We
-		// therefore don't assert on phantom mafia bounds — the
+		// A phantom MAFIA turn is unreachable (the game ends as
+		// soon as the last mafia dies; see beginNextNightTurn's
+		// doc), so we don't assert phantom bounds for mafia — the
 		// function would still return a value if called, but no
 		// real engine path reaches it.
 	})
 
-	t.Run("custom grace function", func(t *testing.T) {
+	t.Run("custom Opening function is respected", func(t *testing.T) {
 		c := Config{
-			NightActionDuration: 4 * time.Second,
-			NightTurnGrace: func(_ game.Role, _ int) time.Duration {
-				return time.Second
-			},
-		}
-		c.applyDefaults()
-		require.Equal(t, 5*time.Second, c.nightTurnDuration(game.RoleMafia, 0, false))
-	})
-
-	t.Run("custom phantom function", func(t *testing.T) {
-		c := Config{
-			PhantomTurnDuration: func(_ game.Role, _ int) time.Duration {
-				return 100 * time.Millisecond
+			NightSubPhases: NightSubPhaseDurations{
+				Opening: func() time.Duration { return 100 * time.Millisecond },
 			},
 		}
 		c.applyDefaults()
 		require.Equal(t, 100*time.Millisecond,
-			c.nightTurnDuration(game.RoleDetective, 0, true))
+			c.subPhaseDuration(game.NightOpeningStarted{Day: 0}, false))
+	})
+
+	t.Run("custom Ponder function is respected", func(t *testing.T) {
+		c := Config{
+			NightSubPhases: NightSubPhaseDurations{
+				Ponder: func(_ game.Role, _, _ bool) time.Duration {
+					return 250 * time.Millisecond
+				},
+			},
+		}
+		c.applyDefaults()
+		require.Equal(t, 250*time.Millisecond,
+			c.subPhaseDuration(
+				game.NightPonderStarted{Role: game.RoleMafia, Day: 0, Phantom: false},
+				true))
+	})
+
+	t.Run("custom Settle function is respected", func(t *testing.T) {
+		c := Config{
+			NightSubPhases: NightSubPhaseDurations{
+				Settle: func() time.Duration { return 50 * time.Millisecond },
+			},
+		}
+		c.applyDefaults()
+		require.Equal(t, 50*time.Millisecond,
+			c.subPhaseDuration(game.NightSettleStarted{Role: game.RoleDoctor, Day: 0}, false))
 	})
 }
 

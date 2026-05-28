@@ -82,10 +82,17 @@ type evPhaseChanged struct {
 	Day  int    `json:"day"`
 }
 
-type evNightTurnStarted struct {
+// evNightActionStarted mirrors wire.EventNightActionStarted — the
+// sub-phase event the sim's bot listens for to know when its act
+// window has opened. We intentionally don't model the other five
+// night sub-phase events here: the bot doesn't need to react to
+// narrate / opening / ponder / sleep / settle since the server's
+// timers drive their transitions and submission is only valid
+// during act anyway.
+type evNightActionStarted struct {
 	Role     string `json:"role"`
+	Day      int    `json:"day"`
 	Deadline int64  `json:"deadline"`
-	Phantom  bool   `json:"phantom"`
 }
 
 type evPlayerKilled struct {
@@ -115,14 +122,14 @@ const (
 	msgEvent  = wire.ServerMsgEvent
 	msgError  = wire.ServerMsgError
 
-	evTagPlayerJoined     = wire.EventPlayerJoined
-	evTagRoleAssigned     = wire.EventRoleAssigned
-	evTagPhaseChanged     = wire.EventPhaseChanged
-	evTagNightTurnStarted = wire.EventNightTurnStarted
-	evTagPlayerKilled     = wire.EventPlayerKilled
-	evTagPlayerLynched    = wire.EventPlayerLynched
-	evTagDetectiveResult  = wire.EventDetectiveResult
-	evTagGameEnded        = wire.EventGameEnded
+	evTagPlayerJoined       = wire.EventPlayerJoined
+	evTagRoleAssigned       = wire.EventRoleAssigned
+	evTagPhaseChanged       = wire.EventPhaseChanged
+	evTagNightActionStarted = wire.EventNightActionStarted
+	evTagPlayerKilled       = wire.EventPlayerKilled
+	evTagPlayerLynched      = wire.EventPlayerLynched
+	evTagDetectiveResult    = wire.EventDetectiveResult
+	evTagGameEnded          = wire.EventGameEnded
 
 	phaseLobby         = wire.PhaseLobby
 	phaseNight         = wire.PhaseNight

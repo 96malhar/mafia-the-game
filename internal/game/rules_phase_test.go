@@ -904,6 +904,97 @@ func TestAdvancePhase_Guards(t *testing.T) {
 	})
 }
 
+// TestPhaseEnded_AllCommandsReturnErrGameEnded walks every public
+// command type against a finished game and asserts each one returns
+// ErrGameEnded (not the generic ErrWrongPhase). The wire layer maps
+// ErrGameEnded to wire.ErrCodeGameEnded and joinErrorFor surfaces it
+// as "This game has already ended.", which is what users see when
+// they try to interact with a room that's over.
+//
+// Adding a new command? Append it to the table below; the test will
+// fail loudly until the corresponding apply* handler checks PhaseEnded
+// first.
+func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
+	// Build the same end-state used by TestAdvancePhase_Guards
+	// (mafia win on Night 1). Factored into a closure so each
+	// subtest gets its own fresh-but-ended game — the engine
+	// doesn't mutate on rejection, but having one game per case
+	// keeps failures isolated and avoids accidental shared state
+	// when this test grows.
+	mkEnded := func(t *testing.T) *game.Game {
+		t.Helper()
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
+		})
+		require.NoError(t, err)
+		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
+			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
+			require.NoError(t, err)
+		}
+		_, err = g.Apply(game.StartGame{})
+		require.NoError(t, err)
+		_, err = g.Apply(game.BeginNight{})
+		require.NoError(t, err)
+
+		var mafia, victim game.PlayerID
+		for _, p := range g.State().Players() {
+			if mafia == "" && p.Role() == game.RoleMafia {
+				mafia = p.ID()
+			} else if victim == "" && p.Role() == game.RoleVillager {
+				victim = p.ID()
+			}
+		}
+		_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
+		_, _ = g.Apply(game.AdvancePhase{}) // skip detective
+		_, _ = g.Apply(game.AdvancePhase{}) // skip doctor → resolve → ended
+		require.Equal(t, game.PhaseEnded, g.State().Phase(),
+			"precondition: game must be in PhaseEnded")
+		return g
+	}
+
+	cases := []struct {
+		name string
+		cmd  game.Command
+	}{
+		// Pre-game / lobby commands. AddPlayer is the important
+		// one for the join-error UX path (see joinErrorFor): after
+		// this fix it surfaces as "This game has already ended."
+		// in the join lobby instead of the misleading "already in
+		// progress".
+		{"AddPlayer", game.AddPlayer{PlayerID: "z", Name: "Zed"}},
+		{"SetMafiaCount", game.SetMafiaCount{Count: 2}},
+		{"StartGame", game.StartGame{}},
+
+		// Phase-transition commands.
+		{"BeginNight", game.BeginNight{}},
+		{"OpenVoting", game.OpenVoting{}},
+		{"ClearVotes", game.ClearVotes{}},
+		{"FinalizeVotes", game.FinalizeVotes{}},
+
+		// Action commands.
+		{"NightAction", game.NightAction{Actor: "a", Target: "b"}},
+		{"DayVote", game.DayVote{Voter: "a", Target: "b"}},
+
+		// AdvancePhase is server-internal but must still error
+		// correctly if a timer somehow fires after end.
+		{"AdvancePhase", game.AdvancePhase{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mkEnded(t)
+			_, err := g.Apply(tc.cmd)
+			require.ErrorIs(t, err, game.ErrGameEnded,
+				"%T against PhaseEnded must return ErrGameEnded, got %v",
+				tc.cmd, err)
+			// State must not have mutated on rejection.
+			require.Equal(t, game.PhaseEnded, g.State().Phase(),
+				"rejected %T must not change phase", tc.cmd)
+		})
+	}
+}
+
 // --- Win conditions -------------------------------------------------------
 
 func TestWinConditions(t *testing.T) {

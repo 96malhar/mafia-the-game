@@ -35,6 +35,9 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
 	if g.state.phase != PhaseNight {
 		return nil, ErrWrongPhase
 	}

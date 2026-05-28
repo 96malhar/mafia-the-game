@@ -96,6 +96,8 @@ func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
 		return nil, ErrWrongPhase
 	}
 	switch g.state.phase {
+	case PhaseEnded:
+		return nil, ErrGameEnded
 	case PhaseLobby:
 		// Roles must have been dealt by StartGame first.
 		if len(g.state.players) == 0 || g.state.players[0].role == "" {
@@ -128,6 +130,9 @@ func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
 	if g.state.phase != PhaseDayDiscussion {
 		return nil, ErrWrongPhase
 	}
@@ -149,6 +154,9 @@ func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
 	if g.state.phase != PhaseDayVote {
 		return nil, ErrWrongPhase
 	}
@@ -167,6 +175,9 @@ func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
+	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
 	}
 	if g.state.phase != PhaseDayVote {
 		return nil, ErrWrongPhase

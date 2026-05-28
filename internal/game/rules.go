@@ -116,6 +116,14 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
+	// PhaseEnded must be checked BEFORE the generic phase mismatch
+	// so the wire layer can map it to wire.ErrCodeGameEnded ("This
+	// game has already ended.") instead of the generic "already
+	// in progress" message that wrong_phase carries during the join
+	// handshake. Same pattern in every other apply* handler below.
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
 	if g.state.phase != PhaseLobby {
 		return nil, ErrWrongPhase
 	}
@@ -124,9 +132,10 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	// player would require re-dealing the whole roster, which leaks
 	// information (existing players would see new RoleAssigned events
 	// and could infer their previous role was unstable). Bouncing the
-	// joiner is the only sane option. The same wrong_phase error code
+	// joiner is the only sane option. The wrong_phase error code
 	// flows out to the client, which surfaces "This game is already
-	// in progress" in the join lobby.
+	// in progress" in the join lobby; PhaseEnded above gets the
+	// distinct "game has already ended" message.
 	if len(g.state.players) > 0 && g.state.players[0].role != "" {
 		return nil, ErrWrongPhase
 	}
@@ -158,6 +167,9 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
+	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
 	}
 	if g.state.phase != PhaseLobby {
 		return nil, ErrWrongPhase
@@ -213,6 +225,9 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
+	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
 	}
 	if g.state.phase != PhaseLobby {
 		return nil, ErrWrongPhase

@@ -19,6 +19,9 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
 	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
 	if g.state.phase != PhaseDayVote {
 		return nil, ErrWrongPhase
 	}

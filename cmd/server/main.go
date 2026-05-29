@@ -28,6 +28,12 @@ import (
 	"github.com/malhar/mafia-the-game/internal/transport/ws"
 )
 
+// version is the build version, injected at link time via
+// -ldflags "-X main.version=...". Defaults to "dev" for un-stamped
+// builds (plain `go run` / `go build`). The release workflow passes the
+// release tag; the Dockerfile threads it through a VERSION build-arg.
+var version = "dev"
+
 func main() {
 	cfg := loadEnvConfig()
 
@@ -54,6 +60,7 @@ func main() {
 	})
 
 	logger.Info("starting",
+		"version", version,
 		"addr", cfg.addr,
 		"origin_check", !cfg.insecureSkipOriginCheck,
 		"allowed_origins", cfg.allowedOrigins,

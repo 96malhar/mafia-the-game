@@ -70,8 +70,13 @@ tasks:
 
   docker:build:
     desc: Build the production Docker image (tag with TAG=..., default 'latest').
+    # Stamp main.version from git so local images report a real version
+    # (falls back to the short SHA, or "dev" outside a git checkout).
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
     cmds:
-      - docker build -t {{.IMAGE}}:{{.TAG | default "latest"}} .
+      - docker build --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}:{{.TAG | default "latest"}} .
 
   docker:run:
     desc: Run the production image, publishing PORT (default 8080) to the container.

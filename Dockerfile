@@ -3,9 +3,12 @@
 # =========================================================================
 # Build stage
 # =========================================================================
-# Pin to the 1.25 line so the builder satisfies go.mod's `go 1.25.10`
-# directive while still picking up patch updates of the base image.
-FROM golang:1.25-alpine AS build
+# Pinned by digest for reproducible, supply-chain-safe builds. The tag is
+# kept in the comment for readability; bump both together (Dependabot can
+# track the digest). Resolve a new digest with:
+#   docker buildx imagetools inspect golang:1.25-alpine
+# golang:1.25-alpine (multi-arch index)
+FROM golang:1.25-alpine@sha256:8d22e29d960bc50cd025d93d5b7c7d220b1ee9aa7a239b3c8f55a57e987e8d45 AS build
 
 WORKDIR /src
 
@@ -17,24 +20,32 @@ RUN go mod download
 # Now bring in the rest of the source.
 COPY . .
 
+# Version string stamped into the binary (main.version). Defaults to "dev"
+# for plain `docker build`; the release workflow passes the release tag via
+# --build-arg VERSION=vX.Y.Z.
+ARG VERSION=dev
+
 # Build a static, stripped binary:
 #   - CGO_ENABLED=0  -> no libc dependency, runs on a distroless/scratch base.
 #   - -mod=readonly  -> fail if go.mod would need changes (reproducible).
 #   - -trimpath      -> keep absolute build paths out of the binary.
 #   - -ldflags "-s -w" -> drop the symbol table and DWARF to shrink the binary
-#     (mirrors `task build`).
+#     (mirrors `task build`); -X stamps the version (see cmd/server/main.go).
 # Caching the module and build caches across builds keeps rebuilds fast.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" \
+    CGO_ENABLED=0 go build -mod=readonly -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/server ./cmd/server
 
 # =========================================================================
 # Runtime stage
 # =========================================================================
 # distroless/static: no shell, no package manager, minimal attack surface.
-# The :nonroot tag runs as uid 65532 by default.
-FROM gcr.io/distroless/static:nonroot
+# The :nonroot tag runs as uid 65532 by default. Pinned by digest; resolve
+# a new one with: docker buildx imagetools inspect gcr.io/distroless/static:nonroot
+# gcr.io/distroless/static:nonroot (multi-arch index)
+FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 
 # The server loads its web assets from ./web relative to the working
 # directory (os.DirFS("web") in cmd/server/main.go), so WORKDIR and the

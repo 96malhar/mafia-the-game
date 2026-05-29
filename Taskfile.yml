@@ -2,7 +2,7 @@
 # https://taskfile.dev
 #
 # Install task: `brew install go-task` (macOS) or see https://taskfile.dev/installation
-# Run `task --list` to see available tasks. Run `task` with no args for the default (run).
+# Run `task --list` to see available tasks.
 
 version: "3"
 
@@ -17,26 +17,10 @@ env:
   CGO_ENABLED: "1" # required for -race
 
 tasks:
-  default:
-    desc: Alias for `run`.
-    cmds:
-      - task: run
-
   run:
     desc: Start the dev server (ADDR=:8080 by default).
     cmds:
       - go run {{.MAIN}}
-
-  watch:
-    desc: Start the dev server and restart on Go file changes.
-    cmds:
-      - go run {{.MAIN}}
-    sources:
-      - "**/*.go"
-      - web/**/*
-    method: timestamp
-    # `task watch` works because the `watch:` field below opts in to polling.
-    # Use `task --watch watch` if your terminal supports the flag instead.
 
   sim:
     desc: Run a scripted bot game against a running server. Start `task run` in another shell first.
@@ -48,8 +32,8 @@ tasks:
   stop:
     desc: Stop the dev server (ADDR=:8080 by default). Sends SIGTERM, then SIGKILL after 5s.
     # We target the listening socket rather than a process name so this
-    # works whether the server was started via `task run`, `task watch`,
-    # or `./bin/server`. Respects $ADDR like `run` does.
+    # works whether the server was started via `task run` or
+    # `./bin/server`. Respects $ADDR like `run` does.
     cmds:
       - |
         addr="${ADDR:-:8080}"

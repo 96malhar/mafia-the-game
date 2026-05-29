@@ -1,6 +1,9 @@
 # Build artifacts
 bin/
 dist/
+# Bare `go build ./cmd/server` drops a binary named after the package dir
+# in the repo root; ignore it (real builds go to bin/ via `task build`).
+/server
 *.exe
 *.test
 *.prof

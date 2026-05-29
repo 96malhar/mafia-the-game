@@ -1,0 +1,47 @@
+name: CI
+
+# Runs the same gate developers run locally via `task ci`
+# (fmt, vet, lint, test with -race, and a govulncheck scan).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref so a fresh push doesn't wait
+# behind an outdated in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Go version is read from go.mod so CI tracks the toolchain the
+      # module declares; setup-go also caches the build/module cache.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # goimports / golangci-lint / govulncheck — required by the lint
+      # and vuln steps inside `task ci`.
+      - name: Install dev tools
+        run: task tools
+
+      - name: Run CI checks
+        run: task ci

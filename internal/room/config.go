@@ -1,7 +1,6 @@
 package room
 
 import (
-	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
 	"time"
@@ -27,16 +26,15 @@ type Config struct {
 	// 0 (the default) is a valid seed.
 	Seed int64
 
-	// NightSubPhases controls the per-sub-phase durations during a
-	// PhaseNight turn. See NightSubPhaseDurations for the breakdown.
-	// nil fields fall back to package defaults; nil struct uses all
-	// defaults.
-	//
-	// ALL six sub-phase durations (including narrate and sleep) are
-	// owned here in the room layer — the engine is timeless. "How long
-	// is mafia's wake-up cue?" is answerable in exactly one place:
-	// DefaultNarrate / DefaultSleep below.
-	NightSubPhases NightSubPhaseDurations
+	// SubPhaseDurationOverride, if non-nil, is consulted before the
+	// built-in night sub-phase durations. Returning ok=true uses the
+	// returned duration for that sub-phase; ok=false falls through to
+	// the default for that sub-phase. This is a TEST-ONLY seam:
+	// production leaves it nil and every duration comes from the
+	// Default* constants below (the single source of wall-clock truth —
+	// the engine is timeless). Tests use it to shrink whole nights to
+	// milliseconds, or to pin one sub-phase's duration.
+	SubPhaseDurationOverride func(evt game.NightSubPhaseStarted, submitted bool) (time.Duration, bool)
 
 	// MaxLifetime is the hard upper bound on a room's wall-clock age.
 	// Once a room has existed for this long the manager's sweeper
@@ -65,86 +63,6 @@ type Config struct {
 
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
-}
-
-// NightSubPhaseDurations supplies wall-clock durations for the six
-// night sub-phases. All six durations are owned here in the room
-// layer; the engine remains timeless and emits its Night*Started
-// events with Deadline=0, which the room stamps before broadcasting
-// (see stampNightDeadlines in broadcast.go).
-//
-// Each field is a function so the duration can vary by the inputs
-// that matter for that sub-phase — role and day for narrate/sleep,
-// role and phantom/submitted for ponder, and nothing at all for the
-// universal-beat fields (opening / action / settle). nil fields fall
-// back to package defaults: Default{Opening,Narrate,Action,Ponder,
-// Sleep,Settle}.
-//
-// Adding a new role with custom narration timing: extend
-// DefaultNarrate (and, if needed, DefaultSleep) below. The role's
-// engine-side registration in internal/game/rolespec.go stays focused
-// on faction + night action and doesn't carry duration data.
-type NightSubPhaseDurations struct {
-	// Opening sizes the one-shot NightSubOpening beat that runs at
-	// the start of every PhaseNight before any role's narrate. Today
-	// this beat covers the "City, go to sleep." cue plus a pre-wake
-	// silence so the room has time to settle. Same duration on every
-	// night today; if a future deployment needs day-specific tuning
-	// (e.g. a longer first-night preamble), widen the signature then.
-	// nil → DefaultOpening.
-	Opening func() time.Duration
-
-	// Narrate sizes the per-role "wake up" audio cue (NightSubNarrate).
-	// Most roles use a single universal value; mafia overrides Day 0
-	// to cover the longer "look around, recognize each other" beat.
-	// nil → DefaultNarrate.
-	Narrate func(role game.Role, day int) time.Duration
-
-	// Action sizes the actor's decision window (NightSubAct). nil →
-	// DefaultAction. We deliberately do NOT take role/day here today
-	// — every role gets the same think-time and a single universal
-	// number is easier to reason about. If a future role needs a
-	// different window, widen this signature.
-	Action func() time.Duration
-
-	// Ponder sizes the post-act pause (NightSubPonder). It runs in
-	// three modes, all keyed off the args:
-	//
-	//   - role-act-then-submit (phantom=false, submitted=true): short
-	//     fixed beat to absorb the action before sleep cues fire.
-	//     Detective gets a slightly longer beat so its result modal
-	//     lands cleanly.
-	//   - phantom (phantom=true, submitted=false): stand-in for the
-	//     missing act window so the cadence can't be used to deduce
-	//     a dead role. Default returns a uniformly-random value in
-	//     [DefaultPhantomPonderMin, DefaultPhantomPonderMax].
-	//   - real timeout (phantom=false, submitted=false): the real
-	//     actor never submitted. Default returns the same beat as
-	//     the post-submit case so observers can't distinguish
-	//     submit from timeout by the audio cadence alone.
-	//
-	// `submitted` is intentionally on the signature even though the
-	// default ignores it: keeping it visible documents that we
-	// considered the submit-vs-timeout axis and chose to make them
-	// indistinguishable. Overrides may treat them differently if a
-	// future deployment wants to (test-only, ideally).
-	//
-	// nil → DefaultPonder.
-	Ponder func(role game.Role, phantom, submitted bool) time.Duration
-
-	// Sleep sizes the per-role "go to sleep" audio cue
-	// (NightSubSleep). Every shipped role today uses the same
-	// universal value (no per-day variant), but the (role, day)
-	// signature matches Narrate so future roles can vary by either
-	// axis without re-threading the function type. nil → DefaultSleep.
-	Sleep func(role game.Role, day int) time.Duration
-
-	// Settle sizes the post-sleep beat (NightSubSettle) that gives
-	// the "go to sleep" cue room to land before the next role's
-	// narrate begins. Universal — runs at the end of every role's
-	// turn including the last one (just before the night→day
-	// transition). nil → DefaultSettle.
-	Settle func() time.Duration
 }
 
 // Package defaults. All durations are tuned to match the narrator
@@ -239,53 +157,55 @@ const DefaultMaxLifetime = 10 * time.Hour
 // departed host fast enough that the table isn't left waiting.
 const DefaultHostGracePeriod = 45 * time.Second
 
-// DefaultOpening is the default opening-sub-phase duration.
-func DefaultOpening() time.Duration { return DefaultOpeningDuration }
-
-// DefaultNarrate is the default narrate-sub-phase duration, keyed by
-// role and day. The mafia branch covers the Day-0 "look around"
-// variant; everyone else (and mafia on subsequent days) falls through
-// to the universal value.
+// defaultSubPhaseDuration returns the built-in wall-clock duration for
+// a night sub-phase. These values are the single source of timing
+// truth (the engine is timeless); Config.SubPhaseDurationOverride can
+// shadow them, primarily in tests. `submitted` is accepted for parity
+// with the override hook but intentionally unused here — we want a
+// submitted act and a timed-out act to be indistinguishable by the
+// audio cadence alone.
 //
-// This is the registry that grows when a new role wants custom
-// narration timing. Keep entries in stable role order to make diffs
-// easy to read.
-func DefaultNarrate(role game.Role, day int) time.Duration {
-	switch role {
-	case game.RoleMafia:
-		if day == 0 {
-			return DefaultMafiaNarrateDay0
+// Narrate is the one sub-phase with per-role variation today: mafia's
+// Day-0 "look around and recognize each other" beat runs longer than
+// its later-night line. A future role wanting custom narrate (or
+// sleep) timing adds a branch here.
+//
+// This switch MUST cover every NightSubPhase value. A missing case
+// returns 0, which the caller treats as "no timer to arm" — that would
+// silently deadlock the night, so subPhaseDuration logs loudly on 0.
+func defaultSubPhaseDuration(e game.NightSubPhaseStarted, _ bool) time.Duration {
+	switch e.Sub {
+	case game.NightSubOpening:
+		return DefaultOpeningDuration
+	case game.NightSubNarrate:
+		if e.Role == game.RoleMafia {
+			if e.Day == 0 {
+				return DefaultMafiaNarrateDay0
+			}
+			return DefaultMafiaNarrateDayN
 		}
-		return DefaultMafiaNarrateDayN
+		return DefaultNarrateDuration
+	case game.NightSubAct:
+		return DefaultActionDuration
+	case game.NightSubPonder:
+		return defaultPonderDuration(e.Role, e.Phantom)
+	case game.NightSubSleep:
+		return DefaultSleepDuration
+	case game.NightSubSettle:
+		return DefaultSettleDuration
 	}
-	return DefaultNarrateDuration
+	return 0
 }
 
-// DefaultSleep is the default sleep-sub-phase duration. Every shipped
-// role uses the universal value today. A future role that wants a
-// custom sleep cue (e.g. "Bodyguard, go to sleep. You'll get a new
-// charge in 3 nights.") would add a case here.
-func DefaultSleep(_ game.Role, _ int) time.Duration {
-	return DefaultSleepDuration
-}
-
-// DefaultAction is the default action-sub-phase duration.
-func DefaultAction() time.Duration { return DefaultActionDuration }
-
-// DefaultPonder returns the default ponder-sub-phase duration. See
-// NightSubPhaseDurations.Ponder for the three modes:
-//
-//   - phantom (no living holder): random in [DefaultPhantomPonderMin,
-//     DefaultPhantomPonderMax]. Mirrors how a deciding actor varies.
-//   - real role (submit OR timeout): DefaultPonderRealSubmit, except
-//     RoleDetective which gets DefaultPonderDetectiveSubmit (so its
-//     result modal lands cleanly).
-//
-// The `submitted` flag is intentionally unused by the default: we
-// want submit and timeout to be indistinguishable by audio cadence
-// alone. Future overrides may treat the two modes differently — the
-// parameter is kept on the signature for that flexibility.
-func DefaultPonder(role game.Role, phantom, _ bool) time.Duration {
+// defaultPonderDuration sizes the post-act / phantom-substitute pause
+// in three modes:
+//   - phantom (no living holder): uniformly random in
+//     [DefaultPhantomPonderMin, DefaultPhantomPonderMax] so the cadence
+//     can't be used to deduce that a role is dead.
+//   - detective (real): DefaultPonderDetectiveSubmit, so its result
+//     modal lands cleanly.
+//   - any other real role (submit OR timeout): DefaultPonderRealSubmit.
+func defaultPonderDuration(role game.Role, phantom bool) time.Duration {
 	if phantom {
 		lo, hi := DefaultPhantomPonderMin, DefaultPhantomPonderMax
 		span := hi - lo
@@ -300,31 +220,23 @@ func DefaultPonder(role game.Role, phantom, _ bool) time.Duration {
 	return DefaultPonderRealSubmit
 }
 
-// DefaultSettle is the default settle-sub-phase duration.
-func DefaultSettle() time.Duration { return DefaultSettleDuration }
+// logger returns c.Logger, or slog.Default() when it's nil (unit tests
+// that build a Config without applyDefaults).
+func (c *Config) logger() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
+}
 
 func (c *Config) applyDefaults() {
 	// Zero values for MinPlayers/MaxPlayers/MafiaCount are intentionally
 	// left as-is so the engine's CreateGame can apply its own defaults
 	// (keeping the "what's the default lobby?" answer in one place).
-	if c.NightSubPhases.Opening == nil {
-		c.NightSubPhases.Opening = DefaultOpening
-	}
-	if c.NightSubPhases.Narrate == nil {
-		c.NightSubPhases.Narrate = DefaultNarrate
-	}
-	if c.NightSubPhases.Action == nil {
-		c.NightSubPhases.Action = DefaultAction
-	}
-	if c.NightSubPhases.Ponder == nil {
-		c.NightSubPhases.Ponder = DefaultPonder
-	}
-	if c.NightSubPhases.Sleep == nil {
-		c.NightSubPhases.Sleep = DefaultSleep
-	}
-	if c.NightSubPhases.Settle == nil {
-		c.NightSubPhases.Settle = DefaultSettle
-	}
+	//
+	// Night sub-phase durations are NOT primed here: they resolve in
+	// subPhaseDuration from the Default* constants (or the optional
+	// SubPhaseDurationOverride seam), so there's no per-field wiring.
 	if c.MaxLifetime == 0 {
 		c.MaxLifetime = DefaultMaxLifetime
 	}
@@ -336,58 +248,43 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// subPhaseDuration returns the wall-clock duration of the active night
+// subPhaseDuration returns the wall-clock duration of the night
 // sub-phase implied by `evt`. Used by stampNightDeadlines and
 // armSubPhaseTimer to size the deadline / timer for a freshly emitted
-// *Started event.
+// NightSubPhaseStarted event.
 //
-// Every piece of context this function needs (role, day, phantom-vs-
-// real) is carried on the event itself — those fields are stamped by
-// the engine at emit time and survive to late joiners via the event
-// log. The one piece that ISN'T on the event is `submitted`: the
-// engine emits NightPonderStarted whether the actor submitted or
-// timed out, and the room layer needs to know which to size the
-// ponder beat. We thread it in as a separate argument rather than
-// adding it to the event payload because it's a room-config concern
-// (today's defaults treat both modes identically; an override might
-// not).
+// Every piece of context the defaults need (sub, role, day, phantom)
+// rides on the event itself — stamped by the engine at emit time and
+// preserved to late joiners via the event log. The one piece that
+// ISN'T on the event is `submitted` (the engine emits the ponder
+// sub-phase whether the actor submitted or timed out); it's threaded
+// in separately because it's a room-config concern, not engine state.
 //
-// All six durations resolve through c.NightSubPhases, which is
-// populated by applyDefaults at room construction. No engine
-// dependency for timing — the engine is timeless.
+// Resolution order: the optional SubPhaseDurationOverride seam first
+// (tests), then the built-in defaultSubPhaseDuration.
 //
-// The switch below MUST cover every Night*Started event the engine
-// emits. If a new sub-phase event is added without a matching case
-// here, the timer won't arm and the night will silently deadlock —
-// the default branch logs at error level to make that failure mode
-// loud during dev.
+// Non-sub-phase events return 0 SILENTLY: the sole caller
+// (stampNightDeadlines) probes every event in a batch and skips those
+// with no duration, so a PlayerJoined / VoteCast / PhaseChanged landing
+// here is the normal, expected case — not an error. The loud log is
+// reserved for a NightSubPhaseStarted carrying a Sub we don't size,
+// which would silently deadlock the night (the caller arms no timer).
 func (c *Config) subPhaseDuration(evt game.Event, submitted bool) time.Duration {
-	switch e := evt.(type) {
-	case game.NightOpeningStarted:
-		return c.NightSubPhases.Opening()
-	case game.NightNarrationStarted:
-		return c.NightSubPhases.Narrate(e.Role, e.Day)
-	case game.NightActionStarted:
-		return c.NightSubPhases.Action()
-	case game.NightPonderStarted:
-		return c.NightSubPhases.Ponder(e.Role, e.Phantom, submitted)
-	case game.NightSleepStarted:
-		return c.NightSubPhases.Sleep(e.Role, e.Day)
-	case game.NightSettleStarted:
-		return c.NightSubPhases.Settle()
-	default:
-		// Reached only when a new Night*Started event type ships
-		// without being plumbed in here. The caller treats 0 as
-		// "no timer to arm", which would deadlock the night — log
-		// loudly so the gap surfaces on the first run after the
-		// engine change. Logger may be nil in unit tests that
-		// skip applyDefaults; slog.Default() is the safe fallback.
-		logger := c.Logger
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Error("room: subPhaseDuration called with unhandled event type",
-			"event_type", fmt.Sprintf("%T", evt))
+	e, ok := evt.(game.NightSubPhaseStarted)
+	if !ok {
 		return 0
 	}
+
+	if c.SubPhaseDurationOverride != nil {
+		if d, ok := c.SubPhaseDurationOverride(e, submitted); ok {
+			return d
+		}
+	}
+
+	dur := defaultSubPhaseDuration(e, submitted)
+	if dur <= 0 {
+		c.logger().Error("room: no duration for night sub-phase",
+			"sub", string(e.Sub))
+	}
+	return dur
 }

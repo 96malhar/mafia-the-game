@@ -28,6 +28,13 @@ func silentLogger() *slog.Logger {
 // server. The cleanup tears everything down.
 func newTestServer(t *testing.T) (*httptest.Server, *room.Manager) {
 	t.Helper()
+	return newTestServerWithConfig(t, HandlerConfig{InsecureSkipOriginCheck: true})
+}
+
+// newTestServerWithConfig is newTestServer with an explicit
+// HandlerConfig, so tests can tune knobs like JoinDeadline.
+func newTestServerWithConfig(t *testing.T, cfg HandlerConfig) (*httptest.Server, *room.Manager) {
+	t.Helper()
 
 	mgrCtx, cancelMgr := context.WithCancel(context.Background())
 	t.Cleanup(cancelMgr)
@@ -39,7 +46,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *room.Manager) {
 		_ = mgr.Close(shutdown)
 	})
 
-	h := NewHandler(mgr, silentLogger(), HandlerConfig{InsecureSkipOriginCheck: true})
+	h := NewHandler(mgr, silentLogger(), cfg)
 
 	r := chi.NewRouter()
 	r.Post("/api/rooms", h.CreateRoom)
@@ -139,6 +146,65 @@ func TestWS_JoinReceivesJoinedAndPlayerJoined(t *testing.T) {
 	var evMsg serverEventData
 	require.NoError(t, json.Unmarshal(got.Data, &evMsg))
 	require.Equal(t, wire.EventPlayerJoined, evMsg.Event.Type)
+}
+
+// TestWS_JoinedSilentConnectionNotReaped is a regression test for a
+// race in the join-deadline enforcement. A join sets the subscriber's
+// PlayerID asynchronously (the room actor processes the join after
+// SubmitJoin returns), so an implementation that bound the deadline to
+// each individual read could reap a client that joined and then stayed
+// silent — its next read would block on a soon-to-expire deadline
+// context a hair before the actor set PlayerID. A silent-but-joined
+// player (e.g. a villager through the night) must survive past the
+// deadline.
+func TestWS_JoinedSilentConnectionNotReaped(t *testing.T) {
+	ts, _ := newTestServerWithConfig(t, HandlerConfig{
+		InsecureSkipOriginCheck: true,
+		JoinDeadline:            100 * time.Millisecond,
+	})
+	code := createRoom(t, ts)
+
+	connA := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, connA, "join", map[string]string{"name": "Alice"})
+	_ = recvFrame(t, connA) // joined ack
+	_ = recvFrame(t, connA) // own PlayerJoined broadcast
+	_ = recvFrame(t, connA) // HostChanged broadcast
+
+	// Stay silent well past the join deadline.
+	time.Sleep(300 * time.Millisecond)
+
+	// Alice's connection must still be live: a second joiner's
+	// PlayerJoined broadcast should reach her. recvFrame fails the test
+	// if the read errors (which is what a reaped connection would do).
+	connB := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, connB, "join", map[string]string{"name": "Bob"})
+
+	got := recvFrame(t, connA)
+	require.Equal(t, "event", got.Type,
+		"silent-but-joined Alice must still receive broadcasts after the join deadline")
+	var ev serverEventData
+	require.NoError(t, json.Unmarshal(got.Data, &ev))
+	require.Equal(t, wire.EventPlayerJoined, ev.Event.Type)
+}
+
+// TestWS_NeverJoinConnectionReaped confirms the join deadline still
+// does its job: a connection that upgrades and never joins is closed
+// shortly after the deadline so it can't park goroutines forever.
+func TestWS_NeverJoinConnectionReaped(t *testing.T) {
+	ts, _ := newTestServerWithConfig(t, HandlerConfig{
+		InsecureSkipOriginCheck: true,
+		JoinDeadline:            100 * time.Millisecond,
+	})
+	code := createRoom(t, ts)
+
+	conn := dialWS(t, ts, "/ws/"+code)
+	// Never send a join. A blocking read should return an error once
+	// the reaper cancels the connection (well within this 2s bound).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err := conn.Read(ctx)
+	require.Error(t, err,
+		"a never-join connection must be reaped after the join deadline")
 }
 
 // TestWS_LateJoinerSeesExistingRoster proves the second player can

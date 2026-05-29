@@ -20,14 +20,16 @@ package game
 //
 // Transition summary by current sub-phase:
 //
+// Every Night sub-phase transition emits a NightSubPhaseStarted whose
+// Sub field names the sub-phase below (e.g. Sub=act, Sub=sleep):
+//
 //	Lobby / DayDiscussion / DayVote -> ErrWrongPhase
 //	Ended                           -> ErrGameEnded
-//	Night, narrate                  -> NightActionStarted (real) OR
-//	                                   NightPonderStarted (phantom)
-//	Night, act    (timeout)         -> NightSleepStarted
-//	Night, ponder                   -> NightSleepStarted
-//	Night, sleep                    -> NightSettleStarted
-//	Night, settle (midQueue)        -> NightNarrationStarted (next role)
+//	Night, narrate                  -> Sub=act (real) OR Sub=ponder (phantom)
+//	Night, act    (timeout)         -> Sub=sleep
+//	Night, ponder                   -> Sub=sleep
+//	Night, sleep                    -> Sub=settle
+//	Night, settle (midQueue)        -> Sub=narrate (next role)
 //	Night, settle (lastRole)        -> resolveNight + PhaseChanged
 //
 // AdvancePhase received during NightSubAct counts as the timeout
@@ -134,44 +136,22 @@ func (g *Game) advanceNightSubPhase() []Event {
 // applyNightAction (the act → ponder edge driven by submission).
 func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 	role := g.state.currentNightRole
-	day := g.state.day
 	g.state.currentNightSubPhase = sub
 
-	switch sub {
-	case NightSubNarrate:
-		return []Event{NightNarrationStarted{
-			Role:     role,
-			Day:      day,
-			Deadline: 0,
-			Phantom:  !g.state.HasLivingRole(role),
-		}}
-	case NightSubAct:
-		return []Event{NightActionStarted{
-			Role:     role,
-			Day:      day,
-			Deadline: 0,
-		}}
-	case NightSubPonder:
-		return []Event{NightPonderStarted{
-			Role:     role,
-			Day:      day,
-			Deadline: 0,
-			Phantom:  !g.state.HasLivingRole(role),
-		}}
-	case NightSubSleep:
-		return []Event{NightSleepStarted{
-			Role:     role,
-			Day:      day,
-			Deadline: 0,
-		}}
-	case NightSubSettle:
-		return []Event{NightSettleStarted{
-			Role:     role,
-			Day:      day,
-			Deadline: 0,
-		}}
-	}
-	return nil
+	// One event shape covers every role-scoped sub-phase. Phantom is
+	// only consumed for narrate/ponder, but computing it uniformly is
+	// correct everywhere: enterNightSubPhase is never called for the
+	// (role-less) opening, a living role's act is never phantom, and
+	// sleep/settle carry the flag harmlessly (the wire encoder omits
+	// it for those sub-phases). Deadline is left 0 — the room stamps a
+	// wall-clock value before broadcasting.
+	return []Event{NightSubPhaseStarted{
+		Sub:      sub,
+		Role:     role,
+		Day:      g.state.day,
+		Deadline: 0,
+		Phantom:  role != "" && !g.state.HasLivingRole(role),
+	}}
 }
 
 // resolveAndExitNight is the common Night-end path: it's called from
@@ -367,7 +347,8 @@ func (g *Game) beginNightTurns() []Event {
 	g.state.currentNightRole = ""
 	g.state.currentNightSubPhase = NightSubOpening
 	g.state.nightSubmitted = false
-	return []Event{NightOpeningStarted{
+	return []Event{NightSubPhaseStarted{
+		Sub:      NightSubOpening,
 		Day:      g.state.day,
 		Deadline: 0,
 	}}

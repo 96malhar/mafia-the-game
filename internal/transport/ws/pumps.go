@@ -47,16 +47,19 @@ const pingInterval = 20 * time.Second
 // milliseconds.
 const pingTimeout = 10 * time.Second
 
-// joinDeadline bounds how long an UNAUTHENTICATED fresh connection may
-// stay open without completing a join. Without it, a client that
-// upgrades and then sends nothing parks two goroutines + a socket
-// indefinitely (the keepalive ping keeps a silent-but-alive peer up
-// forever). Once a join succeeds the subscriber has a PlayerID and the
-// deadline no longer applies, so legitimately-idle joined players (e.g.
-// during discussion) are never bounced. Rejoins authenticate
+// defaultJoinDeadline bounds how long an UNAUTHENTICATED fresh
+// connection may stay open without completing a join. Without it, a
+// client that upgrades and then sends nothing parks two goroutines + a
+// socket indefinitely (the keepalive ping keeps a silent-but-alive peer
+// up forever). Once a join succeeds the subscriber has a PlayerID and
+// the deadline no longer applies, so legitimately-idle joined players
+// (e.g. during discussion) are never bounced. Rejoins authenticate
 // server-side before the pumps start, so this deadline doesn't apply to
 // them.
-const joinDeadline = 30 * time.Second
+//
+// Overridable per-handler via HandlerConfig.JoinDeadline (tests use a
+// tiny value); zero falls back to this default.
+const defaultJoinDeadline = 30 * time.Second
 
 // readPump runs in its own goroutine for the lifetime of a connection.
 // It is the SOLE reader on the websocket. It exits when the read fails
@@ -74,32 +77,54 @@ func readPump(
 	conn *websocket.Conn,
 	r *room.Room,
 	sub *room.Subscriber,
-	requireJoin bool,
+	joinDeadline time.Duration,
 ) {
 	defer cancel() // signal writePump to exit on any read failure
 
 	conn.SetReadLimit(readLimit)
 
-	for {
-		// Until the subscriber authenticates (gets a PlayerID via a
-		// successful join), bound the read so an idle never-join
-		// connection can't park resources forever. After that, reads
-		// block on the unbounded connection context — a joined player
-		// is allowed to sit silent indefinitely (e.g. the long
-		// verbal day-discussion phase). requireJoin is false for the
-		// rejoin path, which is already authenticated server-side.
-		readCtx := ctx
-		var cancelRead context.CancelFunc
-		if requireJoin && sub.PlayerID() == "" {
-			readCtx, cancelRead = context.WithTimeout(ctx, joinDeadline)
-		}
+	// Enforce the join deadline OUT OF BAND from the read loop. A
+	// successful join sets the subscriber's PlayerID asynchronously:
+	// SubmitJoin only enqueues the join for the room's actor, which
+	// sets PlayerID when it later processes the message — after
+	// SubmitJoin (and so dispatchClientMessage) has already returned.
+	// Binding the deadline to an individual read therefore races: a
+	// client that joins and then stays silent (e.g. a villager through
+	// the night) can have its next read block on a soon-to-expire
+	// deadline context a hair before the actor sets PlayerID, then get
+	// reaped at the deadline despite being fully joined.
+	//
+	// Instead we arm a single timer for the whole connection. If the
+	// subscriber still hasn't authenticated when it fires, we cancel
+	// the connection (tearing down both pumps); otherwise the join
+	// landed and the reaper is a harmless no-op. Reads always block on
+	// the unbounded connection context, so a joined-but-silent player
+	// is never bounced. joinDeadline <= 0 disables the reaper entirely
+	// — used by the rejoin path, which authenticates server-side before
+	// the pumps start.
+	if joinDeadline > 0 {
+		reaper := time.NewTimer(joinDeadline)
+		go func() {
+			defer reaper.Stop()
+			select {
+			case <-ctx.Done():
+				// Connection already closing; nothing to reap.
+			case <-reaper.C:
+				if sub.PlayerID() == "" {
+					logger.Info("ws join deadline expired; closing unauthenticated connection")
+					cancel()
+				}
+			}
+		}()
+	}
 
+	for {
 		// Read one full message. coder/websocket returns the type
-		// (text/binary) and the payload as a byte slice.
-		mt, data, err := conn.Read(readCtx)
-		if cancelRead != nil {
-			cancelRead()
-		}
+		// (text/binary) and the payload as a byte slice. A joined
+		// player may sit silent indefinitely (e.g. the long verbal
+		// day-discussion phase); the keepalive ping in writePump and
+		// the join reaper above are what bound idle/never-join peers.
+		mt, data, err := conn.Read(ctx)
 		if err != nil {
 			// Normal close codes and context cancellation are not
 			// errors worth logging at warn level.

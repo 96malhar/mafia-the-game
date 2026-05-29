@@ -109,19 +109,19 @@ type nightActionSpec struct {
 // gains more optional hooks.
 //
 // What does NOT live here: the wall-clock duration of the role's
-// "wake up" / "go to sleep" audio cues. Those used to live as
-// Narrate/Sleep function fields on roleSpec, but were moved out to
-// internal/room/config.go so that ALL wall-clock timing is owned by
-// the room layer in one place. The engine remains timeless; the room
-// is the sole arbiter of when sub-phases begin and end.
+// "wake up" / "go to sleep" audio cues. Those are owned by
+// internal/room/config.go (defaultSubPhaseDuration) so that ALL
+// wall-clock timing lives in the room layer in one place. The engine
+// remains timeless; the room is the sole arbiter of when sub-phases
+// begin and end.
 //
 // Trade-off (named explicitly so future readers don't reconsider this
 // without context): adding a new role with custom narration timing
 // now requires editing BOTH rolespec.go (to register the role) AND
-// room/config.go (to register the role's per-day Narrate/Sleep
-// duration). The "one file per role" property is broken specifically
-// for timing. The benefit is that the room layer is the single
-// authority on wall-clock policy.
+// room/config.go's defaultSubPhaseDuration (to give the role's
+// narrate/sleep duration). The "one file per role" property is broken
+// specifically for timing. The benefit is that the room layer is the
+// single authority on wall-clock policy.
 type roleSpec struct {
 	Faction     Faction
 	NightAction *nightActionSpec

@@ -82,12 +82,11 @@ func (r *Room) stampNightDeadlines(events []game.Event) {
 
 // stampDeadline returns a copy of evt with its Deadline field set to
 // the given unix-millis value. Non-night-sub-phase events (which carry
-// no Deadline) pass through unchanged. The per-type copy-with-deadline
-// lives on the events themselves (game.NightSubPhaseEvent.WithDeadline)
-// so this stays a single interface assertion rather than a switch that
-// must be kept in lockstep with the event list.
+// no Deadline) pass through unchanged. The copy-with-deadline lives on
+// the event itself (game.NightSubPhaseStarted.WithDeadline) so this
+// stays a single type assertion.
 func stampDeadline(evt game.Event, deadline int64) game.Event {
-	if e, ok := evt.(game.NightSubPhaseEvent); ok {
+	if e, ok := evt.(game.NightSubPhaseStarted); ok {
 		return e.WithDeadline(deadline)
 	}
 	return evt
@@ -127,10 +126,10 @@ func (r *Room) scheduleTimers(events []game.Event) {
 		switch e.(type) {
 		case game.PhaseChanged:
 			phaseChanged = true
-		case game.NightSubPhaseEvent:
-			// Any Night*Started event (the family is defined by the
-			// interface, so a future sub-phase event is covered
-			// without editing this switch).
+		case game.NightSubPhaseStarted:
+			// Any night sub-phase start (opening/narrate/act/ponder/
+			// sleep/settle) — they all share this one event type now,
+			// distinguished by its Sub field.
 			lastSubPhaseEvent = e
 		}
 	}

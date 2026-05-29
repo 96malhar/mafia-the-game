@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
@@ -38,6 +39,11 @@ type HandlerConfig struct {
 	// Useful for local development with a separate frontend dev
 	// server. NEVER set this in production.
 	InsecureSkipOriginCheck bool
+
+	// JoinDeadline bounds how long a fresh (non-rejoin) connection may
+	// stay open before completing a join. Zero uses defaultJoinDeadline.
+	// Primarily a test seam for exercising the reaper without a 30s wait.
+	JoinDeadline time.Duration
 }
 
 // NewHandler constructs a Handler. The manager must outlive the
@@ -122,11 +128,17 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	// Fresh-join path: the readPump will translate the client's first
-	// {type:"join"} frame into r.SubmitJoin. requireJoin enforces a
-	// deadline on that first authentication so a connection that never
-	// joins can't leak goroutines (see joinDeadline). Rejoins are
-	// already authenticated above, so they're exempt.
-	requireJoin := !isRejoin
+	// {type:"join"} frame into r.SubmitJoin. A join deadline bounds
+	// that first authentication so a connection that never joins can't
+	// leak goroutines (see defaultJoinDeadline). Rejoins are already
+	// authenticated above, so they're exempt (deadline 0 = no reaper).
+	joinDeadline := time.Duration(0)
+	if !isRejoin {
+		joinDeadline = h.cfg.JoinDeadline
+		if joinDeadline <= 0 {
+			joinDeadline = defaultJoinDeadline
+		}
+	}
 
 	// Run the two pumps. We deliberately give each one half the wait
 	// group; both must exit before we tear down. WaitGroup is safer
@@ -136,7 +148,7 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		readPump(ctx, cancel, h.logger.With("pump", "read", "room", code), conn, r, sub, requireJoin)
+		readPump(ctx, cancel, h.logger.With("pump", "read", "room", code), conn, r, sub, joinDeadline)
 	}()
 	go func() {
 		defer wg.Done()

@@ -13,29 +13,31 @@ import (
 	"github.com/malhar/mafia-the-game/internal/game"
 )
 
-// TestConfig_SubPhaseDuration pins the per-sub-phase duration map.
-// All six sub-phases resolve through c.NightSubPhases, which is the
-// single source of wall-clock truth (no engine fallback). This test
-// verifies the routing AND that defaults match the constants
-// documented in config.go.
+// TestConfig_SubPhaseDuration pins the per-sub-phase duration logic.
+// Durations resolve through c.subPhaseDuration from the Default*
+// constants (the single source of wall-clock truth) unless the
+// SubPhaseDurationOverride seam shadows them. This test verifies both
+// the defaults and the override path.
 func TestConfig_SubPhaseDuration(t *testing.T) {
-	t.Run("defaults route to package-level constants", func(t *testing.T) {
-		c := Config{}
-		c.applyDefaults()
+	c := Config{}
+	c.applyDefaults()
 
+	sub := func(s game.NightSubPhase, role game.Role, day int, phantom bool) game.NightSubPhaseStarted {
+		return game.NightSubPhaseStarted{Sub: s, Role: role, Day: day, Phantom: phantom}
+	}
+
+	t.Run("defaults route to package-level constants", func(t *testing.T) {
 		// Opening: universal, day-independent.
 		require.Equal(t, DefaultOpeningDuration,
-			c.subPhaseDuration(game.NightOpeningStarted{Day: 0}, false),
+			c.subPhaseDuration(sub(game.NightSubOpening, "", 0, false), false),
 			"opening default")
 		require.Equal(t, DefaultOpeningDuration,
-			c.subPhaseDuration(game.NightOpeningStarted{Day: 3}, false),
+			c.subPhaseDuration(sub(game.NightSubOpening, "", 3, false), false),
 			"opening default is day-independent today")
 
 		// Narrate: mafia has a Day-0 variant; everyone else is universal.
-		mafiaNarrateDay0 := c.subPhaseDuration(
-			game.NightNarrationStarted{Role: game.RoleMafia, Day: 0}, false)
-		mafiaNarrateDay1 := c.subPhaseDuration(
-			game.NightNarrationStarted{Role: game.RoleMafia, Day: 1}, false)
+		mafiaNarrateDay0 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 0, false), false)
+		mafiaNarrateDay1 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 1, false), false)
 		require.Equal(t, DefaultMafiaNarrateDay0, mafiaNarrateDay0,
 			"mafia Day 0 narrate uses the day-0 constant")
 		require.Equal(t, DefaultMafiaNarrateDayN, mafiaNarrateDay1,
@@ -47,113 +49,83 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 		for _, r := range []game.Role{game.RoleDetective, game.RoleDoctor} {
 			for _, day := range []int{0, 1, 5} {
 				require.Equal(t, DefaultNarrateDuration,
-					c.subPhaseDuration(game.NightNarrationStarted{Role: r, Day: day}, false),
+					c.subPhaseDuration(sub(game.NightSubNarrate, r, day, false), false),
 					"role %q day %d should use DefaultNarrateDuration", r, day)
 			}
 		}
 
 		// Action: universal.
 		require.Equal(t, DefaultActionDuration,
-			c.subPhaseDuration(game.NightActionStarted{Role: game.RoleMafia, Day: 0}, false))
+			c.subPhaseDuration(sub(game.NightSubAct, game.RoleMafia, 0, false), false))
 
 		// Settle: universal.
 		require.Equal(t, DefaultSettleDuration,
-			c.subPhaseDuration(game.NightSettleStarted{Role: game.RoleMafia, Day: 0}, false))
+			c.subPhaseDuration(sub(game.NightSubSettle, game.RoleMafia, 0, false), false))
 
 		// Sleep: every shipped role uses the universal default.
 		for _, r := range []game.Role{game.RoleMafia, game.RoleDetective, game.RoleDoctor} {
 			require.Equal(t, DefaultSleepDuration,
-				c.subPhaseDuration(game.NightSleepStarted{Role: r, Day: 0}, false),
+				c.subPhaseDuration(sub(game.NightSubSleep, r, 0, false), false),
 				"role %q sleep should use DefaultSleepDuration", r)
 		}
 	})
 
 	t.Run("ponder default - submitted real role is the short beat", func(t *testing.T) {
-		c := Config{}
-		c.applyDefaults()
-		dur := c.subPhaseDuration(
-			game.NightPonderStarted{Role: game.RoleMafia, Day: 0, Phantom: false},
-			true)
-		require.Equal(t, DefaultPonderRealSubmit, dur,
+		require.Equal(t, DefaultPonderRealSubmit,
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false), true),
 			"submitted non-detective: short post-submit beat")
 	})
 
 	t.Run("ponder default - detective gets a longer beat", func(t *testing.T) {
-		c := Config{}
-		c.applyDefaults()
-		dur := c.subPhaseDuration(
-			game.NightPonderStarted{Role: game.RoleDetective, Day: 0, Phantom: false},
-			true)
-		require.Equal(t, DefaultPonderDetectiveSubmit, dur,
+		require.Equal(t, DefaultPonderDetectiveSubmit,
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false), true),
 			"detective ponder is sized for read-modal pause")
 	})
 
 	t.Run("ponder default - timeout matches submit (audio-cadence parity)", func(t *testing.T) {
-		c := Config{}
-		c.applyDefaults()
-		dur := c.subPhaseDuration(
-			game.NightPonderStarted{Role: game.RoleDoctor, Day: 0, Phantom: false},
-			false)
-		require.Equal(t, DefaultPonderRealSubmit, dur,
+		require.Equal(t, DefaultPonderRealSubmit,
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false), false),
 			"timeout uses the same beat as submit so observers can't distinguish them")
 	})
 
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {
-		c := Config{}
-		c.applyDefaults()
 		// Repeat the draw so we exercise the randomness: every draw
 		// must fall in [lo, hi].
 		for i := 0; i < 64; i++ {
-			d := c.subPhaseDuration(
-				game.NightPonderStarted{Role: game.RoleDetective, Day: 1, Phantom: true},
-				false)
+			d := c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 1, true), false)
 			require.GreaterOrEqual(t, d, DefaultPhantomPonderMin,
 				"phantom ponder must be >= DefaultPhantomPonderMin")
 			require.LessOrEqual(t, d, DefaultPhantomPonderMax,
 				"phantom ponder must be <= DefaultPhantomPonderMax")
 		}
-		// A phantom MAFIA turn is unreachable (the game ends as
-		// soon as the last mafia dies; see beginNextNightTurn's
-		// doc), so we don't assert phantom bounds for mafia — the
-		// function would still return a value if called, but no
-		// real engine path reaches it.
+		// A phantom MAFIA turn is unreachable (the game ends as soon as
+		// the last mafia dies; see beginNextNightTurn's doc), so we
+		// don't assert phantom bounds for mafia.
 	})
 
-	t.Run("custom Opening function is respected", func(t *testing.T) {
-		c := Config{
-			NightSubPhases: NightSubPhaseDurations{
-				Opening: func() time.Duration { return 100 * time.Millisecond },
+	t.Run("SubPhaseDurationOverride shadows specific sub-phases", func(t *testing.T) {
+		oc := Config{
+			SubPhaseDurationOverride: func(e game.NightSubPhaseStarted, _ bool) (time.Duration, bool) {
+				switch e.Sub {
+				case game.NightSubOpening:
+					return 100 * time.Millisecond, true
+				case game.NightSubSettle:
+					return 50 * time.Millisecond, true
+				}
+				return 0, false // others fall through to defaults
 			},
 		}
-		c.applyDefaults()
+		oc.applyDefaults()
 		require.Equal(t, 100*time.Millisecond,
-			c.subPhaseDuration(game.NightOpeningStarted{Day: 0}, false))
-	})
-
-	t.Run("custom Ponder function is respected", func(t *testing.T) {
-		c := Config{
-			NightSubPhases: NightSubPhaseDurations{
-				Ponder: func(_ game.Role, _, _ bool) time.Duration {
-					return 250 * time.Millisecond
-				},
-			},
-		}
-		c.applyDefaults()
-		require.Equal(t, 250*time.Millisecond,
-			c.subPhaseDuration(
-				game.NightPonderStarted{Role: game.RoleMafia, Day: 0, Phantom: false},
-				true))
-	})
-
-	t.Run("custom Settle function is respected", func(t *testing.T) {
-		c := Config{
-			NightSubPhases: NightSubPhaseDurations{
-				Settle: func() time.Duration { return 50 * time.Millisecond },
-			},
-		}
-		c.applyDefaults()
+			oc.subPhaseDuration(sub(game.NightSubOpening, "", 0, false), false),
+			"override pins opening")
 		require.Equal(t, 50*time.Millisecond,
-			c.subPhaseDuration(game.NightSettleStarted{Role: game.RoleDoctor, Day: 0}, false))
+			oc.subPhaseDuration(sub(game.NightSubSettle, game.RoleDoctor, 0, false), false),
+			"override pins settle")
+		// A sub-phase the override declines falls back to the default.
+		require.Equal(t, DefaultActionDuration,
+			oc.subPhaseDuration(sub(game.NightSubAct, game.RoleMafia, 0, false), false),
+			"declined sub-phase uses the built-in default")
 	})
 }
 

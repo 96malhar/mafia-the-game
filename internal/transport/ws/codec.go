@@ -49,24 +49,33 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.PhaseChanged:
 		tag = wire.EventPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
-	case game.NightOpeningStarted:
-		tag = wire.EventNightOpeningStarted
-		data = kv{"day": v.Day, "deadline": v.Deadline}
-	case game.NightNarrationStarted:
-		tag = wire.EventNightNarrationStarted
-		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
-	case game.NightActionStarted:
-		tag = wire.EventNightActionStarted
-		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
-	case game.NightPonderStarted:
-		tag = wire.EventNightPonderStarted
-		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
-	case game.NightSleepStarted:
-		tag = wire.EventNightSleepStarted
-		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
-	case game.NightSettleStarted:
-		tag = wire.EventNightSettleStarted
-		data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+	case game.NightSubPhaseStarted:
+		// One Go type now, but each sub-phase keeps its own stable wire
+		// tag and data shape so existing clients are unaffected by the
+		// engine-side collapse: opening carries no role; narrate and
+		// ponder carry the phantom flag; the rest carry role/day/deadline.
+		switch v.Sub {
+		case game.NightSubOpening:
+			tag = wire.EventNightOpeningStarted
+			data = kv{"day": v.Day, "deadline": v.Deadline}
+		case game.NightSubNarrate:
+			tag = wire.EventNightNarrationStarted
+			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+		case game.NightSubAct:
+			tag = wire.EventNightActionStarted
+			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+		case game.NightSubPonder:
+			tag = wire.EventNightPonderStarted
+			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+		case game.NightSubSleep:
+			tag = wire.EventNightSleepStarted
+			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+		case game.NightSubSettle:
+			tag = wire.EventNightSettleStarted
+			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+		default:
+			return eventEnvelope{}, fmt.Errorf("ws: unknown night sub-phase %q", v.Sub)
+		}
 	case game.NightActionRecorded:
 		tag = wire.EventNightActionRecorded
 		data = kv{"actor": string(v.Actor), "target": string(v.Target), "faction": string(v.Faction)}

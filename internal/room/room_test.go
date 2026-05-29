@@ -681,21 +681,14 @@ func TestRoom_NightTurnTimersAutoAdvance(t *testing.T) {
 	// dominate the wall-clock here; tiny durations turn this from a
 	// 10s-plus integration into a sub-second unit test.
 	//
-	// Narrate and Sleep override the role-spec defaults via the
-	// test-only seam on NightSubPhaseDurations; production code
-	// leaves both fields nil and reads from game.NarrateDuration /
-	// game.SleepDuration.
-	tiny := func() time.Duration { return time.Millisecond }
+	// Shrink every night sub-phase to 1ms via the test-only override
+	// seam; production leaves SubPhaseDurationOverride nil and reads
+	// the Default* constants.
 	m := newTestManager(t)
 	r, err := m.CreateRoom(Config{
 		Logger: silentLogger(),
-		NightSubPhases: NightSubPhaseDurations{
-			Opening: tiny,
-			Narrate: func(_ game.Role, _ int) time.Duration { return time.Millisecond },
-			Action:  tiny,
-			Ponder:  func(_ game.Role, _, _ bool) time.Duration { return time.Millisecond },
-			Sleep:   func(_ game.Role, _ int) time.Duration { return time.Millisecond },
-			Settle:  tiny,
+		SubPhaseDurationOverride: func(game.NightSubPhaseStarted, bool) (time.Duration, bool) {
+			return time.Millisecond, true
 		},
 	})
 	require.NoError(t, err)

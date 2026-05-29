@@ -134,171 +134,62 @@ type PhaseChanged struct {
 func (PhaseChanged) isEvent()               {}
 func (PhaseChanged) Visibility() Visibility { return Public() }
 
-// NightOpeningStarted announces the one-shot start-of-night beat that
-// precedes the first role's narrate. Carries the "City, go to sleep."
-// cue plus a fixed pre-wake silence so the room has time to settle
-// before any role is named. No action accepted; currentNightRole is
-// empty during this sub-phase.
+// NightSubPhaseStarted announces the start of one night sub-phase. A
+// single event type carries every sub-phase — opening, narrate, act,
+// ponder, sleep, settle — distinguished by the Sub field. This
+// replaces what used to be six near-identical event types
+// (Night{Opening,Narration,Action,Ponder,Sleep,Settle}Started); they
+// all shared the same {Role, Day, Deadline, Phantom} shape and forced
+// six parallel definitions in the encoder, the duration table, and the
+// WithDeadline boilerplate. Collapsing to one type + a Sub enum keeps
+// the per-sub-phase knowledge in exactly the two places that genuinely
+// need it: the room's duration table (subPhaseDuration) and the wire
+// encoder (encodeEvent, which still maps each Sub to its own stable
+// wire tag so existing clients are unaffected).
 //
-// Emitted by applyBeginNight immediately after PhaseChanged{To: Night}.
-// After Deadline elapses, AdvancePhase pops the first role from the
-// night queue and enters its NightSubNarrate.
-//
-// Public visibility: every observer hears the cue.
-type NightOpeningStarted struct {
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
+// Public visibility: every observer sees/hears the cue land. Only the
+// acting player's client renders Target buttons (during Sub==act), but
+// that gating is client-side; the event itself is public so all
+// clients can render countdown chrome from the stamped Deadline.
+type NightSubPhaseStarted struct {
+	// Sub identifies which sub-phase began. See NightSubPhase for the
+	// per-role state machine these step through.
+	Sub NightSubPhase
+
+	// Role is the role whose turn this sub-phase belongs to. Empty
+	// during NightSubOpening — the night-scoped beat that precedes any
+	// role's turn (currentNightRole is unset then).
+	Role Role
+
+	// Day is the in-game day number, carried explicitly so clients can
+	// replay a projection without re-deriving it from surrounding
+	// events.
+	Day int
+
+	// Deadline is the unix-millis wall-clock instant at which the
+	// sub-phase auto-elapses. The engine emits 0 (it is timeless); the
+	// room stamps a real value before broadcasting so all viewers —
+	// current and future via the replayed log — agree on the timing.
+	Deadline int64
+
+	// Phantom is true when no living player holds Role at the time the
+	// sub-phase starts. It is meaningful for narrate (narration still
+	// plays, so the room can't deduce a dead role from missing audio)
+	// and for ponder (the randomized phantom-substitute window that
+	// stands in for a missing act). It is always false for opening (no
+	// role) and for the sub-phases of a living role.
+	Phantom bool
 }
 
-func (NightOpeningStarted) isEvent()               {}
-func (NightOpeningStarted) Visibility() Visibility { return Public() }
+func (NightSubPhaseStarted) isEvent()               {}
+func (NightSubPhaseStarted) Visibility() Visibility { return Public() }
 
-// NightNarrationStarted announces the start of a role's "wake up"
-// audio cue. Sized to cover the spoken prompt. No action accepted.
-// Carries the Role (so the client narrates the right script) and
-// a wall-clock Deadline (unix-millis) at which the sub-phase auto-
-// elapses. Day is carried explicitly so clients can replay a
-// projection without re-deriving it from the surrounding events.
-//
-// Phantom is true when no living player holds Role at the time the
-// narrate starts. Narration still plays (so the room can't deduce
-// which role is dead from missing audio), but the subsequent sub-
-// phase will be NightPonderStarted (with a randomized duration)
-// instead of NightActionStarted — see NightSubPhase.
-//
-// Public visibility: every observer sees the cue land.
-type NightNarrationStarted struct {
-	Role     Role
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
-	Phantom  bool
-}
-
-func (NightNarrationStarted) isEvent()               {}
-func (NightNarrationStarted) Visibility() Visibility { return Public() }
-
-// NightActionStarted announces that the actor's decision window is now
-// open. Emitted only for non-phantom turns (phantom turns substitute
-// NightPonderStarted directly after narrate). NightAction submissions
-// from the current role are accepted between this event and either
-// the engine emitting NightPonderStarted (early submission) or the
-// room driving AdvancePhase at Deadline (timeout).
-//
-// Public so all clients can render countdown chrome; only the actor's
-// client renders the Target buttons.
-type NightActionStarted struct {
-	Role     Role
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
-}
-
-func (NightActionStarted) isEvent()               {}
-func (NightActionStarted) Visibility() Visibility { return Public() }
-
-// NightPonderStarted is the post-act / phantom-substitute pause. For
-// real turns where the actor submitted, this is a short fixed beat
-// (default 2s) that gives the room a moment to absorb the action
-// before sleep. For phantom turns, this is a randomized 5–10s pause
-// that stands in for the missing act window — making the night
-// cadence statistically indistinguishable from a real turn so the
-// city can't deduce a role is dead.
-//
-// No action accepted in this sub-phase. Real turns that timed out
-// (no submission) skip ponder and go straight to sleep.
-type NightPonderStarted struct {
-	Role     Role
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
-	Phantom  bool
-}
-
-func (NightPonderStarted) isEvent()               {}
-func (NightPonderStarted) Visibility() Visibility { return Public() }
-
-// NightSleepStarted announces the start of a role's "go to sleep"
-// audio cue. Sized to cover the spoken prompt. No action accepted.
-// Public so every observer hears the cue land.
-type NightSleepStarted struct {
-	Role     Role
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
-}
-
-func (NightSleepStarted) isEvent()               {}
-func (NightSleepStarted) Visibility() Visibility { return Public() }
-
-// NightSettleStarted is the post-sleep pause before the next role's
-// narrate (or, for the last role of the night, before the
-// night→day_discussion transition). A short fixed beat (default 2s)
-// that lets the "go to sleep" cue land cleanly before the next
-// narrator line begins. No action accepted.
-type NightSettleStarted struct {
-	Role     Role
-	Day      int
-	Deadline int64 // unix-millis; 0 means "engine timeless; room will stamp"
-}
-
-func (NightSettleStarted) isEvent()               {}
-func (NightSettleStarted) Visibility() Visibility { return Public() }
-
-// NightSubPhaseEvent is implemented by every Night*Started event — the
-// family that opens a night sub-phase and carries a wall-clock
-// Deadline the engine emits as 0 for the room to stamp. Grouping them
-// behind one interface lets the room layer stamp the deadline and
-// recognize a sub-phase transition with a single interface assertion
-// instead of a parallel type-switch over all six concretes that would
-// silently miss a newly-added event. Adding a sub-phase event means
-// implementing WithDeadline (one method), and it automatically joins
-// the family everywhere the interface is used.
-//
-// (subPhaseDuration in the room layer and encodeEvent in the transport
-// still switch per concrete type — they genuinely need per-event
-// behavior, sizing and wire shape respectively — so this interface
-// doesn't try to absorb those.)
-type NightSubPhaseEvent interface {
-	Event
-	// WithDeadline returns a copy of the event with its Deadline set
-	// to ms (unix-millis), but only if it was still 0 (unstamped).
-	// Value receiver + return-copy keeps events immutable.
-	WithDeadline(ms int64) Event
-}
-
-func (e NightOpeningStarted) WithDeadline(ms int64) Event {
-	if e.Deadline == 0 {
-		e.Deadline = ms
-	}
-	return e
-}
-
-func (e NightNarrationStarted) WithDeadline(ms int64) Event {
-	if e.Deadline == 0 {
-		e.Deadline = ms
-	}
-	return e
-}
-
-func (e NightActionStarted) WithDeadline(ms int64) Event {
-	if e.Deadline == 0 {
-		e.Deadline = ms
-	}
-	return e
-}
-
-func (e NightPonderStarted) WithDeadline(ms int64) Event {
-	if e.Deadline == 0 {
-		e.Deadline = ms
-	}
-	return e
-}
-
-func (e NightSleepStarted) WithDeadline(ms int64) Event {
-	if e.Deadline == 0 {
-		e.Deadline = ms
-	}
-	return e
-}
-
-func (e NightSettleStarted) WithDeadline(ms int64) Event {
+// WithDeadline returns a copy of the event with its Deadline set to ms
+// (unix-millis), but only if it was still 0 (unstamped). Value receiver
+// + return-copy keeps events immutable. The room layer calls this to
+// stamp a wall-clock deadline onto the engine's timeless event before
+// broadcasting (see stampNightDeadlines in internal/room).
+func (e NightSubPhaseStarted) WithDeadline(ms int64) Event {
 	if e.Deadline == 0 {
 		e.Deadline = ms
 	}

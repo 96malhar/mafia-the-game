@@ -37,6 +37,18 @@ func findEvent[T game.Event](events []game.Event) (T, bool) {
 	return zero, false
 }
 
+// findNightSub returns the first NightSubPhaseStarted whose Sub matches,
+// or (zero, false). All six night sub-phases share one event type now,
+// so tests select by Sub instead of by concrete type.
+func findNightSub(events []game.Event, sub game.NightSubPhase) (game.NightSubPhaseStarted, bool) {
+	for _, e := range events {
+		if v, ok := e.(game.NightSubPhaseStarted); ok && v.Sub == sub {
+			return v, true
+		}
+	}
+	return game.NightSubPhaseStarted{}, false
+}
+
 func TestCreateGame(t *testing.T) {
 	t.Run("happy path emits GameCreated and sets state", func(t *testing.T) {
 		g := game.New()
@@ -426,11 +438,11 @@ func TestStartGame(t *testing.T) {
 		// NOT a NightNarrationStarted for the mafia. The first role's
 		// narrate fires when AdvancePhase elapses the opening
 		// (see rules_phase.go's advanceNightSubPhase).
-		_, ok = findEvent[game.NightOpeningStarted](evts)
-		require.True(t, ok, "BeginNight must emit NightOpeningStarted")
-		_, narrate := findEvent[game.NightNarrationStarted](evts)
+		_, ok = findNightSub(evts, game.NightSubOpening)
+		require.True(t, ok, "BeginNight must emit the opening sub-phase")
+		_, narrate := findNightSub(evts, game.NightSubNarrate)
 		require.False(t, narrate,
-			"BeginNight must NOT emit NightNarrationStarted; opening comes first")
+			"BeginNight must NOT emit a narrate sub-phase; opening comes first")
 	})
 
 	t.Run("BeginNight before StartGame is rejected", func(t *testing.T) {

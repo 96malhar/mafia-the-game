@@ -296,11 +296,11 @@ func TestNight_OpeningEmittedAfterPhaseChange(t *testing.T) {
 	evts, err := g.Apply(game.BeginNight{})
 	require.NoError(t, err)
 
-	// PhaseChanged + NightOpeningStarted, nothing else night-related.
-	_, opening := findEvent[game.NightOpeningStarted](evts)
-	require.True(t, opening, "BeginNight must emit NightOpeningStarted")
-	_, narrate := findEvent[game.NightNarrationStarted](evts)
-	require.False(t, narrate, "BeginNight must NOT emit NightNarrationStarted yet")
+	// PhaseChanged + opening sub-phase, nothing else night-related.
+	_, opening := findNightSub(evts, game.NightSubOpening)
+	require.True(t, opening, "BeginNight must emit the opening sub-phase")
+	_, narrate := findNightSub(evts, game.NightSubNarrate)
+	require.False(t, narrate, "BeginNight must NOT emit a narrate sub-phase yet")
 
 	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
 	require.Equal(t, game.Role(""), g.State().CurrentNightRole(),
@@ -325,8 +325,8 @@ func TestNight_OpeningElapsesIntoMafiaNarrate(t *testing.T) {
 	require.NoError(t, err)
 
 	evts := advancePhase(t, g)
-	ns, ok := findEvent[game.NightNarrationStarted](evts)
-	require.True(t, ok, "opening → narrate must emit NightNarrationStarted")
+	ns, ok := findNightSub(evts, game.NightSubNarrate)
+	require.True(t, ok, "opening → narrate must emit a narrate sub-phase")
 	require.Equal(t, game.RoleMafia, ns.Role)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
@@ -349,32 +349,32 @@ func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
 	g := fixedRoster(t)
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
-	// Submit: act → ponder, with NightPonderStarted in the batch.
+	// Submit: act → ponder, with a ponder sub-phase in the batch.
 	evts := nightAction(t, g, "mafia1", "town1")
-	_, pondered := findEvent[game.NightPonderStarted](evts)
-	require.True(t, pondered, "submit must emit NightPonderStarted")
+	_, pondered := findNightSub(evts, game.NightSubPonder)
+	require.True(t, pondered, "submit must emit a ponder sub-phase")
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
 	require.True(t, g.State().NightTurnSubmitted(),
 		"NightTurnSubmitted must be true after a submit")
 
 	// ponder → sleep.
 	evts = advancePhase(t, g)
-	sl, ok := findEvent[game.NightSleepStarted](evts)
-	require.True(t, ok, "ponder → sleep must emit NightSleepStarted")
+	sl, ok := findNightSub(evts, game.NightSubSleep)
+	require.True(t, ok, "ponder → sleep must emit a sleep sub-phase")
 	require.Equal(t, game.RoleMafia, sl.Role)
 	require.Equal(t, game.NightSubSleep, g.State().CurrentNightSubPhase())
 
 	// sleep → settle.
 	evts = advancePhase(t, g)
-	st, ok := findEvent[game.NightSettleStarted](evts)
-	require.True(t, ok, "sleep → settle must emit NightSettleStarted")
+	st, ok := findNightSub(evts, game.NightSubSettle)
+	require.True(t, ok, "sleep → settle must emit a settle sub-phase")
 	require.Equal(t, game.RoleMafia, st.Role)
 	require.Equal(t, game.NightSubSettle, g.State().CurrentNightSubPhase())
 
 	// settle → next role's narrate. The submitted flag resets.
 	evts = advancePhase(t, g)
-	ns, ok := findEvent[game.NightNarrationStarted](evts)
-	require.True(t, ok, "settle → next role must emit NightNarrationStarted")
+	ns, ok := findNightSub(evts, game.NightSubNarrate)
+	require.True(t, ok, "settle → next role must emit a narrate sub-phase")
 	require.Equal(t, game.RoleDetective, ns.Role)
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
@@ -392,8 +392,8 @@ func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
 	evts := advancePhase(t, g) // act → ponder
-	ponder, ok := findEvent[game.NightPonderStarted](evts)
-	require.True(t, ok, "act timeout must transition into NightPonderStarted")
+	ponder, ok := findNightSub(evts, game.NightSubPonder)
+	require.True(t, ok, "act timeout must transition into a ponder sub-phase")
 	require.Equal(t, game.RoleMafia, ponder.Role)
 	require.False(t, ponder.Phantom,
 		"mafia is alive — Phantom must be false even on timeout")
@@ -403,8 +403,8 @@ func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
 
 	// One more AdvancePhase: ponder → sleep.
 	evts = advancePhase(t, g)
-	_, ok = findEvent[game.NightSleepStarted](evts)
-	require.True(t, ok, "ponder → sleep must emit NightSleepStarted")
+	_, ok = findNightSub(evts, game.NightSubSleep)
+	require.True(t, ok, "ponder → sleep must emit a sleep sub-phase")
 	require.Equal(t, game.NightSubSleep, g.State().CurrentNightSubPhase())
 }
 
@@ -425,8 +425,8 @@ func TestNight_TurnOrderMafiaDetectiveDoctor(t *testing.T) {
 	// both come from applyNightAction.
 	_, hasResult := findEvent[game.DetectiveResult](evts)
 	require.True(t, hasResult, "detective submission emits DetectiveResult immediately")
-	_, hasPonder := findEvent[game.NightPonderStarted](evts)
-	require.True(t, hasPonder, "detective submission also emits NightPonderStarted")
+	_, hasPonder := findNightSub(evts, game.NightSubPonder)
+	require.True(t, hasPonder, "detective submission also emits a ponder sub-phase")
 
 	// Walk through detective's ponder → sleep → settle → doctor narrate → doctor act.
 	walkRestOfTurn(t, g)
@@ -520,23 +520,23 @@ func TestNight_PhantomTurnEmitsPhantomFlagOnEvents(t *testing.T) {
 
 	var sawDetNarrate, sawDetPonder bool
 	for _, e := range evts {
-		switch v := e.(type) {
-		case game.NightNarrationStarted:
-			if v.Role == game.RoleDetective {
-				require.True(t, v.Phantom,
-					"detective narrate must be Phantom=true when detective is dead")
-				sawDetNarrate = true
-			}
-		case game.NightPonderStarted:
-			if v.Role == game.RoleDetective {
-				require.True(t, v.Phantom,
-					"detective ponder (phantom-substituted) must be Phantom=true")
-				sawDetPonder = true
-			}
+		v, ok := e.(game.NightSubPhaseStarted)
+		if !ok || v.Role != game.RoleDetective {
+			continue
+		}
+		switch v.Sub {
+		case game.NightSubNarrate:
+			require.True(t, v.Phantom,
+				"detective narrate must be Phantom=true when detective is dead")
+			sawDetNarrate = true
+		case game.NightSubPonder:
+			require.True(t, v.Phantom,
+				"detective ponder (phantom-substituted) must be Phantom=true")
+			sawDetPonder = true
 		}
 	}
-	require.True(t, sawDetNarrate, "expected NightNarrationStarted for detective")
-	require.True(t, sawDetPonder, "expected NightPonderStarted for detective")
+	require.True(t, sawDetNarrate, "expected a detective narrate sub-phase")
+	require.True(t, sawDetPonder, "expected a detective ponder sub-phase")
 }
 
 // --- NightAction validation -----------------------------------------------
@@ -1275,7 +1275,7 @@ func TestNight_MafiaTurnNeverPhantom(t *testing.T) {
 	evts := advancePhase(t, g)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
-	nn, ok := findEvent[game.NightNarrationStarted](evts)
+	nn, ok := findNightSub(evts, game.NightSubNarrate)
 	require.True(t, ok, "opening should advance into the mafia's narrate")
 	require.Equal(t, game.RoleMafia, nn.Role)
 	require.False(t, nn.Phantom,

@@ -77,11 +77,9 @@ func (r *Room) stopPhaseTimer() {
 
 // armSubPhaseTimer arms phaseTimer for the duration of the sub-phase
 // just started by `evt`. Duration is sourced from c.subPhaseDuration
-// (which routes to either NightSubPhases.* config fields or — for
-// narrate/sleep — to the role spec via game.NarrateDuration /
-// game.SleepDuration). The deadline stamped on the broadcast event
-// uses the same source, so server and clients agree on when this
-// sub-phase will end.
+// (the Default* constants, or the SubPhaseDurationOverride seam). The
+// deadline stamped on the broadcast event uses the same source, so
+// server and clients agree on when this sub-phase will end.
 //
 // The `submitted` flag is the only piece of context not carried on
 // the event itself — it distinguishes a real-actor-submitted ponder

@@ -7,6 +7,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Allow running the workflow on demand from the Actions tab.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't wait
 # behind an outdated in-flight run.

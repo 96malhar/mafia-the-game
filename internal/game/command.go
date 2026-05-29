@@ -93,6 +93,19 @@ type ClearVotes struct{}
 
 func (ClearVotes) isCommand() {}
 
+// RevealVotes flips the current PhaseDayVote tally from hidden to
+// public. Until the host reveals, vote counts and targets are private
+// to each voter (a voter sees only their own choice); revealing emits a
+// VotesRevealed event carrying the full voter→target map to everyone,
+// including dead players. Once revealed, voting is locked (DayVote is
+// rejected) until the host either FinalizeVotes or ClearVotes (the
+// latter wipes the tally and reopens voting, hidden again). Valid only
+// in PhaseDayVote and only once per tally (re-reveal is ErrNoChange).
+// Host-only.
+type RevealVotes struct{}
+
+func (RevealVotes) isCommand() {}
+
 // FinalizeVotes resolves the current vote tally and ends PhaseDayVote.
 // Valid only when the tally has a unique plurality (decisive lynch);
 // otherwise rejected with ErrNoChange — the host must ClearVotes first
@@ -100,6 +113,10 @@ func (ClearVotes) isCommand() {}
 // while still in DayVote (a future "skip lynch" command could be
 // added). On success, transitions to PhaseDayDiscussion (post-lynch)
 // or PhaseEnded if the lynch ends the game. Host-only.
+//
+// The intended flow is RevealVotes → FinalizeVotes, surfaced by the
+// host UI; the engine does not hard-require a prior reveal so existing
+// host tooling and tests stay simple.
 type FinalizeVotes struct{}
 
 func (FinalizeVotes) isCommand() {}
@@ -132,7 +149,8 @@ func (NightAction) isCommand() {}
 //
 // Self-voting is forbidden (ErrSelfTarget). Voter and Target (when set)
 // must be alive. Votes submitted in PhaseDayDiscussion are rejected with
-// ErrWrongPhase.
+// ErrWrongPhase, as are votes submitted after the host has revealed the
+// tally (RevealVotes locks voting until a ClearVotes reopens it).
 //
 // The vote phase is host-driven: the host calls FinalizeVotes when the
 // room has reached verbal consensus. The plurality target at finalize

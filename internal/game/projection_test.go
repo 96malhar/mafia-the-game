@@ -217,6 +217,62 @@ func TestProjection_SoloTownActionStaysPrivate(t *testing.T) {
 	})
 }
 
+func TestProjection_VoteSecrecyAndReveal(t *testing.T) {
+	g := fixedRoster(t)
+
+	events := []game.Event{
+		game.VoteCast{Voter: "town1", Target: "mafia1"},
+		game.VoteCast{Voter: "det", Target: "mafia1"},
+		game.VotesRevealed{Day: 1, Tally: map[game.PlayerID]game.PlayerID{
+			"town1": "mafia1", "det": "mafia1",
+		}},
+	}
+
+	t.Run("a voter sees only their own pre-reveal vote", func(t *testing.T) {
+		out := game.Project("town1", events, g.State())
+		var ownCast, othersCast int
+		for _, e := range out {
+			if vc, ok := e.(game.VoteCast); ok {
+				if vc.Voter == "town1" {
+					ownCast++
+				} else {
+					othersCast++
+				}
+			}
+		}
+		require.Equal(t, 1, ownCast, "town1 sees their own VoteCast")
+		require.Zero(t, othersCast, "town1 must NOT see det's VoteCast before reveal")
+	})
+
+	t.Run("a non-voter sees nobody's pre-reveal vote", func(t *testing.T) {
+		out := game.Project("town2", events, g.State())
+		for _, e := range out {
+			_, leaked := e.(game.VoteCast)
+			require.False(t, leaked, "town2 (hasn't voted) must see no VoteCast pre-reveal")
+		}
+	})
+
+	t.Run("everyone — including the dead — sees the revealed tally", func(t *testing.T) {
+		// Build a state where town2 is dead, to prove the reveal reaches
+		// spectating/dead players too (requirement: reveal is public).
+		dg := fixedRoster(t)
+		playNight(t, dg, map[game.Role]game.PlayerID{game.RoleMafia: "town2"})
+		require.Equal(t, game.PhaseDayDiscussion, dg.State().Phase())
+
+		for _, viewer := range []game.PlayerID{"town1", "town2", "det", "doc", "mafia1", "stranger"} {
+			out := game.Project(viewer, events, dg.State())
+			var found bool
+			for _, e := range out {
+				if rv, ok := e.(game.VotesRevealed); ok {
+					found = true
+					require.Len(t, rv.Tally, 2, "the full tally rides on the reveal event")
+				}
+			}
+			require.True(t, found, "viewer %q must see the revealed tally", viewer)
+		}
+	})
+}
+
 func TestProjection_UnknownViewerSeesOnlyPublic(t *testing.T) {
 	f := newProjectionFixture(t)
 	out := game.Project("stranger", f.events, f.g.State())

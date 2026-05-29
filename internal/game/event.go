@@ -253,6 +253,17 @@ type DetectiveResult struct {
 func (e DetectiveResult) isEvent()               {}
 func (e DetectiveResult) Visibility() Visibility { return PrivateTo(e.Detective) }
 
+// Vote events are PRIVATE TO THE VOTER while the tally is hidden.
+//
+// During PhaseDayVote the tally is secret until the host calls
+// RevealVotes: each voter sees only their own cast/change/retract (so
+// the UI can render "your vote" and let them change it), and no one can
+// see anyone else's choice or the running counts. The public reveal
+// rides on a single VotesRevealed event that carries the whole map at
+// once, so we deliberately do NOT widen these per-voter events to
+// public on reveal — that keeps the "who can see what" rule a function
+// of the event alone rather than of mutable game state.
+
 // VoteCast is emitted when a voter casts their first vote of the current
 // PhaseDayVote. Subsequent changes by the same voter emit VoteChanged;
 // retractions emit VoteRetracted.
@@ -261,8 +272,8 @@ type VoteCast struct {
 	Target PlayerID
 }
 
-func (VoteCast) isEvent()               {}
-func (VoteCast) Visibility() Visibility { return Public() }
+func (VoteCast) isEvent()                 {}
+func (e VoteCast) Visibility() Visibility { return PrivateTo(e.Voter) }
 
 // VoteChanged is emitted when a voter who already had an active vote
 // switches to a different target. It carries both old and new targets so
@@ -273,8 +284,8 @@ type VoteChanged struct {
 	To    PlayerID
 }
 
-func (VoteChanged) isEvent()               {}
-func (VoteChanged) Visibility() Visibility { return Public() }
+func (VoteChanged) isEvent()                 {}
+func (e VoteChanged) Visibility() Visibility { return PrivateTo(e.Voter) }
 
 // VoteRetracted is emitted when a voter withdraws their active vote
 // without immediately picking another target (i.e. DayVote{Target: ""}).
@@ -283,12 +294,26 @@ type VoteRetracted struct {
 	Was   PlayerID
 }
 
-func (VoteRetracted) isEvent()               {}
-func (VoteRetracted) Visibility() Visibility { return Public() }
+func (VoteRetracted) isEvent()                 {}
+func (e VoteRetracted) Visibility() Visibility { return PrivateTo(e.Voter) }
+
+// VotesRevealed is emitted when the host calls RevealVotes. It carries
+// the full voter→target tally so every viewer — alive, dead, or
+// spectating — can render who voted for whom in one shot. It is the only
+// vote-related event that is Public; the per-voter cast/change/retract
+// events stay private to their voter (see the note above VoteCast).
+type VotesRevealed struct {
+	Day   int
+	Tally map[PlayerID]PlayerID
+}
+
+func (VotesRevealed) isEvent()               {}
+func (VotesRevealed) Visibility() Visibility { return Public() }
 
 // VoteCleared is emitted when the host calls ClearVotes during
-// PhaseDayVote. The in-flight tally is wiped and clients re-render
-// with a fresh empty board so the room can vote again.
+// PhaseDayVote. The in-flight tally is wiped (and any prior reveal is
+// undone) and clients re-render with a fresh empty board so the room can
+// vote again, hidden once more.
 type VoteCleared struct {
 	Day int
 }
@@ -296,15 +321,27 @@ type VoteCleared struct {
 func (VoteCleared) isEvent()               {}
 func (VoteCleared) Visibility() Visibility { return Public() }
 
-// PlayerLynched records the result of a day vote. The role of the
-// lynched player is NOT revealed; that information is withheld until
-// GameEnded.
+// PlayerLynched records the result of a day vote that reached a strict
+// majority. The role of the lynched player is NOT revealed; that
+// information is withheld until GameEnded.
 type PlayerLynched struct {
 	PlayerID PlayerID
 }
 
 func (PlayerLynched) isEvent()               {}
 func (PlayerLynched) Visibility() Visibility { return Public() }
+
+// NoLynch records that a finalized day vote ended without a lynch: no
+// single target reached a strict majority of the living population (a
+// split vote, a plurality short of half, abstentions, or no votes at
+// all). The day still resolves — the host proceeds to the next night —
+// but nobody dies. Public so every viewer can narrate the outcome.
+type NoLynch struct {
+	Day int
+}
+
+func (NoLynch) isEvent()               {}
+func (NoLynch) Visibility() Visibility { return Public() }
 
 // GameEnded is the terminal event. Winner is one of FactionTown,
 // FactionMafia. FinalRoles reveals every player's role to everyone — this

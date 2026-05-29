@@ -25,6 +25,13 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 	if g.state.phase != PhaseDayVote {
 		return nil, ErrWrongPhase
 	}
+	// Once the host reveals the tally, voting is locked: the revealed
+	// map is the record the room is acting on, so late edits (which
+	// wouldn't be reflected in the already-broadcast VotesRevealed
+	// snapshot) are rejected. ClearVotes reopens voting if needed.
+	if g.state.votesRevealed {
+		return nil, ErrWrongPhase
+	}
 
 	voter, ok := g.state.findPlayer(c.Voter)
 	if !ok {
@@ -77,17 +84,24 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 }
 
 // resolveDayVote tallies the current vote map and returns either:
-//   - (lynchTarget, true)  -> a unique plurality exists; lynch them.
-//   - ("", false)          -> no unique plurality (tie, or no votes).
+//   - (lynchTarget, true)  -> a single target has a STRICT MAJORITY of
+//     the living population's votes; lynch them.
+//   - ("", false)          -> no strict majority (split vote, a plurality
+//     short of half, abstentions, or no votes).
 //
-// "Unique plurality" means: there is exactly one target with the
-// highest vote count, and that count is at least 1.
+// "Strict majority" means a single target's vote count is greater than
+// half the number of living players: count*2 > living. This is a higher
+// bar than a plurality — a town can lead the tally yet still fail to
+// reach the threshold, in which case nobody is lynched. A target with a
+// strict majority is necessarily unique (two targets can't each hold
+// >50%), so no tie-break is needed. Abstaining (a living player not
+// voting) effectively counts against the threshold, so a day can end
+// with no lynch even when everyone who voted agreed.
 //
-// The vote map is NOT cleared here. The caller is FinalizeVotes,
-// which is host-driven (no auto-advance from PhaseDayVote): on a
-// unique plurality the targeted player is lynched and the phase
-// returns to DayDiscussion; on a tie the host calls ClearVotes for
-// a re-vote or FinalizeVotes again to end the day with no lynch.
+// The vote map is NOT cleared here. The caller is FinalizeVotes, which
+// is host-driven (no auto-advance from PhaseDayVote): on a strict
+// majority the targeted player is lynched; otherwise the day ends with
+// no lynch. Either way the phase returns to DayDiscussion.
 func (g *Game) resolveDayVote() (PlayerID, bool) {
 	counts := make(map[PlayerID]int, len(g.state.votes))
 	for _, target := range g.state.votes {
@@ -97,28 +111,14 @@ func (g *Game) resolveDayVote() (PlayerID, bool) {
 		return "", false
 	}
 
-	var top PlayerID
-	var topCount int
-	var tied bool
-	// Iterate via the player list for deterministic order: if two
-	// candidates have the same count, the iteration determines which
-	// "appears first," but we then mark it tied and return false anyway.
+	living := g.state.livingCount()
+	// Iterate via the player list for deterministic order. At most one
+	// target can clear the >50% bar, so the first one we find is THE
+	// majority target; no tie-break is possible or needed.
 	for _, p := range g.state.players {
-		c := counts[p.id]
-		if c == 0 {
-			continue
-		}
-		switch {
-		case c > topCount:
-			top = p.id
-			topCount = c
-			tied = false
-		case c == topCount:
-			tied = true
+		if counts[p.id]*2 > living {
+			return p.id, true
 		}
 	}
-	if topCount == 0 || tied {
-		return "", false
-	}
-	return top, true
+	return "", false
 }

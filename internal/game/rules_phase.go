@@ -250,14 +250,54 @@ func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
 	from := g.state.phase
 	g.state.phase = PhaseDayVote
 	g.state.votes = make(map[PlayerID]PlayerID)
+	g.state.votesRevealed = false
 	return []Event{PhaseChanged{From: from, To: PhaseDayVote, Day: g.state.day}}, nil
 }
 
-// applyClearVotes wipes the in-flight vote tally so the room can
-// re-vote from a clean slate. Stays in PhaseDayVote.
+// applyRevealVotes flips the current PhaseDayVote tally from hidden to
+// public. Valid only in PhaseDayVote and only once per tally — a
+// re-reveal is rejected with ErrNoChange (idempotent against the host
+// double-clicking). On success it locks voting (further DayVote is
+// rejected until a ClearVotes) and emits a single Public VotesRevealed
+// event carrying a snapshot of the full voter→target map, so every
+// viewer (alive or dead) can render who voted for whom.
+func (g *Game) applyRevealVotes(_ RevealVotes) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
+	if g.state.phase != PhaseDayVote {
+		return nil, ErrWrongPhase
+	}
+	if g.state.votesRevealed {
+		return nil, ErrNoChange
+	}
+	g.state.votesRevealed = true
+	return []Event{VotesRevealed{Day: g.state.day, Tally: g.snapshotVotes()}}, nil
+}
+
+// snapshotVotes returns a copy of the current vote tally so the
+// VotesRevealed event carries an immutable map that can't be mutated by
+// later vote edits (there shouldn't be any post-reveal, but a copy keeps
+// the event self-contained for replay). Always non-nil.
+func (g *Game) snapshotVotes() map[PlayerID]PlayerID {
+	out := make(map[PlayerID]PlayerID, len(g.state.votes))
+	for voter, target := range g.state.votes {
+		out[voter] = target
+	}
+	return out
+}
+
+// applyClearVotes wipes the in-flight vote tally (and undoes any
+// reveal) so the room can re-vote from a clean, hidden slate. Stays in
+// PhaseDayVote.
 //
-// Returns ErrNoChange if there are no votes to clear, to avoid noisy
-// double-clicks producing redundant events.
+// Returns ErrNoChange only when there is genuinely nothing to do: no
+// votes cast AND the tally hasn't been revealed. After a reveal, clear
+// is always meaningful (it reopens hidden voting), even if the revealed
+// tally was empty.
 func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -268,18 +308,28 @@ func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 	if g.state.phase != PhaseDayVote {
 		return nil, ErrWrongPhase
 	}
-	if len(g.state.votes) == 0 {
+	// Nothing to clear AND nothing revealed → no-op, reject to avoid
+	// spamming the log with redundant VoteCleared events. But once the
+	// host has revealed (even an empty tally), ClearVotes is meaningful:
+	// it un-reveals and reopens hidden voting, which IS a state change.
+	if len(g.state.votes) == 0 && !g.state.votesRevealed {
 		return nil, ErrNoChange
 	}
 	g.state.votes = make(map[PlayerID]PlayerID)
+	g.state.votesRevealed = false
 	return []Event{VoteCleared{Day: g.state.day}}, nil
 }
 
-// applyFinalizeVotes resolves the current vote tally. Requires a
-// unique plurality (decisive lynch); otherwise rejects with ErrNoChange
-// so the host can ClearVotes and re-run the round. On success, lynches
-// the plurality target and transitions to PhaseDayDiscussion with
-// dayLynchResolved=true (or PhaseEnded if the lynch ends the game).
+// applyFinalizeVotes resolves the current vote tally and ALWAYS ends
+// the day. A lynch happens only if a single target reached a strict
+// majority of the living population (see resolveDayVote); otherwise the
+// day closes with NOBODY lynched. In both cases the phase returns to
+// PhaseDayDiscussion with dayLynchResolved=true (so the only legal host
+// command is BeginNight), or PhaseEnded if a lynch ends the game.
+//
+// Finalize is no longer rejected for an indecisive tally — pressing it
+// is the host's explicit "close the day" action, and a town that can't
+// muster a majority simply gets no lynch this round.
 func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase
@@ -292,11 +342,29 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	}
 
 	target, decisive := g.resolveDayVote()
-	if !decisive {
-		return nil, ErrNoChange
-	}
+
+	// The vote is settled; clear the reveal flag so a future round
+	// (after BeginNight → … → OpenVoting) starts hidden again. Harmless
+	// on the game-ending path below.
+	g.state.votesRevealed = false
 
 	var events []Event
+
+	// No strict majority: the day ends with nobody lynched. We still
+	// advance out of PhaseDayVote so the host can proceed to the next
+	// night. No win check is needed — the living roster is unchanged.
+	if !decisive {
+		from := g.state.phase
+		g.state.phase = PhaseDayDiscussion
+		g.state.votes = nil
+		g.state.dayLynchResolved = true
+		events = append(events,
+			NoLynch{Day: g.state.day},
+			PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day},
+		)
+		return events, nil
+	}
+
 	if tp, ok := g.state.findPlayer(target); ok {
 		tp.alive = false
 	}

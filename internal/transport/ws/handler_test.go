@@ -405,6 +405,38 @@ func TestWS_SetMafiaOutOfRangeReturnsError(t *testing.T) {
 	require.Equal(t, "error", env.Type)
 }
 
+// TestWS_RevealVotesRoutedToEngine is a regression test for a transport
+// gap: the inbound dispatch switch had its own hardcoded list of command
+// tags that drifted from the decoder, so a newly-added command
+// (revealVotes) decoded fine but then fell through to "unknown type"
+// (ErrCodeBadMessage) instead of reaching the engine.
+//
+// We don't need a game in PhaseDayVote to prove routing: sending
+// revealVotes in the lobby must produce the ENGINE's rejection
+// (wrong_phase), not the transport's bad_message. The buggy code
+// returned bad_message; the fixed code returns wrong_phase.
+func TestWS_RevealVotesRoutedToEngine(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code := createRoom(t, ts)
+
+	conn := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
+	_ = recvFrame(t, conn) // joined ack
+	_ = recvFrame(t, conn) // own PlayerJoined broadcast
+	_ = recvFrame(t, conn) // HostChanged broadcast
+
+	sendFrame(t, conn, "revealVotes", struct{}{})
+
+	env := recvFrame(t, conn)
+	require.Equal(t, "error", env.Type)
+	var er serverErrorData
+	require.NoError(t, json.Unmarshal(env.Data, &er))
+	require.Equal(t, string(wire.ErrCodeWrongPhase), er.Code,
+		"revealVotes must reach the engine (wrong_phase in lobby), not be dropped as an unknown message type")
+	require.NotEqual(t, string(wire.ErrCodeBadMessage), er.Code,
+		"a bad_message here means the transport dispatch dropped revealVotes")
+}
+
 // --- helpers --------------------------------------------------------------
 
 // createRoom hits the create-room endpoint and returns the new code.

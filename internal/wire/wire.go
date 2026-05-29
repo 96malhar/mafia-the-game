@@ -34,6 +34,7 @@ const (
 	ClientMsgStartGame     = "startGame"
 	ClientMsgBeginNight    = "beginNight"
 	ClientMsgOpenVoting    = "openVoting"
+	ClientMsgRevealVotes   = "revealVotes"
 	ClientMsgClearVotes    = "clearVotes"
 	ClientMsgFinalizeVotes = "finalizeVotes"
 	ClientMsgSetMafia      = "setMafia"
@@ -76,8 +77,10 @@ const (
 	EventVoteCast              = "voteCast"
 	EventVoteChanged           = "voteChanged"
 	EventVoteRetracted         = "voteRetracted"
+	EventVotesRevealed         = "votesRevealed"
 	EventVoteCleared           = "voteCleared"
 	EventPlayerLynched         = "playerLynched"
+	EventNoLynch               = "noLynch"
 	EventGameEnded             = "gameEnded"
 )
 

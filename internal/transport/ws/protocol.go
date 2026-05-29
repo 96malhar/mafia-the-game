@@ -55,6 +55,7 @@ const (
 	clientMsgStartGame     clientMsgType = wire.ClientMsgStartGame
 	clientMsgBeginNight    clientMsgType = wire.ClientMsgBeginNight
 	clientMsgOpenVoting    clientMsgType = wire.ClientMsgOpenVoting
+	clientMsgRevealVotes   clientMsgType = wire.ClientMsgRevealVotes
 	clientMsgClearVotes    clientMsgType = wire.ClientMsgClearVotes
 	clientMsgFinalizeVotes clientMsgType = wire.ClientMsgFinalizeVotes
 	clientMsgSetMafia      clientMsgType = wire.ClientMsgSetMafia

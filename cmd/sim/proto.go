@@ -128,7 +128,10 @@ const (
 	evTagNightActionStarted = wire.EventNightActionStarted
 	evTagPlayerKilled       = wire.EventPlayerKilled
 	evTagPlayerLynched      = wire.EventPlayerLynched
+	evTagNoLynch            = wire.EventNoLynch
 	evTagDetectiveResult    = wire.EventDetectiveResult
+	evTagVotesRevealed      = wire.EventVotesRevealed
+	evTagVoteCleared        = wire.EventVoteCleared
 	evTagGameEnded          = wire.EventGameEnded
 
 	phaseLobby         = wire.PhaseLobby

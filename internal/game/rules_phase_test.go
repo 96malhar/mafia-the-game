@@ -239,17 +239,23 @@ func toDayVote(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) 
 }
 
 // toNextNight assumes the game is in PhaseDayDiscussion (post-Night
-// resolve) and walks to the NEXT PhaseNight by simulating a lynch on
-// the given target. After return, the engine is positioned at the
-// mafia's act window (same postcondition as fixedRoster), so the
+// resolve) and walks to the NEXT PhaseNight by lynching the given
+// target. To guarantee an actual lynch under the strict-majority rule
+// (a target needs more than half the living players' votes), it has
+// EVERY living player except the target vote for the target — that is
+// always a strict majority. After return, the engine is positioned at
+// the mafia's act window (same postcondition as fixedRoster), so the
 // caller can keep using nightAction / playNight directly.
-func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID, voters ...game.PlayerID) {
+func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID) {
 	t.Helper()
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 	_, err := g.Apply(game.OpenVoting{})
 	require.NoError(t, err)
-	for _, v := range voters {
-		_, err := g.Apply(game.DayVote{Voter: v, Target: lynchTarget})
+	for _, p := range g.State().Players() {
+		if !p.Alive() || p.ID() == lynchTarget {
+			continue
+		}
+		_, err := g.Apply(game.DayVote{Voter: p.ID(), Target: lynchTarget})
 		require.NoError(t, err)
 	}
 	_, err = g.Apply(game.FinalizeVotes{})
@@ -473,7 +479,7 @@ func TestNight_DeadRoleEmitsPhantomTurn(t *testing.T) {
 	})
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	toNextNight(t, g, "town2", "town1", "doc")
+	toNextNight(t, g, "town2")
 	require.Equal(t, game.PhaseNight, g.State().Phase())
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
@@ -510,7 +516,7 @@ func TestNight_PhantomTurnEmitsPhantomFlagOnEvents(t *testing.T) {
 	playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia: "det", // detective dies
 	})
-	toNextNight(t, g, "town2", "town1", "doc")
+	toNextNight(t, g, "town2")
 	require.Equal(t, game.PhaseNight, g.State().Phase())
 
 	// Submit mafia; in the batch from walkRestOfTurn we should see
@@ -731,7 +737,7 @@ func TestNightAction_Validation(t *testing.T) {
 			game.RoleMafia:  "town1",
 			game.RoleDoctor: "town2",
 		})
-		toNextNight(t, g, "det", "town2", "doc")
+		toNextNight(t, g, "det")
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 
 		_, err := g.Apply(game.NightAction{Actor: "mafia1", Target: "town1"})
@@ -749,7 +755,7 @@ func TestNightAction_Validation(t *testing.T) {
 		playNight(t, g, map[game.Role]game.PlayerID{
 			game.RoleMafia: "det",
 		})
-		toNextNight(t, g, "town2", "town1", "doc")
+		toNextNight(t, g, "town2")
 		require.Equal(t, game.PhaseNight, g.State().Phase())
 
 		// Mafia acts; walk to detective's (phantom) ponder.
@@ -909,6 +915,32 @@ func TestDayVote_StateTable(t *testing.T) {
 		require.Equal(t, game.PlayerID("mafia1"), v.Target)
 	})
 
+	t.Run("vote events are private to the voter (tally stays hidden)", func(t *testing.T) {
+		g := intoDayVote(t)
+
+		cast, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+		vc, ok := findEvent[game.VoteCast](cast)
+		require.True(t, ok)
+		require.Equal(t, "player", vc.Visibility().Audience)
+		require.Equal(t, game.PlayerID("town1"), vc.Visibility().Player,
+			"a cast vote is visible only to the voter until reveal")
+
+		changed, err := g.Apply(game.DayVote{Voter: "town1", Target: "det"})
+		require.NoError(t, err)
+		vch, ok := findEvent[game.VoteChanged](changed)
+		require.True(t, ok)
+		require.Equal(t, "player", vch.Visibility().Audience)
+		require.Equal(t, game.PlayerID("town1"), vch.Visibility().Player)
+
+		retracted, err := g.Apply(game.DayVote{Voter: "town1", Target: ""})
+		require.NoError(t, err)
+		vr, ok := findEvent[game.VoteRetracted](retracted)
+		require.True(t, ok)
+		require.Equal(t, "player", vr.Visibility().Audience)
+		require.Equal(t, game.PlayerID("town1"), vr.Visibility().Player)
+	})
+
 	t.Run("change emits VoteChanged{From,To}", func(t *testing.T) {
 		g := intoDayVote(t)
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
@@ -974,11 +1006,14 @@ func TestVoteResolution(t *testing.T) {
 		return g
 	}
 
-	t.Run("decisive plurality: FinalizeVotes lynches target", func(t *testing.T) {
+	// Roster has 5 living players entering the vote (doctor saved the
+	// mafia's target), so a strict majority is 3 votes (3*2 > 5).
+
+	t.Run("strict majority: FinalizeVotes lynches target", func(t *testing.T) {
 		g := intoDayVote(t)
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
-		_, _ = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"})
+		_, _ = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"}) // 3 of 5 = majority
 
 		evts, err := g.Apply(game.FinalizeVotes{})
 		require.NoError(t, err)
@@ -986,24 +1021,54 @@ func TestVoteResolution(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, game.PlayerID("mafia1"), l.PlayerID)
 		require.Equal(t, "public", l.Visibility().Audience)
+		_, noLynch := findEvent[game.NoLynch](evts)
+		require.False(t, noLynch, "a majority lynch must not also emit NoLynch")
 	})
 
-	t.Run("FinalizeVotes on tie rejected with ErrNoChange", func(t *testing.T) {
+	t.Run("plurality short of a majority: NoLynch, day still resolves", func(t *testing.T) {
+		g := intoDayVote(t)
+		// mafia1 leads with 2 of 5, but 2*2 == 4 is not > 5, so no lynch.
+		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
+		_, _ = g.Apply(game.DayVote{Voter: "det", Target: "doc"})
+
+		evts, err := g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err, "finalize always closes the day")
+		_, lynched := findEvent[game.PlayerLynched](evts)
+		require.False(t, lynched, "no majority → nobody lynched")
+		nl, ok := findEvent[game.NoLynch](evts)
+		require.True(t, ok, "an indecisive finalize emits NoLynch")
+		require.Equal(t, "public", nl.Visibility().Audience)
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+		require.True(t, g.State().DayLynchResolved(),
+			"NoLynch resolves the day so the host advances to BeginNight")
+	})
+
+	t.Run("tie: NoLynch, day still resolves", func(t *testing.T) {
 		g := intoDayVote(t)
 		_, _ = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
 		_, _ = g.Apply(game.DayVote{Voter: "town2", Target: "det"})
 
-		_, err := g.Apply(game.FinalizeVotes{})
-		require.ErrorIs(t, err, game.ErrNoChange,
-			"tie has no plurality; FinalizeVotes must fail")
-		require.Equal(t, game.PhaseDayVote, g.State().Phase(),
-			"phase unchanged when finalize is rejected")
+		evts, err := g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err)
+		_, lynched := findEvent[game.PlayerLynched](evts)
+		require.False(t, lynched, "a tie has no majority")
+		_, ok := findEvent[game.NoLynch](evts)
+		require.True(t, ok)
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+		require.True(t, g.State().DayLynchResolved())
 	})
 
-	t.Run("FinalizeVotes on empty tally rejected", func(t *testing.T) {
+	t.Run("empty tally: NoLynch, day still resolves", func(t *testing.T) {
 		g := intoDayVote(t)
-		_, err := g.Apply(game.FinalizeVotes{})
-		require.ErrorIs(t, err, game.ErrNoChange)
+		evts, err := g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err, "finalize with no votes still closes the day")
+		_, lynched := findEvent[game.PlayerLynched](evts)
+		require.False(t, lynched)
+		_, ok := findEvent[game.NoLynch](evts)
+		require.True(t, ok, "no living player voted → NoLynch")
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+		require.True(t, g.State().DayLynchResolved())
 	})
 
 	t.Run("ClearVotes wipes tally and stays in DayVote", func(t *testing.T) {
@@ -1065,6 +1130,151 @@ func TestVoteResolution(t *testing.T) {
 			"BeginNight clears the lynch-resolved flag")
 		// And it begins with an opening sub-phase, not a narrate.
 		require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
+	})
+}
+
+// --- Reveal-then-finalize vote flow --------------------------------------
+
+func TestRevealVotes(t *testing.T) {
+	intoDayVote := func(t *testing.T) *game.Game {
+		t.Helper()
+		g := fixedRoster(t)
+		toDayVote(t, g, map[game.Role]game.PlayerID{
+			game.RoleMafia:  "town1",
+			game.RoleDoctor: "town1", // save -> nobody dies
+		})
+		return g
+	}
+
+	castDecisive := func(t *testing.T, g *game.Game) {
+		t.Helper()
+		_, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"})
+		require.NoError(t, err)
+	}
+
+	t.Run("reveal emits a public VotesRevealed snapshot of the tally", func(t *testing.T) {
+		g := intoDayVote(t)
+		castDecisive(t, g)
+		require.False(t, g.State().VotesRevealed())
+
+		evts, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		require.True(t, g.State().VotesRevealed())
+
+		rv, ok := findEvent[game.VotesRevealed](evts)
+		require.True(t, ok, "RevealVotes must emit VotesRevealed")
+		require.Equal(t, "public", rv.Visibility().Audience,
+			"the revealed tally is public — everyone, incl. dead, sees it")
+		require.Equal(t, map[game.PlayerID]game.PlayerID{
+			"town1": "mafia1", "town2": "mafia1", "det": "mafia1",
+		}, rv.Tally)
+	})
+
+	t.Run("re-reveal is rejected with ErrNoChange", func(t *testing.T) {
+		g := intoDayVote(t)
+		castDecisive(t, g)
+		_, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		_, err = g.Apply(game.RevealVotes{})
+		require.ErrorIs(t, err, game.ErrNoChange)
+	})
+
+	t.Run("reveal outside PhaseDayVote is rejected", func(t *testing.T) {
+		g := fixedRoster(t)
+		playNight(t, g, map[game.Role]game.PlayerID{
+			game.RoleMafia:  "town1",
+			game.RoleDoctor: "town1",
+		})
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+		_, err := g.Apply(game.RevealVotes{})
+		require.ErrorIs(t, err, game.ErrWrongPhase)
+	})
+
+	t.Run("reveal with an empty tally is allowed and snapshots empty", func(t *testing.T) {
+		g := intoDayVote(t)
+		evts, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		rv, ok := findEvent[game.VotesRevealed](evts)
+		require.True(t, ok)
+		require.Empty(t, rv.Tally)
+		require.NotNil(t, rv.Tally, "tally is always a non-nil (possibly empty) map")
+	})
+
+	t.Run("clear after an empty reveal reopens voting", func(t *testing.T) {
+		// Regression: revealing before anyone votes left the host stuck —
+		// ClearVotes rejected with ErrNoChange because the tally was
+		// empty, even though clearing would still undo the reveal.
+		g := intoDayVote(t)
+		_, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		require.True(t, g.State().VotesRevealed())
+
+		evts, err := g.Apply(game.ClearVotes{})
+		require.NoError(t, err, "clear must work after a reveal even with no votes")
+		_, ok := findEvent[game.VoteCleared](evts)
+		require.True(t, ok)
+		require.False(t, g.State().VotesRevealed(), "clear undoes the reveal")
+
+		// And voting is open again.
+		_, err = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+	})
+
+	t.Run("voting is locked after reveal until cleared", func(t *testing.T) {
+		g := intoDayVote(t)
+		castDecisive(t, g)
+		_, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+
+		// New votes and changes are both rejected post-reveal.
+		_, err = g.Apply(game.DayVote{Voter: "mafia1", Target: "det"})
+		require.ErrorIs(t, err, game.ErrWrongPhase,
+			"a new vote after reveal must be rejected")
+		_, err = g.Apply(game.DayVote{Voter: "town1", Target: "det"})
+		require.ErrorIs(t, err, game.ErrWrongPhase,
+			"changing a vote after reveal must be rejected")
+
+		// ClearVotes reopens voting (hidden again) and votes flow once more.
+		_, err = g.Apply(game.ClearVotes{})
+		require.NoError(t, err)
+		require.False(t, g.State().VotesRevealed(),
+			"ClearVotes undoes the reveal")
+		_, err = g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err, "voting is open again after clear")
+	})
+
+	t.Run("OpenVoting starts a fresh round hidden", func(t *testing.T) {
+		// Drive a full reveal+lynch, begin a new night, and confirm the
+		// next OpenVoting starts with votesRevealed=false again.
+		g := intoDayVote(t)
+		_, err := g.Apply(game.DayVote{Voter: "town1", Target: "det"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "det"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayVote{Voter: "mafia1", Target: "det"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		_, err = g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err)
+		require.False(t, g.State().VotesRevealed(),
+			"finalize clears the reveal flag")
+	})
+
+	t.Run("finalize after reveal lynches the plurality target", func(t *testing.T) {
+		g := intoDayVote(t)
+		castDecisive(t, g)
+		_, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		evts, err := g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err)
+		l, ok := findEvent[game.PlayerLynched](evts)
+		require.True(t, ok)
+		require.Equal(t, game.PlayerID("mafia1"), l.PlayerID)
 	})
 }
 

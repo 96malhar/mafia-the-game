@@ -54,6 +54,12 @@ type Bot struct {
 	// PhaseDayDiscussion.
 	dayLynchResolved bool
 
+	// votesRevealed mirrors the engine flag: true once the host has
+	// revealed the current day's tally, false otherwise. The host
+	// driver uses it to sequence RevealVotes → FinalizeVotes. Set by
+	// votesRevealed, cleared by voteCleared and on any phase change.
+	votesRevealed bool
+
 	conn *websocket.Conn
 }
 
@@ -187,6 +193,7 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 		_ = json.Unmarshal(ev.Data, &d)
 		b.phase = d.To
 		b.currentNightRole = "" // cleared on every phase entry
+		b.votesRevealed = false // a fresh phase starts hidden
 		// dayLynchResolved is set by PlayerLynched (below) and stays
 		// true until we re-enter Night.
 		if d.To == phaseNight {
@@ -233,6 +240,14 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 			b.log.Info("lynched")
 		}
 
+	case evTagNoLynch:
+		// The day's vote was finalized without a majority: nobody dies,
+		// but the day is still resolved. Mirror the same flag a lynch
+		// sets so the host driver advances to BeginNight rather than
+		// re-opening voting.
+		b.dayLynchResolved = true
+		b.log.Debug("no lynch (no majority)")
+
 	case evTagDetectiveResult:
 		var d evDetectiveResult
 		_ = json.Unmarshal(ev.Data, &d)
@@ -240,6 +255,14 @@ func (b *Bot) handleEvent(ctx context.Context, ev eventEnvelope) (bool, evGameEn
 			b.detectiveKnown[d.Target] = d.IsMafia
 			b.log.Info("detective result", "target", d.Target, "mafia", d.IsMafia)
 		}
+
+	case evTagVotesRevealed:
+		b.votesRevealed = true
+		b.log.Debug("votes revealed")
+
+	case evTagVoteCleared:
+		b.votesRevealed = false
+		b.log.Debug("votes cleared")
 
 	case evTagGameEnded:
 		var d evGameEnded
@@ -285,6 +308,11 @@ func (b *Bot) Phase() string { return b.phase }
 // PlayerLynched landing during PhaseDayVote, followed by a transition
 // to DayDiscussion, sets the flag; a transition into Night clears it.
 func (b *Bot) DayLynchResolved() bool { return b.dayLynchResolved }
+
+// VotesRevealed returns true once the host has revealed the current
+// day's vote tally. The host driver reads it to sequence the two-step
+// RevealVotes → FinalizeVotes flow.
+func (b *Bot) VotesRevealed() bool { return b.votesRevealed }
 
 // send marshals a typed message and writes it as a text frame.
 func (b *Bot) send(ctx context.Context, kind string, payload any) error {

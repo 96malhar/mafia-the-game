@@ -45,6 +45,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyBeginNight(c)
 	case OpenVoting:
 		return g.applyOpenVoting(c)
+	case RevealVotes:
+		return g.applyRevealVotes(c)
 	case ClearVotes:
 		return g.applyClearVotes(c)
 	case FinalizeVotes:

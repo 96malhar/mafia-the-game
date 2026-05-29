@@ -539,8 +539,8 @@ func (r *Room) oldestConnectedPlayer() game.PlayerID {
 // Two additional gates beyond identity rewriting:
 //
 //  1. Host-only commands (StartGame, BeginNight, OpenVoting,
-//     ClearVotes, FinalizeVotes, SetMafiaCount) are rejected from
-//     non-host subscribers with a "forbidden" error.
+//     RevealVotes, ClearVotes, FinalizeVotes, SetMafiaCount) are
+//     rejected from non-host subscribers with a "forbidden" error.
 //  2. AdvancePhase is INTERNAL — it's the room's per-turn-timer
 //     signal. Forwarding it from a client would let any player skip
 //     the active night turn, so we reject those outright.
@@ -593,6 +593,7 @@ func isHostOnly(cmd game.Command) bool {
 	case game.StartGame,
 		game.BeginNight,
 		game.OpenVoting,
+		game.RevealVotes,
 		game.ClearVotes,
 		game.FinalizeVotes,
 		game.SetMafiaCount:

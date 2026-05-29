@@ -97,12 +97,18 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.VoteRetracted:
 		tag = wire.EventVoteRetracted
 		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
+	case game.VotesRevealed:
+		tag = wire.EventVotesRevealed
+		data = kv{"day": v.Day, "tally": voteMapToStrings(v.Tally)}
 	case game.VoteCleared:
 		tag = wire.EventVoteCleared
 		data = kv{"day": v.Day}
 	case game.PlayerLynched:
 		tag = wire.EventPlayerLynched
 		data = kv{"playerId": string(v.PlayerID)}
+	case game.NoLynch:
+		tag = wire.EventNoLynch
+		data = kv{"day": v.Day}
 	case game.GameEnded:
 		tag = wire.EventGameEnded
 		data = kv{"winner": string(v.Winner), "finalRoles": rolesMapToStrings(v.FinalRoles)}
@@ -241,6 +247,9 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 	case clientMsgOpenVoting:
 		return clientMsgOpenVoting, struct{}{}, nil
 
+	case clientMsgRevealVotes:
+		return clientMsgRevealVotes, struct{}{}, nil
+
 	case clientMsgClearVotes:
 		return clientMsgClearVotes, struct{}{}, nil
 
@@ -288,6 +297,8 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 		return game.BeginNight{}, true
 	case clientMsgOpenVoting:
 		return game.OpenVoting{}, true
+	case clientMsgRevealVotes:
+		return game.RevealVotes{}, true
 	case clientMsgClearVotes:
 		return game.ClearVotes{}, true
 	case clientMsgFinalizeVotes:
@@ -300,6 +311,17 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 // --- Small utility shims --------------------------------------------------
 
 func rolesMapToStrings(m map[game.PlayerID]game.Role) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[string(k)] = string(v)
+	}
+	return out
+}
+
+// voteMapToStrings flattens a voter→target PlayerID map into a
+// string→string map for the wire (used by the VotesRevealed event). A
+// nil map encodes as an empty object so the client always gets a {}.
+func voteMapToStrings(m map[game.PlayerID]game.PlayerID) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[string(k)] = string(v)

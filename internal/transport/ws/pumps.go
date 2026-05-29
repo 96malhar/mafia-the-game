@@ -244,35 +244,28 @@ func dispatchClientMessage(
 	tag clientMsgType,
 	payload any,
 ) error {
-	switch tag {
-	case clientMsgJoin:
+	// Join is the one client message that isn't an engine command
+	// (it carries connection identity, not game intent), so it's
+	// handled explicitly. Everything else is routed through
+	// commandFromClient, which is the SINGLE source of truth for which
+	// tags map to engine commands — we deliberately don't re-list the
+	// command tags here. (An earlier version did, and a new command
+	// silently fell through to "unknown type" because the second list
+	// wasn't updated.)
+	if tag == clientMsgJoin {
 		d := payload.(clientJoinData)
 		return r.SubmitJoin(ctx, sub, d.Name)
+	}
 
-	case clientMsgNightAction,
-		clientMsgVote,
-		clientMsgSetMafia,
-		clientMsgStartGame,
-		clientMsgBeginNight,
-		clientMsgOpenVoting,
-		clientMsgClearVotes,
-		clientMsgFinalizeVotes:
-		cmd, ok := commandFromClient(tag, payload)
-		if !ok {
-			// Should be unreachable — commandFromClient handles every
-			// non-join client message. We send an error frame just in
-			// case a future tag is added without wiring.
-			sendErrorViaRoom(ctx, r, sub, wire.ErrCodeInternal, "unhandled command tag")
-			return nil
-		}
-		return r.SubmitCommand(ctx, sub, cmd)
-
-	default:
-		// decodeClientMessage already validates tags, so this branch is
-		// a belt-and-braces guard.
+	cmd, ok := commandFromClient(tag, payload)
+	if !ok {
+		// decodeClientMessage already rejects unknown tags, so this
+		// only fires if a tag decodes but has no command mapping —
+		// belt-and-braces against a half-wired future message.
 		sendErrorViaRoom(ctx, r, sub, wire.ErrCodeBadMessage, "unknown type")
 		return nil
 	}
+	return r.SubmitCommand(ctx, sub, cmd)
 }
 
 // sendErrorViaRoom delivers an OutError to the subscriber. Transport-

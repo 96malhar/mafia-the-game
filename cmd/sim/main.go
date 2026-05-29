@@ -135,7 +135,8 @@ func run(ctx context.Context, logger *slog.Logger, addr string, nPlayers int, ti
 	//   startGame                              (deals roles; phase stays Lobby)
 	//   beginNight       -> phase = night      (bots: mafia/doctor/detective act)
 	//   [engine resolves night] -> phase = day_discussion
-	//   openVoting       -> phase = day_vote   (bots vote)
+	//   openVoting       -> phase = day_vote   (bots vote, tally hidden)
+	//   revealVotes      -> tally public, voting locked
 	//   finalizeVotes    -> lynch -> phase = day_discussion (lynchResolved=true)
 	//   beginNight       -> phase = night (or gameEnded already fired)
 	//   ...
@@ -222,14 +223,20 @@ func runHostDriver(ctx context.Context, host *Bot, logger *slog.Logger, tick tim
 				}
 			}
 		case phaseDayVote:
-			// Bots have had `tick` to cast votes. Try to finalize.
-			// If the tally is tied we get a 'no_change' error back
-			// and we'll just keep polling — bots may keep adjusting
-			// their votes over subsequent ticks. To avoid an
-			// infinite tie loop we periodically ClearVotes to nudge
-			// strategies to re-decide. The strategy is deterministic
-			// so this is rarely needed in practice.
-			if err := host.send(ctx, wire.ClientMsgFinalizeVotes, struct{}{}); err != nil {
+			// Two-step host flow: reveal the tally first (this is what
+			// a real host does once players confirm they've voted),
+			// then finalize on the next tick. Bots have had `tick` to
+			// cast votes before the reveal; the reveal locks voting,
+			// then finalize closes the day. Finalize ALWAYS advances:
+			// it lynches the target if it reached a >50% majority,
+			// otherwise it emits NoLynch and moves on. Either way the
+			// game progresses, so the host never gets stuck here.
+			if !host.VotesRevealed() {
+				if err := host.send(ctx, wire.ClientMsgRevealVotes, struct{}{}); err != nil {
+					logger.Warn("revealVotes send failed", "err", err)
+					return
+				}
+			} else if err := host.send(ctx, wire.ClientMsgFinalizeVotes, struct{}{}); err != nil {
 				logger.Warn("finalizeVotes send failed", "err", err)
 				return
 			}

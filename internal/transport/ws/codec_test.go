@@ -60,6 +60,11 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			wantTag: clientMsgOpenVoting,
 		},
 		{
+			name:    "revealVotes no data",
+			raw:     `{"type":"revealVotes"}`,
+			wantTag: clientMsgRevealVotes,
+		},
+		{
 			name:    "clearVotes no data",
 			raw:     `{"type":"clearVotes"}`,
 			wantTag: clientMsgClearVotes,
@@ -197,8 +202,10 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.VoteCast{Voter: "p1", Target: "p2"},
 		game.VoteChanged{Voter: "p1", From: "p2", To: "p3"},
 		game.VoteRetracted{Voter: "p1", Was: "p2"},
+		game.VotesRevealed{Day: 1, Tally: map[game.PlayerID]game.PlayerID{"p1": "p2"}},
 		game.VoteCleared{Day: 1},
 		game.PlayerLynched{PlayerID: "p2"},
+		game.NoLynch{Day: 1},
 		game.GameEnded{Winner: game.FactionTown, FinalRoles: map[game.PlayerID]game.Role{"p1": game.RoleMafia}},
 	}
 	for _, ev := range all {
@@ -210,6 +217,33 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 			require.Equal(t, "event", env.Type)
 		})
 	}
+}
+
+func TestEncodeOutbound_VotesRevealed(t *testing.T) {
+	// The reveal event must carry the full voter→target tally as a
+	// string→string object under "tally", plus the day.
+	ev := game.VotesRevealed{
+		Day:   2,
+		Tally: map[game.PlayerID]game.PlayerID{"p1": "p3", "p2": "p3"},
+	}
+	raw, ok, err := encodeOutbound(room.OutEvent{Event: ev})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	env := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "event", env.Type)
+
+	var ed serverEventData
+	require.NoError(t, json.Unmarshal(env.Data, &ed))
+	require.Equal(t, "votesRevealed", ed.Event.Type)
+
+	var data struct {
+		Day   int               `json:"day"`
+		Tally map[string]string `json:"tally"`
+	}
+	require.NoError(t, json.Unmarshal(ed.Event.Data, &data))
+	require.Equal(t, 2, data.Day)
+	require.Equal(t, map[string]string{"p1": "p3", "p2": "p3"}, data.Tally)
 }
 
 func TestEncodeOutbound_Error(t *testing.T) {
@@ -252,6 +286,10 @@ func TestCommandFromClient(t *testing.T) {
 	cmd, ok = commandFromClient(clientMsgOpenVoting, struct{}{})
 	require.True(t, ok)
 	require.Equal(t, game.OpenVoting{}, cmd)
+
+	cmd, ok = commandFromClient(clientMsgRevealVotes, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.RevealVotes{}, cmd)
 
 	cmd, ok = commandFromClient(clientMsgClearVotes, struct{}{})
 	require.True(t, ok)

@@ -58,6 +58,13 @@ type GameState struct {
 	// or deleted as players change or retract their vote.
 	votes map[PlayerID]PlayerID
 
+	// votesRevealed records whether the host has revealed the current
+	// PhaseDayVote tally (RevealVotes). While false the tally is hidden
+	// — each voter sees only their own vote. Once true the full tally is
+	// public (via the VotesRevealed event) and voting is locked until a
+	// ClearVotes reopens it. Reset to false by OpenVoting and ClearVotes.
+	votesRevealed bool
+
 	// dayLynchResolved records whether this day has already had a vote
 	// finalized. When true, the only legal host transition out of
 	// PhaseDayDiscussion is BeginNight; OpenVoting is rejected. Reset
@@ -213,6 +220,14 @@ func (s *GameState) MafiaCount() int { return s.mafiaCount }
 // post-finalize they only get Begin Night.
 func (s *GameState) DayLynchResolved() bool { return s.dayLynchResolved }
 
+// VotesRevealed reports whether the host has revealed the current
+// PhaseDayVote tally. The UI keys off this to swap the host's "Reveal
+// votes" button for "Finalize votes" / "Clear & re-vote", to stop
+// showing the per-row Vote buttons (voting is locked post-reveal), and
+// to switch the tally from hidden to visible. Always false outside an
+// in-progress, unrevealed vote.
+func (s *GameState) VotesRevealed() bool { return s.votesRevealed }
+
 // RolesDealt reports whether StartGame has dealt per-player roles. Once
 // true the lobby is closed to new players and config changes, even
 // while the game remains in PhaseLobby awaiting the host's BeginNight.
@@ -259,6 +274,20 @@ func (s *GameState) findPlayer(id PlayerID) (*Player, bool) {
 		}
 	}
 	return nil, false
+}
+
+// livingCount returns the total number of currently alive players,
+// regardless of faction. Used by the day-vote resolver to compute the
+// strict-majority threshold (a lynch requires more than half the
+// living players to agree on a single target).
+func (s *GameState) livingCount() int {
+	n := 0
+	for i := range s.players {
+		if s.players[i].alive {
+			n++
+		}
+	}
+	return n
 }
 
 // factionLivingCount returns the number of currently alive members of f.

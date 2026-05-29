@@ -379,6 +379,16 @@
       let day = 0;
       let myAction = null;
       let votes = new Map();
+      // votesRevealed mirrors the engine's same-named flag. While false
+      // (voting open) the tally is HIDDEN: each client's `votes` map
+      // holds only its own vote (the server keeps every other voter's
+      // choice private), so we render no counts and no who-voted-for-whom.
+      // The host's RevealVotes flips this true and ships the full tally
+      // in one votesRevealed event; from then on everyone (incl. dead
+      // players) sees the board and the per-row Vote buttons disappear
+      // (voting is locked until a Clear & re-vote). Reset to false on
+      // any phase change and on voteCleared.
+      let votesRevealed = false;
       let winner = null;
       // dayLynchResolved mirrors the engine's same-named flag. Set to
       // true when a PlayerLynched event arrives during day_vote (the
@@ -984,6 +994,7 @@
         day = 0;
         myAction = null;
         votes = new Map();
+        votesRevealed = false;
         winner = null;
         myRole = null;
         dayLynchResolved = false;
@@ -1137,16 +1148,33 @@
         // show (death cause, revealed role, current vote tally),
         // and is omitted entirely otherwise so living players in
         // ordinary phases get a clean single-line row.
+        // The sub-line WRAPS rather than truncates: the post-reveal
+        // "voted by A, B, C, …" list can name up to (roster-1) players,
+        // which on a phone (single-column rows) would otherwise be
+        // clipped to one line with an ellipsis, hiding most voters. The
+        // other sub-line contents (death cause, revealed role) are short
+        // and unaffected. The row is flex items-center, so a taller
+        // wrapped left column stays aligned with the right-side badge.
         const subEl = document.createElement("div");
-        subEl.className = "truncate font-mono text-xs text-slate-500";
+        subEl.className = "font-mono text-xs text-slate-500 break-words leading-snug";
         const bits = [];
         if (!p.alive) {
           bits.push(p.deathCause === "lynched" ? "lynched by vote" : "killed in the night");
         }
         if (p.revealedRole) bits.push(p.revealedRole);
-        if (phase === "day_vote" && p.alive) {
-          const n = tallyFor(p.id);
-          if (n > 0) bits.push(`${n} vote${n === 1 ? "" : "s"}`);
+        // Vote tally is secret until the host reveals it. Pre-reveal we
+        // show NO counts (not even your own contribution) — a voter's
+        // selection is conveyed by their row's "Voted ✓" highlight and
+        // the "Your vote: X" chip instead. Post-reveal each living
+        // player's row shows how many votes they received and the names
+        // of everyone who voted against them, so the whole room (incl.
+        // the dead) can read exactly who's lining up on whom.
+        if (phase === "day_vote" && votesRevealed && p.alive) {
+          const voters = votersFor(p.id);
+          if (voters.length > 0) {
+            bits.push(`${voters.length} vote${voters.length === 1 ? "" : "s"}`);
+            bits.push(`voted by ${voters.join(", ")}`);
+          }
         }
 
         left.appendChild(nameEl);
@@ -1179,6 +1207,18 @@
         let n = 0;
         for (const target of votes.values()) if (target === pid) n++;
         return n;
+      }
+
+      // votersFor returns the display names of everyone who voted for
+      // pid, in roster (join) order so the list is stable across renders.
+      // Only meaningful once votes are revealed (pre-reveal the `votes`
+      // map holds at most the local player's own vote).
+      function votersFor(pid) {
+        const names = [];
+        for (const p of players.values()) {
+          if (votes.get(p.id) === pid) names.push(p.name);
+        }
+        return names;
       }
 
       // canActAtNight reports whether the LOCAL player has a night
@@ -1250,7 +1290,7 @@
           return b;
         }
 
-        if (phase === "day_vote" && iAmAlive && p.alive && p.id !== myId) {
+        if (phase === "day_vote" && !votesRevealed && iAmAlive && p.alive && p.id !== myId) {
           const mine = votes.get(myId);
           const isMyTarget = mine === p.id;
           const b = document.createElement("button");
@@ -1529,14 +1569,19 @@
           }
 
           case "day_vote": {
-            headline.textContent = "Vote";
+            headline.textContent = votesRevealed ? "Votes revealed" : "Vote";
             if (!iAmAlive) {
-              hint.textContent = "You're out. You may not vote.";
+              hint.textContent = votesRevealed
+                ? "Votes are in. Roster below shows who voted for whom."
+                : "You're out. You may not vote.";
+            } else if (votesRevealed) {
+              hint.textContent =
+                "Votes are locked and shown below. A player is voted out only with a majority (more than half the living players); otherwise no one is. Waiting on the host to finalize.";
             } else {
               const myVote = votes.get(myId);
               hint.textContent = myVote
-                ? "Vote locked in. Tap another player to change, or tap your current selection to retract."
-                : "Pick a player to lynch on the Players panel below.";
+                ? "Vote locked in. Tap another player to change, or tap your current selection to retract. Counts stay hidden until the host reveals."
+                : "Pick a player to lynch on the Players panel below. Counts stay hidden until the host reveals.";
               if (myVote) {
                 // The "Your vote: X" chip stays as a one-glance
                 // summary; the retract action moved onto the
@@ -1545,23 +1590,31 @@
                 extras.appendChild(noteChip(`Your vote: ${t ? t.name : myVote}`, "bg-rose-700/60"));
               }
             }
-            // Host-only vote-management buttons. Finalize resolves the
-            // tally (engine rejects on tie / no votes); Clear wipes
-            // the board for a re-vote.
+            // Host-only vote-management buttons. The flow is two-step:
+            // while hidden the host only gets "Reveal votes"; once
+            // revealed they get Finalize (closes the day — lynches the
+            // target only if it reached a >50% majority, otherwise no
+            // one dies and play moves to the next night) and Clear
+            // (wipes the board and reopens hidden voting).
             if (myIsHost) {
-              const haveAnyVote = votes.size > 0;
-              extras.appendChild(actionButton(
-                "Finalize votes",
-                "bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50",
-                () => send("finalizeVotes"),
-              ));
-              const clearBtn = actionButton(
-                "Clear & re-vote",
-                "bg-amber-600 hover:bg-amber-500 disabled:opacity-50",
-                () => send("clearVotes"),
-              );
-              if (!haveAnyVote) clearBtn.disabled = true;
-              extras.appendChild(clearBtn);
+              if (!votesRevealed) {
+                extras.appendChild(actionButton(
+                  "Reveal votes",
+                  "bg-rose-600 hover:bg-rose-500",
+                  () => send("revealVotes"),
+                ));
+              } else {
+                extras.appendChild(actionButton(
+                  "Finalize votes",
+                  "bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50",
+                  () => send("finalizeVotes"),
+                ));
+                extras.appendChild(actionButton(
+                  "Clear & re-vote",
+                  "bg-amber-600 hover:bg-amber-500 disabled:opacity-50",
+                  () => send("clearVotes"),
+                ));
+              }
             }
             break;
           }
@@ -1892,6 +1945,19 @@
             }
             break;
 
+          case "noLynch":
+            // The host finalized a day vote that didn't reach a
+            // majority (split, abstentions, or no votes): nobody is
+            // lynched, but the day still resolves. Mirror the same
+            // dayLynchResolved flag a real lynch sets so the host UI
+            // offers "Begin night" (not "Open voting") on the
+            // day_discussion that follows in this batch.
+            dayLynchResolved = true;
+            if (!replaying) {
+              narrate("No one was voted out.");
+            }
+            break;
+
           case "phaseChanged": {
             const from = env.data.from;
             const to = env.data.to;
@@ -1899,6 +1965,9 @@
             if (typeof env.data.day === "number") day = env.data.day;
             myAction = null;
             votes = new Map();
+            // Each fresh phase (notably a new day_vote opened by the
+            // host) starts with the tally hidden again.
+            votesRevealed = false;
             // Going INTO night clears any prior turn state; the
             // accompanying nightOpeningStarted / nightNarrationStarted
             // events in the same batch will set the new sub-phase.
@@ -2082,6 +2151,11 @@
             break;
           }
 
+          // Pre-reveal, the server only delivers a voter THEIR OWN
+          // cast/change/retract (the events are private), so these keep
+          // the local player's "your vote" chip + row highlight in sync
+          // without exposing anyone else's choice. The full board
+          // arrives later via votesRevealed.
           case "voteCast":
             votes.set(env.data.voter, env.data.target);
             renderActionPanel();
@@ -2100,8 +2174,30 @@
             renderPlayers();
             break;
 
+          case "votesRevealed": {
+            // Host opened the box. Replace our (self-only) view with the
+            // authoritative full tally so everyone — including dead
+            // players, who receive this Public event too — sees who
+            // voted for whom. Voting is now locked client-side; the
+            // per-row Vote buttons drop out (renderPlayers keys off
+            // votesRevealed) and the host swaps Reveal → Finalize/Clear.
+            votesRevealed = true;
+            votes = new Map();
+            const tally = env.data.tally || {};
+            for (const [voter, target] of Object.entries(tally)) {
+              votes.set(voter, target);
+            }
+            renderActionPanel();
+            renderPlayers();
+            if (!replaying) {
+              narrate("Votes revealed.");
+            }
+            break;
+          }
+
           case "voteCleared":
             votes = new Map();
+            votesRevealed = false;
             renderActionPanel();
             renderPlayers();
             if (!replaying) {

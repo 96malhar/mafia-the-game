@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,9 @@ import (
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/malhar/mafia-the-game/internal/room"
+	"github.com/malhar/mafia-the-game/internal/transport/ws"
 )
 
 // newTestServer builds a Server backed by an in-memory filesystem so tests
@@ -24,6 +28,55 @@ func newTestServer(t *testing.T) *httptest.Server {
 	ts := httptest.NewServer(srv.handler())
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// newTestServerWithWS builds a Server with the game routes wired in
+// (so POST /api/rooms exists), using the given room-create rate limit.
+func newTestServerWithWS(t *testing.T, roomCreateRPM int) *httptest.Server {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	mgr := room.NewManager(ctx, nil)
+	wsHandler := ws.NewHandler(mgr, nil, ws.HandlerConfig{})
+
+	srv := New(Config{
+		Addr:          ":0",
+		WebFS:         fstest.MapFS{},
+		WS:            wsHandler,
+		RoomCreateRPM: roomCreateRPM,
+	})
+	ts := httptest.NewServer(srv.handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postRoom(t *testing.T, baseURL string) int {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/api/rooms", "application/json", nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func TestRoomCreateRateLimit(t *testing.T) {
+	t.Run("limit enforced per IP", func(t *testing.T) {
+		// All requests originate from the same loopback IP, so the
+		// per-IP limiter counts them together: 2 allowed, 3rd rejected.
+		ts := newTestServerWithWS(t, 2)
+		require.Equal(t, http.StatusOK, postRoom(t, ts.URL))
+		require.Equal(t, http.StatusOK, postRoom(t, ts.URL))
+		require.Equal(t, http.StatusTooManyRequests, postRoom(t, ts.URL))
+	})
+
+	t.Run("disabled when RPM is zero", func(t *testing.T) {
+		ts := newTestServerWithWS(t, 0)
+		for i := 0; i < 5; i++ {
+			require.Equal(t, http.StatusOK, postRoom(t, ts.URL),
+				"no limiter should be installed at RPM=0")
+		}
+	})
 }
 
 func TestRoutes(t *testing.T) {

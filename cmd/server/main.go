@@ -1,9 +1,16 @@
 // Command server runs the Mafia game HTTP/WebSocket server.
 //
-// Usage:
+// Configuration is entirely via environment variables (see envConfig):
 //
-//	go run ./cmd/server          # listens on :8080
-//	ADDR=:9000 go run ./cmd/server
+//	ADDR                        listen address            (default ":8080")
+//	LOG_LEVEL                   debug|info|warn|error     (default "info")
+//	ALLOWED_ORIGINS             comma-separated WS origin allowlist
+//	INSECURE_SKIP_ORIGIN_CHECK  disable WS origin check   (default false)
+//	TRUSTED_CLIENT_IP_HEADER    proxy header for real IP  (e.g. Fly-Client-IP)
+//	ROOM_CREATE_RPM             per-IP room-create limit  (0 = disabled)
+//
+// Local dev needs none of these: the secure defaults work for same-
+// origin access via http://localhost:8080.
 package main
 
 import (
@@ -11,6 +18,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,14 +29,11 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	cfg := loadEnvConfig()
 
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cfg.logLevel,
+	}))
 
 	// Build the room manager first so the WebSocket handler can reach
 	// it. The manager owns its own context which we cancel during
@@ -37,18 +43,31 @@ func main() {
 
 	mgr := room.NewManager(managerCtx, logger)
 
-	// During local dev we allow any origin so the static index.html can
-	// connect when accessed via http://localhost:8080 OR file://, etc.
-	// Production deployments must override this.
+	// Origin checking is ON by default. With no AllowedOrigins, the
+	// WebSocket library enforces same-origin (Origin host == request
+	// Host), which is correct for single-origin deploys (incl. fly.io)
+	// and for localhost dev. Set ALLOWED_ORIGINS to broaden, or
+	// INSECURE_SKIP_ORIGIN_CHECK=true ONLY for a cross-origin dev setup.
 	wsHandler := ws.NewHandler(mgr, logger, ws.HandlerConfig{
-		InsecureSkipOriginCheck: true,
+		AllowedOrigins:          cfg.allowedOrigins,
+		InsecureSkipOriginCheck: cfg.insecureSkipOriginCheck,
 	})
 
+	logger.Info("starting",
+		"addr", cfg.addr,
+		"origin_check", !cfg.insecureSkipOriginCheck,
+		"allowed_origins", cfg.allowedOrigins,
+		"trusted_ip_header", cfg.trustedClientIPHeader,
+		"room_create_rpm", cfg.roomCreateRPM,
+	)
+
 	srv := server.New(server.Config{
-		Addr:   addr,
-		WebFS:  os.DirFS("web"),
-		WS:     wsHandler,
-		Logger: logger,
+		Addr:                  cfg.addr,
+		WebFS:                 os.DirFS("web"),
+		WS:                    wsHandler,
+		Logger:                logger,
+		TrustedClientIPHeader: cfg.trustedClientIPHeader,
+		RoomCreateRPM:         cfg.roomCreateRPM,
 	})
 
 	// Run the server in a goroutine so main() can wait for either
@@ -77,4 +96,72 @@ func main() {
 			logger.Error("manager shutdown failed", "err", err)
 		}
 	}
+}
+
+// envConfig is the fully-resolved runtime configuration read from the
+// environment, with defaults applied.
+type envConfig struct {
+	addr                    string
+	logLevel                slog.Level
+	allowedOrigins          []string
+	insecureSkipOriginCheck bool
+	trustedClientIPHeader   string
+	roomCreateRPM           int
+}
+
+func loadEnvConfig() envConfig {
+	return envConfig{
+		addr:                    envOr("ADDR", ":8080"),
+		logLevel:                parseLogLevel(os.Getenv("LOG_LEVEL")),
+		allowedOrigins:          parseCSV(os.Getenv("ALLOWED_ORIGINS")),
+		insecureSkipOriginCheck: parseBool(os.Getenv("INSECURE_SKIP_ORIGIN_CHECK")),
+		trustedClientIPHeader:   strings.TrimSpace(os.Getenv("TRUSTED_CLIENT_IP_HEADER")),
+		roomCreateRPM:           parseInt(os.Getenv("ROOM_CREATE_RPM"), 0),
+	}
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// parseCSV splits a comma-separated env value into trimmed, non-empty
+// entries. Returns nil for an empty/blank input so callers see the
+// "unset" case as a nil slice.
+func parseCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func parseBool(s string) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(s))
+	return err == nil && v
+}
+
+func parseInt(s string, fallback int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fallback
+	}
+	return v
 }

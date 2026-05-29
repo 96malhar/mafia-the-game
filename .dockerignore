@@ -1,0 +1,28 @@
+# Keep the build context small and avoid leaking local/dev artifacts
+# into the image or busting layer caches on irrelevant changes.
+
+# VCS / CI / editor
+.git
+.github
+.gitignore
+.vscode
+.idea
+
+# Build & test artifacts
+bin/
+coverage.out
+*.out
+.task/
+
+# Local tooling / docs not needed at build time
+Taskfile.yml
+README.md
+*.md
+
+# OS noise
+.DS_Store
+
+# Docker / deploy files themselves
+Dockerfile
+.dockerignore
+fly.toml

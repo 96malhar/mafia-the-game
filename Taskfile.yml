@@ -12,6 +12,7 @@ vars:
   PKG: ./...
   MAIN: ./cmd/server
   COVER_FILE: coverage.out
+  IMAGE: mafia-the-game
 
 env:
   CGO_ENABLED: "1" # required for -race
@@ -66,6 +67,21 @@ tasks:
       - go.sum
     generates:
       - "{{.BINARY}}"
+
+  docker:build:
+    desc: Build the production Docker image (tag with TAG=..., default 'latest').
+    cmds:
+      - docker build -t {{.IMAGE}}:{{.TAG | default "latest"}} .
+
+  docker:run:
+    desc: Run the production image, publishing PORT (default 8080) to the container.
+    # Depends on docker:build so the image is fresh. Override the host
+    # port with PORT and pass extra `docker run` flags via CLI_ARGS, e.g.
+    # `task docker:run PORT=9000 -- -e LOG_LEVEL=debug`.
+    deps:
+      - docker:build
+    cmds:
+      - docker run --rm -p {{.PORT | default "8080"}}:8080 {{.CLI_ARGS}} {{.IMAGE}}:{{.TAG | default "latest"}}
 
   test:
     desc: Run all tests with the race detector.

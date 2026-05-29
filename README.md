@@ -32,6 +32,56 @@ Then open <http://localhost:8080>. Override the listen address with `ADDR`:
 ADDR=:9000 task run
 ```
 
+Local dev needs no other configuration: the secure defaults work for
+same-origin access over `http://localhost:8080`.
+
+## Configuration
+
+All configuration is via environment variables (read in `cmd/server/main.go`):
+
+| Variable                     | Default   | Purpose                                                                                  |
+| ---------------------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `ADDR`                       | `:8080`   | TCP listen address.                                                                      |
+| `LOG_LEVEL`                  | `info`    | `debug` \| `info` \| `warn` \| `error`.                                                  |
+| `ALLOWED_ORIGINS`            | _(empty)_ | Comma-separated WebSocket origin allowlist. Empty enforces **same-origin**.              |
+| `INSECURE_SKIP_ORIGIN_CHECK` | `false`   | Disables WS origin checking. **Never enable in production**; only for cross-origin dev.  |
+| `TRUSTED_CLIENT_IP_HEADER`   | _(empty)_ | Proxy header to read the real client IP from (e.g. `Fly-Client-IP`). Empty = don't trust any header. |
+| `ROOM_CREATE_RPM`            | `0`       | Per-IP rate limit on `POST /api/rooms` (requests/minute). `0` disables.                  |
+
+## Deployment
+
+The server is stateless on disk but keeps all room state **in memory in a
+single process**, so it must run as exactly **one instance** (no horizontal
+scaling without sticky-by-room routing).
+
+### Docker
+
+```sh
+docker build -t mafia-the-game .
+docker run --rm -p 8080:8080 mafia-the-game
+```
+
+A multi-stage build produces a ~9 MB image: a static binary on a
+`distroless/static:nonroot` base. The `web/` assets are read from disk at
+runtime, so they're copied into the image alongside the binary. Health is
+exposed at `GET /healthz` for orchestrator probes (the distroless image has
+no shell, so there's no in-image `HEALTHCHECK`).
+
+### fly.io
+
+`fly.toml` is included and tuned for this app: TLS terminates at fly's edge
+(`force_https`, so clients use `wss://` while the app speaks plain HTTP
+internally), a single always-on machine, a `/healthz` check, and env wiring
+for `TRUSTED_CLIENT_IP_HEADER=Fly-Client-IP` and a room-create rate limit.
+
+```sh
+fly launch --no-deploy   # first time: set app name + region
+fly deploy
+```
+
+Edit `app`, `primary_region`, and (optionally) `ALLOWED_ORIGINS` in
+`fly.toml` before deploying.
+
 ## Common tasks
 
 | Command           | What it does                                                  |

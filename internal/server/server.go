@@ -42,7 +42,23 @@ type Config struct {
 
 	// Logger is the structured logger used for request and lifecycle logs.
 	Logger *slog.Logger
+
+	// TrustedClientIPHeader, when non-empty, names the upstream proxy
+	// header to read the real client IP from (e.g. "Fly-Client-IP").
+	// Only set this when the app runs behind a proxy that sets it on
+	// every request; leaving it empty (the default) means RemoteAddr is
+	// the direct peer and no client-supplied header is trusted.
+	TrustedClientIPHeader string
+
+	// RoomCreateRPM rate-limits POST /api/rooms to this many requests
+	// per minute PER client IP. Zero or negative disables the limiter
+	// (the default, so tests and local dev are unthrottled).
+	RoomCreateRPM int
 }
+
+// maxRequestBytes caps any request body. The app has no upload paths,
+// so this is purely a memory-exhaustion guard.
+const maxRequestBytes = 64 << 10 // 64 KiB
 
 // Server is a thin wrapper around *http.Server that exposes Start/Shutdown.
 type Server struct {
@@ -62,9 +78,16 @@ func New(cfg Config) *Server {
 	return &Server{
 		cfg: cfg,
 		http: &http.Server{
-			Addr:              cfg.Addr,
-			Handler:           r,
+			Addr:    cfg.Addr,
+			Handler: r,
+			// ReadHeaderTimeout bounds slow-header (slowloris) attacks.
+			// We intentionally do NOT set ReadTimeout/WriteTimeout: the
+			// WebSocket connections are long-lived and hijacked after
+			// the upgrade, so a blanket write/read timeout would sever
+			// active games. IdleTimeout reaps idle keep-alive HTTP
+			// connections (the static/API side) without touching WS.
 			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		},
 	}
 }

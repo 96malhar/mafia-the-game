@@ -1,0 +1,57 @@
+# fly.io configuration for the Mafia game server.
+#
+# First-time setup:   fly launch --no-deploy   (edit app/region as needed)
+# Deploy:             fly deploy
+#
+# IMPORTANT: this app keeps all room state IN MEMORY in a single process.
+# It must run as exactly ONE machine. Scaling to multiple machines would
+# split rooms across processes and break games, since fly's proxy has no
+# sticky-by-room routing here. Keep min/max at 1.
+
+app = "mafia-the-game"          # change to your globally-unique app name
+primary_region = "sjc"          # change to your nearest region
+
+[build]
+  # Builds from the repo Dockerfile (static binary + distroless runtime).
+  dockerfile = "Dockerfile"
+
+[env]
+  ADDR = ":8080"
+  LOG_LEVEL = "info"
+  # fly's edge forwards the real client IP in this header; trust it so
+  # access logs and the room-create rate limiter key on the real client
+  # rather than fly's internal proxy address.
+  TRUSTED_CLIENT_IP_HEADER = "Fly-Client-IP"
+  # Per-IP cap on POST /api/rooms so one client can't churn through the
+  # server's room capacity.
+  ROOM_CREATE_RPM = "30"
+  # Origin checking is ON by default and same-origin (https://<app>.fly.dev)
+  # already passes. Uncomment to allow additional origins (e.g. a custom
+  # domain):
+  # ALLOWED_ORIGINS = "mafia-the-game.fly.dev,play.example.com"
+
+[http_service]
+  internal_port = 8080
+  # Redirect http -> https at the edge; clients then use wss:// for the
+  # WebSocket, while this app keeps listening on plain HTTP internally.
+  force_https = true
+  # Stateful single instance: never auto-stop (that would drop every live
+  # game) and always keep one machine warm.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # WebSocket connections are long-lived, so meter by open connections
+  # rather than requests. Tune to the machine size you pick.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  # Liveness/readiness probe against the built-in endpoint.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"

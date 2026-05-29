@@ -196,17 +196,31 @@ func (e NightSubPhaseStarted) WithDeadline(ms int64) Event {
 	return e
 }
 
-// NightActionRecorded acknowledges that a role-action was submitted. It
-// is visible only to the actor's faction (so mafia members see each
-// other's votes; the lone doctor / detective sees only their own).
+// NightActionRecorded acknowledges that a role-action was submitted.
+//
+// Visibility depends on whether the action belongs to a collective or a
+// solo role:
+//
+//   - Mafia acts as a faction: co-mafia (including those who didn't
+//     submit) must see the locked kill to coordinate, so the ack is
+//     faction-scoped.
+//   - The doctor and detective are solo, but they share the single
+//     FactionTown with the villagers. Scoping their ack to FactionTown
+//     would broadcast the target (and actor) to the entire town, which
+//     defeats their hidden roles. They get a private self-ack instead.
 type NightActionRecorded struct {
 	Actor   PlayerID
 	Target  PlayerID
 	Faction Faction
 }
 
-func (e NightActionRecorded) isEvent()               {}
-func (e NightActionRecorded) Visibility() Visibility { return FactionOnly(e.Faction) }
+func (e NightActionRecorded) isEvent() {}
+func (e NightActionRecorded) Visibility() Visibility {
+	if e.Faction == FactionMafia {
+		return FactionOnly(FactionMafia)
+	}
+	return PrivateTo(e.Actor)
+}
 
 // PlayerKilled is emitted at Night -> Day if the mafia's target was not
 // saved by the doctor. Always public.

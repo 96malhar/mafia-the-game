@@ -192,6 +192,31 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 	})
 }
 
+func TestProjection_SoloTownActionStaysPrivate(t *testing.T) {
+	g := fixedRoster(t)
+
+	// A solo town role (doctor) records a night action. Town is a single
+	// shared faction, so a faction-scoped ack would leak the target to
+	// every townsperson. It must be private to the actor.
+	events := []game.Event{
+		game.NightActionRecorded{
+			Actor: "doc", Target: "town1", Faction: game.FactionTown,
+		},
+	}
+
+	t.Run("actor sees own ack", func(t *testing.T) {
+		out := game.Project("doc", events, g.State())
+		require.Len(t, out, 1, "doctor must see their own NightActionRecorded")
+	})
+
+	t.Run("no other town member sees it", func(t *testing.T) {
+		for _, viewer := range []game.PlayerID{"det", "town1", "town2", "mafia1"} {
+			out := game.Project(viewer, events, g.State())
+			require.Empty(t, out, "viewer %q must not see another town role's NightActionRecorded", viewer)
+		}
+	})
+}
+
 func TestProjection_UnknownViewerSeesOnlyPublic(t *testing.T) {
 	f := newProjectionFixture(t)
 	out := game.Project("stranger", f.events, f.g.State())

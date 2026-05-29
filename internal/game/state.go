@@ -64,17 +64,25 @@ type GameState struct {
 	// to false each time a fresh DayDiscussion begins (out of Night).
 	dayLynchResolved bool
 
+	// rolesDealt records whether StartGame has composed and assigned
+	// the per-player roles. It gates the lobby-mutating commands
+	// (AddPlayer, SetMafiaCount, and the lobby branch of BeginNight):
+	// once roles exist, the lobby is closed even though the game stays
+	// in PhaseLobby until BeginNight. This is an explicit flag rather
+	// than the old "players[0].role != ''" probe, which coupled
+	// correctness to player ordering and the assumption that dealing
+	// always sets every role at once.
+	rolesDealt bool
+
 	// --- Night turn state ----------------------------------------------
 	//
 	// Nights are strictly turn-ordered: one role acts at a time, in
 	// nightTurnQueue order, and each role's turn walks a small linear
 	// sub-state machine (see NightSubPhase). The currently-active role
 	// is at index 0 (currentNightRole); currentNightSubPhase says
-	// where in that role's lifecycle we are. The deadline below is
-	// when the active sub-phase auto-elapses if no action arrives.
-	// All four are cleared (zero values) any time the game is not in
-	// PhaseNight, or when the queue is exhausted just before
-	// resolveNight runs.
+	// where in that role's lifecycle we are. All are cleared (zero
+	// values) any time the game is not in PhaseNight, or when the
+	// queue is exhausted just before resolveNight runs.
 	//
 	// nightSubmitted records whether the active turn's actor submitted
 	// an action (true) or the turn is going to/already timed out
@@ -84,15 +92,16 @@ type GameState struct {
 	// act sub-phase at all.
 	//
 	// We keep these as ENGINE-OWNED state because the engine is the
-	// authority on "whose turn is it AND what part of it"; the room
-	// layer only schedules wall-clock callbacks against the deadline.
-	// The deadline is stored as unix-millis to keep the engine free
-	// of time.Time imports and to keep the wire encoding trivial.
-	currentNightRole        Role
-	currentNightSubPhase    NightSubPhase
-	nightTurnDeadlineMillis int64
-	nightTurnQueue          []Role
-	nightSubmitted          bool
+	// authority on "whose turn is it AND what part of it". The engine
+	// itself is timeless: wall-clock deadlines are NOT stored here.
+	// The room layer owns timing entirely — it stamps an absolute
+	// Deadline onto each Night*Started event before broadcasting and
+	// arms its own timer against it (see internal/room/broadcast.go and
+	// timers.go).
+	currentNightRole     Role
+	currentNightSubPhase NightSubPhase
+	nightTurnQueue       []Role
+	nightSubmitted       bool
 }
 
 // NightSubPhase is the sub-state during PhaseNight. Every night opens
@@ -204,6 +213,11 @@ func (s *GameState) MafiaCount() int { return s.mafiaCount }
 // post-finalize they only get Begin Night.
 func (s *GameState) DayLynchResolved() bool { return s.dayLynchResolved }
 
+// RolesDealt reports whether StartGame has dealt per-player roles. Once
+// true the lobby is closed to new players and config changes, even
+// while the game remains in PhaseLobby awaiting the host's BeginNight.
+func (s *GameState) RolesDealt() bool { return s.rolesDealt }
+
 // CurrentNightRole returns the role whose turn it currently is during
 // PhaseNight, or the empty Role between turns / outside of Night.
 func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
@@ -213,14 +227,6 @@ func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
 // empty NightSubPhase outside of an active turn. See NightSubPhase
 // for the per-role state machine.
 func (s *GameState) CurrentNightSubPhase() NightSubPhase { return s.currentNightSubPhase }
-
-// NightTurnDeadlineMillis returns the unix-millis deadline at which the
-// current night SUB-phase auto-elapses, or 0 if no sub-phase is active.
-// Named "TurnDeadline" rather than "SubPhaseDeadline" because the
-// concept it expresses to the wire layer hasn't changed — there's
-// always exactly one active deadline during PhaseNight, regardless of
-// which sub-phase owns it.
-func (s *GameState) NightTurnDeadlineMillis() int64 { return s.nightTurnDeadlineMillis }
 
 // NightTurnSubmitted reports whether an actor has submitted a
 // NightAction during the current role's act window. Used by the room

@@ -1247,3 +1247,43 @@ func TestWinConditions(t *testing.T) {
 		require.False(t, ended, "with mafia=1 town=3 alive, no win yet")
 	})
 }
+
+// TestNight_MafiaTurnNeverPhantom pins the invariant documented on
+// beginNextNightTurn: the mafia's night turn is never phantom. The
+// reasoning is that checkWin ends the game the instant living mafia
+// reaches zero, so the engine never begins a night with no living
+// mafia. This guards that reasoning against a future change to the win
+// conditions that would silently let a phantom mafia turn slip through
+// (narrating "Mafia, wake up" to a room with no mafia to act).
+func TestNight_MafiaTurnNeverPhantom(t *testing.T) {
+	g := game.New()
+	_, err := g.Apply(game.CreateGame{
+		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 7,
+	})
+	require.NoError(t, err)
+	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
+		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
+		require.NoError(t, err)
+	}
+	_, err = g.Apply(game.StartGame{})
+	require.NoError(t, err)
+	_, err = g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+
+	// Opening → first role's narrate. Mafia is always first in the
+	// canonical queue, and the game just started, so a mafia is alive.
+	evts := advancePhase(t, g)
+	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+
+	nn, ok := findEvent[game.NightNarrationStarted](evts)
+	require.True(t, ok, "opening should advance into the mafia's narrate")
+	require.Equal(t, game.RoleMafia, nn.Role)
+	require.False(t, nn.Phantom,
+		"mafia narrate must never be phantom: a live game always has a living mafia")
+	require.True(t, g.State().HasLivingRole(game.RoleMafia))
+
+	// And the act window opens (not the phantom-substitute ponder).
+	advancePhase(t, g) // narrate → act
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"living mafia gets a real act window, not a phantom ponder")
+}

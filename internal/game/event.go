@@ -241,6 +241,70 @@ type NightSettleStarted struct {
 func (NightSettleStarted) isEvent()               {}
 func (NightSettleStarted) Visibility() Visibility { return Public() }
 
+// NightSubPhaseEvent is implemented by every Night*Started event — the
+// family that opens a night sub-phase and carries a wall-clock
+// Deadline the engine emits as 0 for the room to stamp. Grouping them
+// behind one interface lets the room layer stamp the deadline and
+// recognize a sub-phase transition with a single interface assertion
+// instead of a parallel type-switch over all six concretes that would
+// silently miss a newly-added event. Adding a sub-phase event means
+// implementing WithDeadline (one method), and it automatically joins
+// the family everywhere the interface is used.
+//
+// (subPhaseDuration in the room layer and encodeEvent in the transport
+// still switch per concrete type — they genuinely need per-event
+// behavior, sizing and wire shape respectively — so this interface
+// doesn't try to absorb those.)
+type NightSubPhaseEvent interface {
+	Event
+	// WithDeadline returns a copy of the event with its Deadline set
+	// to ms (unix-millis), but only if it was still 0 (unstamped).
+	// Value receiver + return-copy keeps events immutable.
+	WithDeadline(ms int64) Event
+}
+
+func (e NightOpeningStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
+func (e NightNarrationStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
+func (e NightActionStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
+func (e NightPonderStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
+func (e NightSleepStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
+func (e NightSettleStarted) WithDeadline(ms int64) Event {
+	if e.Deadline == 0 {
+		e.Deadline = ms
+	}
+	return e
+}
+
 // NightActionRecorded acknowledges that a role-action was submitted. It
 // is visible only to the actor's faction (so mafia members see each
 // other's votes; the lone doctor / detective sees only their own).

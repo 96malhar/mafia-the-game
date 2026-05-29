@@ -34,6 +34,17 @@ type Subscriber struct {
 	// the subscriber's reader (WebSocket write pump in production, test
 	// goroutine in tests) is the only receiver.
 	out chan Outbound
+
+	// closed records whether the room has terminally closed `out`
+	// (normal leave, slow-disconnect, or a rejected join/rejoin). It
+	// makes channel-close idempotent (no double-close panic) and lets
+	// the room ignore any stray inbound the transport's read pump may
+	// still deliver after teardown but before it observes the close —
+	// without this, a late frame could drive a send on a closed
+	// channel and panic the room goroutine. Set only by the room
+	// goroutine; read there too, but atomic so external observers
+	// (and the close-vs-send race) stay safe.
+	closed atomic.Bool
 }
 
 // NewSubscriber constructs a Subscriber ready to be passed to a room.

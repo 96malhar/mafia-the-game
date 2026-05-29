@@ -159,8 +159,8 @@
           Host audio bar. Visible only on the host's device. Two
           reasons it exists outside the lobby's action panel:
 
-          1. After a page refresh, sessionStorage rejoins the room
-             silently — no user gesture. iOS / desktop browsers gate
+          1. After a page refresh, the stored credentials rejoin the
+             room silently — no user gesture. iOS / desktop browsers gate
              speechSynthesis behind a gesture, so a refresh during a
              live game would otherwise leave the host's phone mute
              with no obvious recovery. This bar gives them a tap
@@ -319,10 +319,25 @@
 
       const $ = (id) => document.getElementById(id);
 
-      // Per-tab rejoin credentials. sessionStorage (not localStorage) so
-      // opening a second tab to the same room joins as a NEW player
-      // instead of evicting the original tab's subscriber.
+      // Rejoin credentials are keyed per room: mafia.room.<code>.
       const storageKey = (code) => `mafia.room.${code}`;
+
+      // Where those credentials live depends on the environment, because
+      // two goals conflict:
+      //   • Local testing spins up several players in separate tabs of ONE
+      //     browser. That needs per-tab identity, which only sessionStorage
+      //     provides (each tab gets its own copy) — otherwise the tabs would
+      //     share a single seat and stomp on each other.
+      //   • A real deployment needs credentials to survive a tab CLOSE, so a
+      //     player who closes their tab can reopen the room link in a fresh
+      //     tab and land back in their seat. Only localStorage persists
+      //     across a tab close. In real life one device = one identity per
+      //     room, so localStorage's cross-tab sharing is harmless.
+      // So: sessionStorage on localhost (preserves the multi-tab test loop),
+      // localStorage everywhere else (enables real-world tab-close rejoin).
+      const isLocalhost =
+        ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(location.hostname);
+      const credStore = isLocalhost ? sessionStorage : localStorage;
 
       const status = $("status");
       const errorPanel = $("errors");
@@ -802,6 +817,123 @@
       // errors that arrive over the same channel, so we can show
       // a friendly message instead of the raw engine sentinel.
       let pendingJoinCode = null;
+
+      // --- Auto-reconnect state -----------------------------------------
+      //
+      // Once we've successfully joined a room, a dropped socket should
+      // heal itself rather than stranding the player on a dead screen.
+      // Drops are common in this game's usage: phones lock/pocket during
+      // the 15–20 min verbal day discussion (mobile browsers suspend the
+      // tab and tear down the WebSocket), and idle proxies/NATs cull
+      // quiet connections. The server replays our full state on rejoin,
+      // so a reconnect is invisible once it lands.
+      //
+      // currentRoomCode is the room we're connected to (or reconnecting
+      // to); creds for it live in credStore under storageKey(code).
+      let currentRoomCode = null;
+      // reconnecting is true while the established-drop retry loop is
+      // active. It distinguishes "lost an in-game connection, keep
+      // retrying" from the page-load auto-rejoin (pendingRejoinCode),
+      // which bounces to the lobby on first failure.
+      let reconnecting = false;
+      // reconnectAttempts feeds the exponential backoff; reset to 0 on
+      // any successful (re)join and on a foreground/network resume.
+      let reconnectAttempts = 0;
+      // reconnectTimer holds the pending setTimeout handle so we never
+      // stack multiple retries.
+      let reconnectTimer = null;
+
+      const RECONNECT_BASE_MS = 500;
+      const RECONNECT_CAP_MS = 10000;
+
+      // reconnectDelayMs returns the next backoff delay and advances the
+      // attempt counter. Exponential (0.5s, 1s, 2s, … capped at 10s)
+      // with ±20% jitter so a roomful of clients that dropped together
+      // (e.g. a transient server blip) don't reconnect in lockstep.
+      function reconnectDelayMs() {
+        const raw = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * 2 ** reconnectAttempts);
+        reconnectAttempts++;
+        return Math.round(raw * (0.8 + Math.random() * 0.4));
+      }
+
+      // cancelReconnect clears any scheduled retry and stops the loop.
+      function cancelReconnect() {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        reconnecting = false;
+      }
+
+      // scheduleReconnect arms a single backoff retry. Guarded so a
+      // burst of close/error events can't stack timers. We retry
+      // indefinitely: an in-person game can sit idle for a long time
+      // and we'd rather keep trying than give up and force a manual
+      // reload. The auth_failed path (stale creds) is what breaks the
+      // loop and bounces to the lobby.
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnecting = true;
+        const delay = reconnectDelayMs();
+        showReconnectingBanner(true);
+        setStatus(`reconnecting to ${currentRoomCode}…`, "text-amber-400");
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          reconnectNow();
+        }, delay);
+      }
+
+      // reconnectNow opens a fresh rejoin socket using the stored creds
+      // for the current room. If creds are missing/corrupt (shouldn't
+      // happen post-join), we bounce to the lobby instead of looping.
+      function reconnectNow() {
+        const code = currentRoomCode;
+        if (!code) return;
+        const stored = credStore.getItem(storageKey(code));
+        if (!stored) {
+          recoverToLobby(code, "Disconnected — rejoin to continue.");
+          return;
+        }
+        let creds;
+        try { creds = JSON.parse(stored); }
+        catch { recoverToLobby(code, "Disconnected — rejoin to continue."); return; }
+        reconnecting = true;
+        setStatus(`reconnecting to ${code}…`, "text-amber-400");
+        connect(code, null, creds);
+      }
+
+      // resumeConnectionIfNeeded fires when the tab returns to the
+      // foreground (visibility/pageshow) or the network comes back
+      // (online). A suspended mobile tab can't run our backoff timer,
+      // so this is the path that actually reconnects a phone taken out
+      // of a pocket. We reset the backoff so the resume is snappy.
+      function resumeConnectionIfNeeded() {
+        if (!myId || !currentRoomCode) return;
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+        cancelReconnect();
+        reconnectAttempts = 0;
+        reconnectNow();
+      }
+
+      // showReconnectingBanner toggles a fixed top-of-screen strip so a
+      // reconnecting player gets visible feedback even while the in-game
+      // view (not the lobby status line) is on screen. Created lazily so
+      // it costs nothing until the first drop.
+      let reconnectBanner = null;
+      function showReconnectingBanner(show) {
+        if (show) {
+          if (!reconnectBanner) {
+            reconnectBanner = document.createElement("div");
+            reconnectBanner.className =
+              "fixed inset-x-0 top-0 z-50 bg-amber-500 text-slate-900 text-center text-sm font-semibold py-1.5 shadow-lg";
+            reconnectBanner.textContent = "Reconnecting…";
+            document.body.appendChild(reconnectBanner);
+          }
+          reconnectBanner.classList.remove("hidden");
+        } else if (reconnectBanner) {
+          reconnectBanner.classList.add("hidden");
+        }
+      }
 
       function setStatus(text, klass = "text-slate-400") {
         status.textContent = text;
@@ -1583,6 +1715,10 @@
             myIsHost = !!d.isHost;
             pendingRejoinCode = null;
             pendingJoinCode = null;
+            // A clean join means any prior reconnect loop is done.
+            cancelReconnect();
+            reconnectAttempts = 0;
+            showReconnectingBanner(false);
             // Fresh socket: start from a clean model. The server
             // attaches its projected view of prior events so we can
             // see who else is already in the room. Our own PlayerJoined
@@ -1590,7 +1726,7 @@
             resetGameState();
             $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
             showGame(d.roomCode);
-            sessionStorage.setItem(storageKey(d.roomCode), JSON.stringify({
+            credStore.setItem(storageKey(d.roomCode), JSON.stringify({
               playerId: d.playerId,
               secret: d.secret,
             }));
@@ -1609,6 +1745,13 @@
             myId = d.playerId;
             myIsHost = !!d.isHost;
             pendingRejoinCode = null;
+            // Reconnect (or page-load auto-rejoin) succeeded: stop the
+            // retry loop, reset backoff, clear the banner. Replayed
+            // events below pass {replaying:true} so we don't re-fire a
+            // burst of stale narration on catch-up.
+            cancelReconnect();
+            reconnectAttempts = 0;
+            showReconnectingBanner(false);
             resetGameState();
             $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
             showGame(d.roomCode);
@@ -1643,16 +1786,22 @@
 
             showError(message);
 
-            // If we were auto-rejoining (e.g. after a refresh) and the
-            // server can't authenticate us, the stored credentials are
-            // stale — typically because the server restarted, the room
-            // was closed, or the player slot was evicted. Clear them
+            // If we were (auto-)rejoining and the server can't
+            // authenticate us, the stored credentials are stale —
+            // typically because the server restarted, the room was
+            // closed, or the player slot was evicted. This covers both
+            // the page-load auto-rejoin (pendingRejoinCode) and the
+            // in-game reconnect loop (reconnecting); in the latter case
+            // auth_failed is the signal that breaks the retry loop
+            // instead of looping forever against dead creds. Clear them
             // and drop the user on the join screen for this room so
             // they can re-enter as a fresh player.
-            if (pendingRejoinCode && code === "auth_failed") {
-              const stale = pendingRejoinCode;
+            if ((pendingRejoinCode || reconnecting) && code === "auth_failed") {
+              const stale = pendingRejoinCode || currentRoomCode;
               pendingRejoinCode = null;
-              sessionStorage.removeItem(storageKey(stale));
+              cancelReconnect();
+              showReconnectingBanner(false);
+              credStore.removeItem(storageKey(stale));
               // Detach handlers so the synthetic close from our own
               // teardown doesn't overwrite the recovery status message.
               if (ws) {
@@ -2121,6 +2270,13 @@
       }
 
       function connect(code, name, creds) {
+        currentRoomCode = code;
+        // Neutralize any prior socket so its late onclose/onerror can't
+        // race this fresh attempt (e.g. fire a redundant reconnect).
+        if (ws) {
+          ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+          try { ws.close(); } catch {}
+        }
         const params = creds
           ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
           : "";
@@ -2141,10 +2297,12 @@
           catch (e) { showError(`Failed to parse server message: ${e}`); }
         };
         ws.onclose = () => {
-          // If we were mid-auto-rejoin and the socket died before we
-          // received any frame (server down, room gone), surface the
+          // If we were mid-PAGE-LOAD-auto-rejoin and the socket died
+          // before any frame (server down, room gone), surface the
           // lobby instead of leaving the user looking at an empty
-          // in-game view they can't escape.
+          // in-game view they can't escape. (The in-game reconnect
+          // loop uses the `reconnecting` flag, NOT pendingRejoinCode,
+          // so it falls through to the auto-reconnect branch below.)
           if (pendingRejoinCode) {
             const stale = pendingRejoinCode;
             pendingRejoinCode = null;
@@ -2159,6 +2317,16 @@
             const stale = pendingJoinCode;
             pendingJoinCode = null;
             recoverToLobby(stale, "Could not connect — the server may be unreachable.");
+            return;
+          }
+          // An established in-game connection dropped (network blip,
+          // idle proxy/NAT cull, or a mobile tab the OS suspended).
+          // We have an identity and stored creds, so heal it: retry
+          // with backoff until we're back. The server replays our
+          // full state on rejoin, so the player just sees a brief
+          // "Reconnecting…" and then continues.
+          if (myId && currentRoomCode) {
+            scheduleReconnect();
             return;
           }
           setStatus("disconnected", "text-rose-400");
@@ -2203,7 +2371,7 @@
       function joinRoom(code) {
         const name = currentName();
         if (!name || !code) return;
-        const stored = sessionStorage.getItem(storageKey(code));
+        const stored = credStore.getItem(storageKey(code));
         const creds = stored ? JSON.parse(stored) : null;
         connect(code, name, creds);
       }
@@ -2216,6 +2384,12 @@
       // game view was never shown (we caught the error before
       // "joined" / "rejoined" arrived).
       function recoverToLobby(code, note) {
+        // Bouncing to the lobby ends any in-flight reconnect loop and
+        // clears the banner — we're giving up on this socket on
+        // purpose, so no further auto-retries.
+        cancelReconnect();
+        reconnectAttempts = 0;
+        showReconnectingBanner(false);
         $("game").classList.add("hidden");
         $("lobby").classList.remove("hidden");
         // If a code is given, keep the URL pointed at that room so
@@ -2231,20 +2405,20 @@
       }
 
       // tryAutoRejoin runs at page load. If the URL carries a room
-      // code AND sessionStorage has matching rejoin credentials, we
+      // code AND credStore has matching rejoin credentials, we
       // open a WebSocket immediately and let the server replay the
       // event log — the user never sees the lobby. Returns true if a
       // rejoin attempt was launched.
       function tryAutoRejoin() {
         const code = roomFromURL();
         if (!code) return false;
-        const stored = sessionStorage.getItem(storageKey(code));
+        const stored = credStore.getItem(storageKey(code));
         if (!stored) return false;
         let creds;
         try { creds = JSON.parse(stored); }
-        catch { sessionStorage.removeItem(storageKey(code)); return false; }
+        catch { credStore.removeItem(storageKey(code)); return false; }
         if (!creds || !creds.playerId || !creds.secret) {
-          sessionStorage.removeItem(storageKey(code));
+          credStore.removeItem(storageKey(code));
           return false;
         }
         pendingRejoinCode = code;
@@ -2287,6 +2461,16 @@
       $("create").addEventListener("click", createRoom);
       $("join").addEventListener("click", () => joinRoom(roomFromURL()));
 
+      // Reconnect-on-resume. A mobile tab suspended in a pocket can't
+      // run the backoff timer, so the moment it returns to the
+      // foreground (or the network comes back) we re-open the socket
+      // immediately rather than waiting for a timer that never ticked.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") resumeConnectionIfNeeded();
+      });
+      window.addEventListener("pageshow", resumeConnectionIfNeeded);
+      window.addEventListener("online", resumeConnectionIfNeeded);
+
       $("manual-join").addEventListener("click", () => {
         const code = $("manual-code").value.trim().toUpperCase();
         if (code) joinRoom(code);
@@ -2326,7 +2510,7 @@
         setTimeout(() => { btn.textContent = original; }, 1500);
       });
 
-      // On page load: if the URL has ?room= AND sessionStorage has
+      // On page load: if the URL has ?room= AND credStore has
       // rejoin credentials for that room, reconnect silently. Only
       // show the lobby if there's nothing to rejoin to. This is what
       // makes a tab refresh a no-op from the player's perspective.

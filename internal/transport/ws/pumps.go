@@ -23,6 +23,41 @@ const readLimit = 64 << 10
 // indicates a broken or malicious peer.
 const writeTimeout = 10 * time.Second
 
+// pingInterval is how often the write pump sends a WebSocket ping when
+// the connection is otherwise idle. Two jobs:
+//
+//  1. Keepalive: a steady trickle of frames stops idle-timeout proxies
+//     (nginx/ALB/Cloudflare, default 60–100s) and carrier NATs from
+//     silently dropping a connection during long, app-quiet stretches
+//     — notably the 15–20 min day-discussion phase where nobody touches
+//     their phone.
+//  2. Dead-peer detection: conn.Ping blocks for a pong, so a peer that
+//     vanished (half-open TCP after a network drop) surfaces as a ping
+//     error within pingTimeout instead of lingering for the OS TCP
+//     keepalive (~2h).
+//
+// 20s comfortably beats the common 60s proxy idle floor with margin for
+// a missed beat. It does NOT rescue a mobile tab the OS has suspended
+// (a frozen tab can't ping) — that case is handled by client-side
+// reconnect-on-resume; see web/index.html.
+const pingInterval = 20 * time.Second
+
+// pingTimeout bounds how long we wait for a pong before declaring the
+// peer dead. Mirrors writeTimeout: a healthy client answers in
+// milliseconds.
+const pingTimeout = 10 * time.Second
+
+// joinDeadline bounds how long an UNAUTHENTICATED fresh connection may
+// stay open without completing a join. Without it, a client that
+// upgrades and then sends nothing parks two goroutines + a socket
+// indefinitely (the keepalive ping keeps a silent-but-alive peer up
+// forever). Once a join succeeds the subscriber has a PlayerID and the
+// deadline no longer applies, so legitimately-idle joined players (e.g.
+// during discussion) are never bounced. Rejoins authenticate
+// server-side before the pumps start, so this deadline doesn't apply to
+// them.
+const joinDeadline = 30 * time.Second
+
 // readPump runs in its own goroutine for the lifetime of a connection.
 // It is the SOLE reader on the websocket. It exits when the read fails
 // (client disconnected, bad frame, etc.), at which point it cancels
@@ -39,15 +74,32 @@ func readPump(
 	conn *websocket.Conn,
 	r *room.Room,
 	sub *room.Subscriber,
+	requireJoin bool,
 ) {
 	defer cancel() // signal writePump to exit on any read failure
 
 	conn.SetReadLimit(readLimit)
 
 	for {
+		// Until the subscriber authenticates (gets a PlayerID via a
+		// successful join), bound the read so an idle never-join
+		// connection can't park resources forever. After that, reads
+		// block on the unbounded connection context — a joined player
+		// is allowed to sit silent indefinitely (e.g. the long
+		// verbal day-discussion phase). requireJoin is false for the
+		// rejoin path, which is already authenticated server-side.
+		readCtx := ctx
+		var cancelRead context.CancelFunc
+		if requireJoin && sub.PlayerID() == "" {
+			readCtx, cancelRead = context.WithTimeout(ctx, joinDeadline)
+		}
+
 		// Read one full message. coder/websocket returns the type
 		// (text/binary) and the payload as a byte slice.
-		mt, data, err := conn.Read(ctx)
+		mt, data, err := conn.Read(readCtx)
+		if cancelRead != nil {
+			cancelRead()
+		}
 		if err != nil {
 			// Normal close codes and context cancellation are not
 			// errors worth logging at warn level.
@@ -93,11 +145,28 @@ func writePump(
 ) {
 	defer cancel()
 
+	// Idle keepalive / dead-peer probe. See pingInterval.
+	ping := time.NewTicker(pingInterval)
+	defer ping.Stop()
+
 	out := sub.Outbound()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ping.C:
+			// conn.Ping blocks until the peer pongs or the context
+			// expires. A failure means the peer is gone (or wedged);
+			// exit so the connection tears down.
+			pctx, pcancel := context.WithTimeout(ctx, pingTimeout)
+			err := conn.Ping(pctx)
+			pcancel()
+			if err != nil {
+				if !isExpectedCloseError(err) && ctx.Err() == nil {
+					logger.Info("ws ping failed", "err", err)
+				}
+				return
+			}
 		case msg, ok := <-out:
 			if !ok {
 				// Channel closed by the room. Close the connection
@@ -109,11 +178,19 @@ func writePump(
 			raw, known, err := encodeOutbound(msg)
 			if err != nil {
 				if !known {
+					// A shape we deliberately don't encode — skip it
+					// but keep the connection (defensive; shouldn't
+					// happen for a version-matched pair).
 					logger.Warn("dropping unknown outbound", "err", err)
 					continue
 				}
-				logger.Warn("encode outbound failed", "err", err)
-				continue
+				// A KNOWN shape that failed to marshal is a server
+				// bug. Limping on would silently gap the client's
+				// event stream and desync its view, so we drop the
+				// connection instead; the client's auto-reconnect
+				// then triggers a clean full-state replay.
+				logger.Warn("encode outbound failed; dropping connection", "err", err)
+				return
 			}
 
 			// Per-message write timeout. derive a child ctx so a stuck

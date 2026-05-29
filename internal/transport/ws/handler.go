@@ -57,6 +57,13 @@ func NewHandler(mgr *room.Manager, logger *slog.Logger, cfg HandlerConfig) *Hand
 func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
 	r, err := h.mgr.CreateRoom(room.Config{Logger: h.logger})
 	if err != nil {
+		// At-capacity is an expected, transient condition (the server
+		// is full, not broken) — 503 lets clients/proxies treat it as
+		// retryable and distinguishes it from a genuine 500.
+		if errors.Is(err, room.ErrAtCapacity) {
+			http.Error(w, "server is at capacity, try again shortly", http.StatusServiceUnavailable)
+			return
+		}
 		h.logger.Error("create room failed", "err", err)
 		http.Error(w, "could not create room", http.StatusInternalServerError)
 		return
@@ -103,7 +110,8 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 	playerID := req.URL.Query().Get("playerId")
 	secret := req.URL.Query().Get("secret")
 
-	if playerID != "" && secret != "" {
+	isRejoin := playerID != "" && secret != ""
+	if isRejoin {
 		// Rejoin path: submit the rejoin immediately so the client
 		// receives the snapshot on its first read.
 		if err := r.SubmitRejoin(ctx, sub, game.PlayerID(playerID), secret); err != nil {
@@ -114,7 +122,11 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	// Fresh-join path: the readPump will translate the client's first
-	// {type:"join"} frame into r.SubmitJoin.
+	// {type:"join"} frame into r.SubmitJoin. requireJoin enforces a
+	// deadline on that first authentication so a connection that never
+	// joins can't leak goroutines (see joinDeadline). Rejoins are
+	// already authenticated above, so they're exempt.
+	requireJoin := !isRejoin
 
 	// Run the two pumps. We deliberately give each one half the wait
 	// group; both must exit before we tear down. WaitGroup is safer
@@ -124,7 +136,7 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		readPump(ctx, cancel, h.logger.With("pump", "read", "room", code), conn, r, sub)
+		readPump(ctx, cancel, h.logger.With("pump", "read", "room", code), conn, r, sub, requireJoin)
 	}()
 	go func() {
 		defer wg.Done()

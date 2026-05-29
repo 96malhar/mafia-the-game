@@ -1,6 +1,7 @@
 package room
 
 import (
+	"errors"
 	"time"
 
 	"github.com/malhar/mafia-the-game/internal/game"
@@ -29,8 +30,17 @@ func (r *Room) handlePhaseTimer() {
 	r.phaseTimer = nil
 	events, err := r.g.Apply(game.AdvancePhase{})
 	if err != nil {
-		// AdvancePhase fails in PhaseEnded; not a timer-level error.
-		r.log.Debug("phase timer advance rejected", "err", err)
+		// AdvancePhase legitimately fails only in PhaseEnded (the
+		// game ended on the edge that armed this timer) — that's an
+		// expected, benign race, logged at debug. Any OTHER rejection
+		// means a timer fired in a phase the engine considers untimed,
+		// which would silently stall the night; surface it at warn so
+		// the inconsistency is visible.
+		if errors.Is(err, game.ErrGameEnded) {
+			r.log.Debug("phase timer advance rejected (game ended)", "err", err)
+		} else {
+			r.log.Warn("phase timer advance rejected unexpectedly", "err", err)
+		}
 		return
 	}
 	r.appendAndBroadcast(events)

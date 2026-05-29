@@ -28,6 +28,14 @@ const maxCodeAttempts = 100
 // lifetime cap is hours-scale — minute granularity is plenty.
 const DefaultSweepInterval = 60 * time.Second
 
+// DefaultMaxRooms caps the number of simultaneously-active rooms. Room
+// creation is unauthenticated (anyone can POST /api/rooms), and each
+// room holds two goroutines plus a growing event log for up to
+// MaxLifetime, so an uncapped registry is a trivial memory/goroutine
+// exhaustion vector. 1000 concurrent rooms is far beyond any plausible
+// real load for this game while still bounding worst-case footprint.
+const DefaultMaxRooms = 1000
+
 // Sentinel errors returned by the room/manager API.
 var (
 	// ErrRoomNotFound is returned by Manager.Get when the code is unknown.
@@ -36,6 +44,11 @@ var (
 	// ErrRoomClosed is returned by Room.Submit after the room's
 	// context has been cancelled (typically by Manager.Close).
 	ErrRoomClosed = errors.New("room: closed")
+
+	// ErrAtCapacity is returned by Manager.CreateRoom when the registry
+	// already holds maxRooms rooms. The transport maps it to HTTP 503
+	// so clients can distinguish "try again later" from a server fault.
+	ErrAtCapacity = errors.New("room: at capacity")
 )
 
 // Manager is the in-memory registry of active rooms. It is safe for
@@ -59,6 +72,10 @@ type Manager struct {
 	// DefaultSweepInterval; tests override to a sub-second cadence
 	// so they don't have to sleep for hours.
 	sweepInterval time.Duration
+
+	// maxRooms caps the registry size. Defaults to DefaultMaxRooms;
+	// tests override to a small value to exercise the cap.
+	maxRooms int
 }
 
 // ManagerOption tunes a Manager at construction. We use the functional-
@@ -71,6 +88,13 @@ type ManagerOption func(*Manager)
 // should leave the default.
 func WithSweepInterval(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.sweepInterval = d }
+}
+
+// WithMaxRooms overrides the maximum number of simultaneously-active
+// rooms. Primarily for tests exercising the capacity cap; production
+// code should leave the default (DefaultMaxRooms).
+func WithMaxRooms(n int) ManagerOption {
+	return func(m *Manager) { m.maxRooms = n }
 }
 
 // NewManager constructs a Manager and starts its background
@@ -88,6 +112,7 @@ func NewManager(parent context.Context, logger *slog.Logger, opts ...ManagerOpti
 		ctx:           ctx,
 		cancel:        cancel,
 		sweepInterval: DefaultSweepInterval,
+		maxRooms:      DefaultMaxRooms,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -105,6 +130,13 @@ func (m *Manager) CreateRoom(cfg Config) (*Room, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Capacity check under the same lock that guards insertion, so the
+	// count can't be raced past the cap by concurrent creators.
+	if m.maxRooms > 0 && len(m.rooms) >= m.maxRooms {
+		m.logger.Warn("room creation refused: at capacity", "max_rooms", m.maxRooms)
+		return nil, ErrAtCapacity
+	}
 
 	code, err := m.allocCodeLocked()
 	if err != nil {

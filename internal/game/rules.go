@@ -145,7 +145,7 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 	// flows out to the client, which surfaces "This game is already
 	// in progress" in the join lobby; PhaseEnded above gets the
 	// distinct "game has already ended" message.
-	if len(g.state.players) > 0 && g.state.players[0].role != "" {
+	if g.state.rolesDealt {
 		return nil, ErrWrongPhase
 	}
 	name := strings.TrimSpace(c.Name)
@@ -198,9 +198,8 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	// the planned mafia count would do nothing — composeRoster has
 	// already run and the per-player role assignments are committed.
 	// We reject so the host can't be fooled into thinking a late
-	// adjustment took effect. Same predicate as applyAddPlayer's
-	// post-StartGame block, kept in sync intentionally.
-	if len(g.state.players) > 0 && g.state.players[0].role != "" {
+	// adjustment took effect.
+	if g.state.rolesDealt {
 		return nil, ErrWrongPhase
 	}
 	maxMafia := g.state.maxPlayers - (reservedTownRoles + 1)
@@ -251,8 +250,9 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	if g.state.phase != PhaseLobby {
 		return nil, ErrWrongPhase
 	}
-	// If any player already has a role, StartGame has already run.
-	if len(g.state.players) > 0 && g.state.players[0].role != "" {
+	// rolesDealt is set the first time StartGame succeeds; a second
+	// call is a no-op error rather than a re-deal.
+	if g.state.rolesDealt {
 		return nil, ErrWrongPhase
 	}
 	n := len(g.state.players)
@@ -284,6 +284,7 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 			Role:     dealt[i],
 		})
 	}
+	g.state.rolesDealt = true
 
 	return events, nil
 }

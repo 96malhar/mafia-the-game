@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/malhar/mafia-the-game/internal/game"
@@ -55,6 +54,13 @@ type Room struct {
 	// causing the run loop to synthesize an AdvancePhase command. nil
 	// when no phase-timeout is active (lobby, ended, or untimed phases).
 	phaseTimer *time.Timer
+
+	// hostGraceTimer fires cfg.HostGracePeriod after the host's
+	// connection drops; on fire the run loop promotes another
+	// connected player to host (see handleHostGrace). nil when the
+	// host is connected or migration is disabled. Lives alongside
+	// phaseTimer as a second, independent run-loop timer.
+	hostGraceTimer *time.Timer
 
 	// createdAt is the wall-clock moment newRoom returned. Combined
 	// with cfg.MaxLifetime it determines when the manager's sweeper
@@ -229,14 +235,19 @@ func (r *Room) Run() {
 	defer close(r.done)
 	defer r.shutdownSubscribers()
 	defer r.stopPhaseTimer()
+	defer r.stopHostGrace()
 
 	for {
-		// The timer channel may be nil (no active phase timer); a
-		// nil-channel arm in a select blocks forever, which is what we
-		// want — it disables the arm cleanly.
+		// Each timer channel may be nil (timer inactive); a nil-channel
+		// arm in a select blocks forever, which is what we want — it
+		// disables the arm cleanly.
 		var timerC <-chan time.Time
 		if r.phaseTimer != nil {
 			timerC = r.phaseTimer.C
+		}
+		var hostGraceC <-chan time.Time
+		if r.hostGraceTimer != nil {
+			hostGraceC = r.hostGraceTimer.C
 		}
 
 		select {
@@ -249,13 +260,14 @@ func (r *Room) Run() {
 			r.dispatch(msg)
 		case <-timerC:
 			r.handlePhaseTimer()
+		case <-hostGraceC:
+			r.handleHostGrace()
 		}
 	}
 }
 
 // Phase-timer helpers (handlePhaseTimer / resetPhaseTimer /
-// stopPhaseTimer / armDetectivePauseTimer / resetNightTurnTimer)
-// live in timers.go.
+// stopPhaseTimer / armSubPhaseTimer) live in timers.go.
 
 // dispatch handles one inbound message. Each branch is a small focused
 // helper for readability.
@@ -281,8 +293,8 @@ func (r *Room) dispatch(msg inbound) {
 // its assigned PlayerID and rejoin secret, and the engine event
 // (PlayerJoined) is broadcast to everyone.
 func (r *Room) handleJoin(m inJoin) {
-	if m.From == nil {
-		return // defensive: shouldn't happen
+	if m.From == nil || m.From.closed.Load() {
+		return // defensive: nil, or a torn-down connection sent a stray frame
 	}
 
 	r.nextSeq++
@@ -291,15 +303,20 @@ func (r *Room) handleJoin(m inJoin) {
 	if err != nil {
 		out := errorFor(ErrInternal)
 		out.Message = "could not allocate identity"
-		r.sendOne(m.From, out)
+		// Terminal: a join that can't mint a credential can't proceed,
+		// and the client tears the socket down on a join error anyway.
+		r.rejectUnjoined(m.From, out)
 		return
 	}
 
 	events, err := r.g.Apply(game.AddPlayer{PlayerID: pid, Name: m.Name})
 	if err != nil {
 		// joinErrorFor gives lobby-closed errors a player-facing
-		// message; all other codes pass through unchanged.
-		r.sendOne(m.From, joinErrorFor(err))
+		// message; all other codes pass through unchanged. The join
+		// failed, so close the channel (the client closes the socket
+		// on this error; closing our side too bounds the misbehaving-
+		// client case).
+		r.rejectUnjoined(m.From, joinErrorFor(err))
 		return
 	}
 
@@ -358,12 +375,17 @@ func (r *Room) handleJoin(m inJoin) {
 // secret doesn't match (or the player ID is unknown), we send outError
 // and discard the subscriber without disturbing other state.
 func (r *Room) handleRejoin(m inRejoin) {
-	if m.From == nil {
+	if m.From == nil || m.From.closed.Load() {
 		return
 	}
 	slot, ok := r.players[m.PlayerID]
 	if !ok || slot.secret != m.Secret {
-		r.sendOne(m.From, errorFor(ErrAuthFailed))
+		// Auth failed: the credentials don't match a known slot.
+		// Close the channel so the write pump unwinds — unlike a
+		// fresh join, a rejoin can't be retried on the same socket
+		// (the creds ride the connect URL), so there's nothing to
+		// keep the connection open for.
+		r.rejectUnjoined(m.From, errorFor(ErrAuthFailed))
 		return
 	}
 
@@ -378,6 +400,13 @@ func (r *Room) handleRejoin(m inRejoin) {
 	r.attachSubscriber(m.From)
 	m.From.setPlayerID(m.PlayerID)
 
+	// If the host just reconnected, cancel any pending migration so
+	// the badge stays put. A refresh (leave → rejoin within the grace
+	// window) is the common case this protects.
+	if m.PlayerID == r.host {
+		r.stopHostGrace()
+	}
+
 	r.sendOne(m.From, OutRejoined{
 		PlayerID: m.PlayerID,
 		Name:     slot.name,
@@ -391,14 +420,17 @@ func (r *Room) handleRejoin(m inRejoin) {
 // remove the player from the game. The player can rejoin with their
 // secret; meanwhile they're treated as disconnected (no broadcasts).
 func (r *Room) handleLeave(m inLeave) {
-	if m.From == nil {
-		return
+	if m.From == nil || m.From.closed.Load() {
+		return // already torn down (e.g. slow-disconnect or rejected join)
 	}
 	pid := m.From.PlayerID()
 	if slot, ok := r.players[pid]; ok && slot.sub == m.From {
 		slot.sub = nil
 	}
 	r.detachSubscriber(m.From)
+	// If that was the host's last connection, start the migration
+	// countdown so the game doesn't freeze if they don't come back.
+	r.maybeArmHostGrace()
 }
 
 // handleLifetimeCheck evaluates whether the room has exceeded its
@@ -426,6 +458,79 @@ func (r *Room) handleLifetimeCheck() {
 	r.cancel()
 }
 
+// maybeArmHostGrace starts the host-migration countdown if the host's
+// connection is currently down and the timer isn't already running.
+// Called from every path that can leave the host disconnected
+// (handleLeave, disconnectSlow). No-op when migration is disabled
+// (HostGracePeriod <= 0), when there's no host yet, or when the host
+// is connected.
+func (r *Room) maybeArmHostGrace() {
+	if r.cfg.HostGracePeriod <= 0 || r.host == "" {
+		return
+	}
+	if slot, ok := r.players[r.host]; ok && slot.sub != nil {
+		return // host still connected — nothing to migrate
+	}
+	if r.hostGraceTimer != nil {
+		return // already counting down
+	}
+	r.hostGraceTimer = time.NewTimer(r.cfg.HostGracePeriod)
+}
+
+// stopHostGrace cancels a pending host-migration countdown. Safe to
+// call repeatedly. Called when the host reconnects (migration no
+// longer needed) and on room shutdown.
+func (r *Room) stopHostGrace() {
+	if r.hostGraceTimer == nil {
+		return
+	}
+	r.hostGraceTimer.Stop()
+	r.hostGraceTimer = nil
+}
+
+// handleHostGrace fires when the host-grace countdown elapses. If the
+// host is still disconnected, it promotes the oldest connected player
+// to host and broadcasts a HostChanged so every client moves the badge
+// and unlocks the host controls. If the host reconnected in the
+// meantime, or nobody is connected to promote to, it does nothing.
+//
+// Migration keeps the game progressable: all day-phase transitions
+// (BeginNight / OpenVoting / FinalizeVotes) are host-only, so a room
+// whose host vanished would otherwise be frozen until MaxLifetime.
+func (r *Room) handleHostGrace() {
+	r.hostGraceTimer = nil
+
+	if slot, ok := r.players[r.host]; ok && slot.sub != nil {
+		return // host came back during the grace window
+	}
+	newHost := r.oldestConnectedPlayer()
+	if newHost == "" || newHost == r.host {
+		// No connected candidate (everyone's gone — the room will be
+		// reaped at MaxLifetime), or somehow already the host.
+		return
+	}
+
+	prev := r.host
+	r.host = newHost
+	r.log.Info("host migrated", "from", prev, "to", newHost)
+	// HostChanged is Public, so it reaches every viewer and also lands
+	// in the replayed log for future (re)joiners.
+	r.appendAndBroadcast([]game.Event{game.HostChanged{PlayerID: newHost}})
+}
+
+// oldestConnectedPlayer returns the PlayerID of the earliest-joined
+// player with a live subscriber, or "" if none are connected. Join
+// order comes from the engine's player slice (stable, deterministic),
+// so promotion is predictable rather than map-iteration-random.
+func (r *Room) oldestConnectedPlayer() game.PlayerID {
+	for _, p := range r.g.State().Players() {
+		if slot, ok := r.players[p.ID()]; ok && slot.sub != nil {
+			return p.ID()
+		}
+	}
+	return ""
+}
+
 // handleCommand applies an engine command, rewriting any actor-identity
 // fields on the command to match the originating subscriber. This is
 // the auth boundary: clients cannot impersonate other players even by
@@ -440,7 +545,11 @@ func (r *Room) handleLifetimeCheck() {
 //     signal. Forwarding it from a client would let any player skip
 //     the active night turn, so we reject those outright.
 func (r *Room) handleCommand(m inCommand) {
-	if m.From == nil {
+	if m.From == nil || m.From.closed.Load() {
+		// A subscriber whose channel is already closed (slow-
+		// disconnect, leave, rejected join) must not be acted on:
+		// the error-reply path below would otherwise send on a
+		// closed channel and panic the room goroutine.
 		return
 	}
 	pid := m.From.PlayerID()
@@ -523,15 +632,11 @@ func rewriteActor(cmd game.Command, pid game.PlayerID) game.Command {
 // secret length in bytes; base64-encoded length will be ~22 chars.
 const secretBytes = 16
 
-// secretEntropy guards newSecret with a mutex so tests can override
-// the randomness source. We don't expose this; it's package-private.
-var secretEntropy = struct {
-	sync.Mutex
-}{}
-
+// newSecret mints a rejoin credential from crypto/rand. crypto/rand's
+// Reader is safe for concurrent use, and newSecret is only ever called
+// from the single room goroutine (handleJoin) anyway, so it needs no
+// locking of its own.
 func newSecret() (string, error) {
-	secretEntropy.Lock()
-	defer secretEntropy.Unlock()
 	buf := make([]byte, secretBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err

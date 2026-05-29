@@ -32,11 +32,10 @@ type Config struct {
 	// nil fields fall back to package defaults; nil struct uses all
 	// defaults.
 	//
-	// Note: narrate and sleep durations are NOT in this struct.
-	// Those are owned by the role spec (game.NarrateDuration /
-	// game.SleepDuration); the room reads them directly when
-	// stamping deadlines. This keeps "how long is mafia's wake-up
-	// cue?" answerable in exactly one place (internal/game/rolespec.go).
+	// ALL six sub-phase durations (including narrate and sleep) are
+	// owned here in the room layer — the engine is timeless. "How long
+	// is mafia's wake-up cue?" is answerable in exactly one place:
+	// DefaultNarrate / DefaultSleep below.
 	NightSubPhases NightSubPhaseDurations
 
 	// MaxLifetime is the hard upper bound on a room's wall-clock age.
@@ -51,6 +50,18 @@ type Config struct {
 	// negative disables reaping (useful for tests / future
 	// deployments).
 	MaxLifetime time.Duration
+
+	// HostGracePeriod is how long the room waits, after the host's
+	// connection drops, before promoting another connected player to
+	// host. The grace window absorbs the common case — a host tab
+	// refresh or brief network blip — without bouncing the host
+	// badge; only a host who's gone for longer triggers migration.
+	// Without this, a host who pockets their phone would freeze the
+	// game, since all day-phase advancement is host-only.
+	//
+	// Default DefaultHostGracePeriod. Zero or negative disables host
+	// migration entirely (the original behavior).
+	HostGracePeriod time.Duration
 
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -221,6 +232,13 @@ const DefaultMafiaNarrateDayN = 1500 * time.Millisecond
 // on a long-running server.
 const DefaultMaxLifetime = 10 * time.Hour
 
+// DefaultHostGracePeriod is how long a room tolerates a disconnected
+// host before migrating the role to another connected player. Sized to
+// comfortably cover a tab refresh or a short network hiccup (which
+// reconnect within a second or two) while still recovering a genuinely-
+// departed host fast enough that the table isn't left waiting.
+const DefaultHostGracePeriod = 45 * time.Second
+
 // DefaultOpening is the default opening-sub-phase duration.
 func DefaultOpening() time.Duration { return DefaultOpeningDuration }
 
@@ -309,6 +327,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxLifetime == 0 {
 		c.MaxLifetime = DefaultMaxLifetime
+	}
+	if c.HostGracePeriod == 0 {
+		c.HostGracePeriod = DefaultHostGracePeriod
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()

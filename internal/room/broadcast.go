@@ -81,42 +81,14 @@ func (r *Room) stampNightDeadlines(events []game.Event) {
 }
 
 // stampDeadline returns a copy of evt with its Deadline field set to
-// the given unix-millis value. Events that don't have a Deadline are
-// passed through unchanged. Splitting this out from
-// stampNightDeadlines keeps the per-type field assignments readable
-// and isolates the type switch from the timing math.
+// the given unix-millis value. Non-night-sub-phase events (which carry
+// no Deadline) pass through unchanged. The per-type copy-with-deadline
+// lives on the events themselves (game.NightSubPhaseEvent.WithDeadline)
+// so this stays a single interface assertion rather than a switch that
+// must be kept in lockstep with the event list.
 func stampDeadline(evt game.Event, deadline int64) game.Event {
-	switch e := evt.(type) {
-	case game.NightOpeningStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
-	case game.NightNarrationStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
-	case game.NightActionStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
-	case game.NightPonderStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
-	case game.NightSleepStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
-	case game.NightSettleStarted:
-		if e.Deadline == 0 {
-			e.Deadline = deadline
-		}
-		return e
+	if e, ok := evt.(game.NightSubPhaseEvent); ok {
+		return e.WithDeadline(deadline)
 	}
 	return evt
 }
@@ -155,12 +127,10 @@ func (r *Room) scheduleTimers(events []game.Event) {
 		switch e.(type) {
 		case game.PhaseChanged:
 			phaseChanged = true
-		case game.NightOpeningStarted,
-			game.NightNarrationStarted,
-			game.NightActionStarted,
-			game.NightPonderStarted,
-			game.NightSleepStarted,
-			game.NightSettleStarted:
+		case game.NightSubPhaseEvent:
+			// Any Night*Started event (the family is defined by the
+			// interface, so a future sub-phase event is covered
+			// without editing this switch).
 			lastSubPhaseEvent = e
 		}
 	}
@@ -184,6 +154,19 @@ func (r *Room) sendOne(sub *Subscriber, msg Outbound) bool {
 	}
 }
 
+// rejectUnjoined sends a terminal error to a subscriber that never
+// attached (a failed join or rejoin auth) and then closes its outbound
+// channel so the transport's write pump unwinds instead of parking on
+// an empty channel forever. The error is queued before the close, so
+// the write pump delivers it to the client and then sees the channel
+// close (a clean shutdown). detachSubscriber marks the subscriber
+// closed, so any stray inbound the read pump delivers after this is
+// ignored by the dispatch guards.
+func (r *Room) rejectUnjoined(sub *Subscriber, out OutError) {
+	r.sendOne(sub, out)
+	r.detachSubscriber(sub)
+}
+
 // disconnectSlow drops a slow subscriber from the room and closes its
 // outbound channel. The player slot is NOT removed — they can rejoin.
 func (r *Room) disconnectSlow(sub *Subscriber) {
@@ -193,6 +176,9 @@ func (r *Room) disconnectSlow(sub *Subscriber) {
 		slot.sub = nil
 	}
 	r.detachSubscriber(sub)
+	// A dropped host (slow connection) also triggers the migration
+	// countdown, same as a clean leave.
+	r.maybeArmHostGrace()
 }
 
 // attachSubscriber adds a subscriber to r.subs. Helper exists for
@@ -203,23 +189,26 @@ func (r *Room) attachSubscriber(sub *Subscriber) {
 }
 
 // detachSubscriber removes a subscriber from r.subs and closes its
-// outbound channel. The close() is safe to call once and only once
-// per subscriber — all call sites (handleLeave, handleRejoin's
-// eviction path, disconnectSlow) gate on r.subs membership to
-// enforce that.
+// outbound channel exactly once. Idempotency is enforced by the
+// per-subscriber `closed` flag rather than r.subs membership, so it's
+// also safe to call on a subscriber that never attached — e.g. a
+// rejected join/rejoin (see rejectUnjoined). All callers run on the
+// room goroutine, so the flag swap + delete + close are race-free with
+// each other; the flag's atomicity only matters for the transport-side
+// close-vs-send race.
 func (r *Room) detachSubscriber(sub *Subscriber) {
-	if _, ok := r.subs[sub]; !ok {
-		return
+	if sub.closed.Swap(true) {
+		return // already closed
 	}
-	delete(r.subs, sub)
+	delete(r.subs, sub) // no-op if never attached
 	close(sub.out)
 }
 
 // shutdownSubscribers closes every connected subscriber's channel on
-// room exit. Called via defer in Run.
+// room exit. Called via defer in Run. Routes through detachSubscriber
+// so the close-once invariant (and the `closed` flag) is honored.
 func (r *Room) shutdownSubscribers() {
 	for sub := range r.subs {
-		close(sub.out)
-		delete(r.subs, sub)
+		r.detachSubscriber(sub)
 	}
 }

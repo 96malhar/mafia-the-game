@@ -904,3 +904,146 @@ func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {
 		require.True(t, seenOwn, "subscriber %s never received their own RoleAssigned", myID)
 	}
 }
+
+// --- Room capacity cap ----------------------------------------------------
+
+func TestManager_CreateRoom_AtCapacity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m := NewManager(ctx, silentLogger(), WithMaxRooms(2))
+	t.Cleanup(func() {
+		sd, c := context.WithTimeout(context.Background(), time.Second)
+		defer c()
+		_ = m.Close(sd)
+	})
+
+	_, err := m.CreateRoom(Config{Logger: silentLogger()})
+	require.NoError(t, err)
+	_, err = m.CreateRoom(Config{Logger: silentLogger()})
+	require.NoError(t, err)
+
+	// Third room exceeds the cap.
+	_, err = m.CreateRoom(Config{Logger: silentLogger()})
+	require.ErrorIs(t, err, ErrAtCapacity)
+}
+
+// --- Rejected join/rejoin closes the subscriber channel -------------------
+
+func TestRoom_RejectedJoinClosesChannel(t *testing.T) {
+	// A failed join (here: duplicate name) must send the error AND
+	// close the subscriber's outbound channel, so the transport's
+	// write pump unwinds instead of parking on an empty channel.
+	_, r := newTestRoom(t)
+	_, _ = connect(t, r, "alice")
+
+	sub := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(), inJoin{From: sub, Name: "alice"}))
+
+	// First the error frame...
+	oe := recvType[OutError](t, sub)
+	require.Equal(t, wire.ErrCodeDuplicateName, oe.Code)
+
+	// ...then the channel closes.
+	select {
+	case _, ok := <-sub.Outbound():
+		require.False(t, ok, "channel must be closed after a rejected join")
+	case <-time.After(recvTimeout):
+		t.Fatal("expected channel close after rejected join")
+	}
+}
+
+func TestRoom_RejectedRejoinClosesChannel(t *testing.T) {
+	_, r := newTestRoom(t)
+
+	sub := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(),
+		inRejoin{From: sub, PlayerID: "p1", Secret: "bogus"}))
+
+	oe := recvType[OutError](t, sub)
+	require.Equal(t, wire.ErrCodeAuthFailed, oe.Code)
+
+	select {
+	case _, ok := <-sub.Outbound():
+		require.False(t, ok, "channel must be closed after a rejected rejoin")
+	case <-time.After(recvTimeout):
+		t.Fatal("expected channel close after rejected rejoin")
+	}
+}
+
+// --- Host migration -------------------------------------------------------
+
+func TestRoom_HostMigratesAfterGrace(t *testing.T) {
+	// When the host's connection drops and doesn't return within the
+	// grace window, the room promotes the oldest connected player and
+	// broadcasts HostChanged so the game stays progressable.
+	m := newTestManager(t)
+	r, err := m.CreateRoom(Config{
+		Logger:          silentLogger(),
+		HostGracePeriod: 40 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	host, hostAck := connect(t, r, "host")
+	p2, p2Ack := connect(t, r, "p2")
+	require.True(t, hostAck.IsHost)
+	require.False(t, p2Ack.IsHost)
+
+	// Clear the PlayerJoined fan-out so the only thing we wait for is
+	// the migration event.
+	drain(p2, 50*time.Millisecond)
+
+	// Host drops.
+	require.NoError(t, r.submit(context.Background(), inLeave{From: host}))
+
+	// p2 should receive HostChanged promoting itself.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case msg, ok := <-p2.Outbound():
+			require.True(t, ok, "p2 channel closed before migration")
+			ev, isEvent := msg.(OutEvent)
+			if !isEvent {
+				continue
+			}
+			hc, isHC := ev.Event.(game.HostChanged)
+			if !isHC {
+				continue
+			}
+			require.Equal(t, p2Ack.PlayerID, hc.PlayerID)
+			return
+		case <-deadline:
+			t.Fatal("expected HostChanged promoting p2 after host grace elapsed")
+		}
+	}
+}
+
+func TestRoom_HostRejoinWithinGraceKeepsHost(t *testing.T) {
+	// A host tab refresh (leave then rejoin within the grace window)
+	// must NOT trigger migration: the host badge stays put.
+	m := newTestManager(t)
+	r, err := m.CreateRoom(Config{
+		Logger:          silentLogger(),
+		HostGracePeriod: 200 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	host, hostAck := connect(t, r, "host")
+	p2, _ := connect(t, r, "p2")
+	drain(p2, 50*time.Millisecond)
+
+	// Host drops then immediately rejoins (simulated refresh).
+	require.NoError(t, r.submit(context.Background(), inLeave{From: host}))
+	rejoinSub := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(),
+		inRejoin{From: rejoinSub, PlayerID: hostAck.PlayerID, Secret: hostAck.Secret}))
+	rejoined := recvType[OutRejoined](t, rejoinSub)
+	require.True(t, rejoined.IsHost, "host keeps host on a within-grace rejoin")
+
+	// Wait past the grace window; p2 must NOT receive a HostChanged.
+	for _, msg := range drain(p2, 300*time.Millisecond) {
+		if ev, ok := msg.(OutEvent); ok {
+			_, isHC := ev.Event.(game.HostChanged)
+			require.False(t, isHC, "no migration should occur on a within-grace rejoin")
+		}
+	}
+}

@@ -77,7 +77,6 @@ func (g *Game) advanceNightSubPhase() []Event {
 		// nightTurnQueue is guaranteed non-empty here because
 		// beginNightTurns populates it before entering opening.
 		g.state.currentNightSubPhase = ""
-		g.state.nightTurnDeadlineMillis = 0
 		return g.beginNextNightTurn()
 
 	case NightSubNarrate:
@@ -119,7 +118,6 @@ func (g *Game) advanceNightSubPhase() []Event {
 		// resolve the night and transition to DayDiscussion.
 		g.state.currentNightRole = ""
 		g.state.currentNightSubPhase = ""
-		g.state.nightTurnDeadlineMillis = 0
 		g.state.nightSubmitted = false
 		if len(g.state.nightTurnQueue) > 0 {
 			return g.beginNextNightTurn()
@@ -138,7 +136,6 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 	role := g.state.currentNightRole
 	day := g.state.day
 	g.state.currentNightSubPhase = sub
-	g.state.nightTurnDeadlineMillis = 0
 
 	switch sub {
 	case NightSubNarrate:
@@ -231,7 +228,7 @@ func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
 		return nil, ErrGameEnded
 	case PhaseLobby:
 		// Roles must have been dealt by StartGame first.
-		if len(g.state.players) == 0 || g.state.players[0].role == "" {
+		if !g.state.rolesDealt {
 			return nil, ErrWrongPhase
 		}
 	case PhaseDayDiscussion:
@@ -369,7 +366,6 @@ func (g *Game) beginNightTurns() []Event {
 	// pops the first role.
 	g.state.currentNightRole = ""
 	g.state.currentNightSubPhase = NightSubOpening
-	g.state.nightTurnDeadlineMillis = 0
 	g.state.nightSubmitted = false
 	return []Event{NightOpeningStarted{
 		Day:      g.state.day,

@@ -72,7 +72,7 @@ func TestRoomCreateRateLimit(t *testing.T) {
 
 	t.Run("disabled when RPM is zero", func(t *testing.T) {
 		ts := newTestServerWithWS(t, 0)
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			require.Equal(t, http.StatusOK, postRoom(t, ts.URL),
 				"no limiter should be installed at RPM=0")
 		}

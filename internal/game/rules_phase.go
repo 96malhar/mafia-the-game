@@ -1,5 +1,7 @@
 package game
 
+import "maps"
+
 // applyAdvancePhase elapses the current night SUB-phase (PhaseNight
 // only). It is an INTERNAL command, invoked by the room's wall-clock
 // timer when the active sub-phase's deadline is reached. Daytime
@@ -284,9 +286,7 @@ func (g *Game) applyRevealVotes(_ RevealVotes) ([]Event, error) {
 // the event self-contained for replay). Always non-nil.
 func (g *Game) snapshotVotes() map[PlayerID]PlayerID {
 	out := make(map[PlayerID]PlayerID, len(g.state.votes))
-	for voter, target := range g.state.votes {
-		out[voter] = target
-	}
+	maps.Copy(out, g.state.votes)
 	return out
 }
 

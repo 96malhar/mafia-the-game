@@ -39,7 +39,7 @@ func fixedRoster(t *testing.T) *game.Game {
 		"town2":  game.RoleVillager,
 	}
 
-	for seed := int64(0); seed < 1000; seed++ {
+	for seed := range int64(1000) {
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: seed,

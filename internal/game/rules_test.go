@@ -382,7 +382,7 @@ func TestStartGame(t *testing.T) {
 		g := game.New()
 		_, err := g.Apply(standardCreate("g1", seed))
 		require.NoError(t, err)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			pid := game.PlayerID(string(rune('a' + i)))
 			_, err := g.Apply(game.AddPlayer{PlayerID: pid, Name: string(pid)})
 			require.NoError(t, err)
@@ -458,7 +458,7 @@ func TestStartGame(t *testing.T) {
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
 		})
 		require.NoError(t, err)
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			pid := game.PlayerID(string(rune('a' + i)))
 			_, err := g.Apply(game.AddPlayer{PlayerID: pid, Name: string(pid)})
 			require.NoError(t, err)

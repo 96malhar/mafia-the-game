@@ -190,7 +190,7 @@ func (m *Manager) Close(ctx context.Context) error {
 
 // allocCodeLocked finds a free room code. Caller must hold m.mu.
 func (m *Manager) allocCodeLocked() (string, error) {
-	for i := 0; i < maxCodeAttempts; i++ {
+	for range maxCodeAttempts {
 		code, err := randomCode()
 		if err != nil {
 			return "", err

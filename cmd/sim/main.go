@@ -91,7 +91,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string, nPlayers int, ti
 	wsURL := httpToWS(addr) + "/ws/" + code
 
 	bots := make([]*Bot, nPlayers)
-	for i := 0; i < nPlayers; i++ {
+	for i := range nPlayers {
 		bots[i] = NewBot(fmt.Sprintf("Bot%d", i+1), logger)
 	}
 
@@ -329,8 +329,8 @@ func sortPlayerIDs(ids []string) {
 }
 
 func httpToWS(addr string) string {
-	if strings.HasPrefix(addr, "https://") {
-		return "wss://" + strings.TrimPrefix(addr, "https://")
+	if after, ok := strings.CutPrefix(addr, "https://"); ok {
+		return "wss://" + after
 	}
 	return "ws://" + strings.TrimPrefix(addr, "http://")
 }

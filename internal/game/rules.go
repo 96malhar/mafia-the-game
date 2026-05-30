@@ -26,10 +26,7 @@ const (
 // for 12 it yields 4, etc. Always at least 1, and never so many that
 // even at MinPlayers there'd be no room for Det + Doc + ≥1 villager.
 func defaultMafiaCount(minPlayers int) int {
-	m := minPlayers / 3
-	if m < 1 {
-		m = 1
-	}
+	m := max(minPlayers/3, 1)
 	if m > minPlayers-(reservedTownRoles+1) {
 		m = minPlayers - (reservedTownRoles + 1)
 	}
@@ -298,7 +295,7 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 // 1 ≤ mafia ≤ n - reservedTownRoles - 1.
 func composeRoster(n, mafia int) []Role {
 	out := make([]Role, 0, n)
-	for i := 0; i < mafia; i++ {
+	for range mafia {
 		out = append(out, RoleMafia)
 	}
 	out = append(out, RoleDetective, RoleDoctor)

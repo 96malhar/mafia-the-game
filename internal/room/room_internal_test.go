@@ -90,7 +90,7 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {
 		// Repeat the draw so we exercise the randomness: every draw
 		// must fall in [lo, hi].
-		for i := 0; i < 64; i++ {
+		for range 64 {
 			d := c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 1, true), false)
 			require.GreaterOrEqual(t, d, DefaultPhantomPonderMin,
 				"phantom ponder must be >= DefaultPhantomPonderMin")
@@ -191,7 +191,7 @@ func TestRoom_DisconnectSlowSubscriber(t *testing.T) {
 	// Push events until slow fills its buffer and is disconnected,
 	// draining fast after each broadcast so only slow ever backs up.
 	disconnected := false
-	for i := 0; i < outboundChanCapacity*2; i++ {
+	for range outboundChanCapacity * 2 {
 		r.appendAndBroadcast([]game.Event{makeEvent()})
 		drainFast()
 		if _, stillSubscribed := r.subs[slow]; !stillSubscribed {

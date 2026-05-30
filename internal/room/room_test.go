@@ -247,7 +247,7 @@ func TestManager_CreateAndGet(t *testing.T) {
 func TestManager_UniqueCodes(t *testing.T) {
 	m := newTestManager(t)
 	seen := map[string]bool{}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		r, err := m.CreateRoom(Config{Logger: silentLogger()})
 		require.NoError(t, err)
 		require.False(t, seen[r.Code()], "duplicate code %q", r.Code())

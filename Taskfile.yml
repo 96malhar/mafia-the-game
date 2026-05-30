@@ -30,6 +30,39 @@ tasks:
     cmds:
       - go run ./cmd/sim -addr "http://localhost${ADDR:-:8080}" {{.CLI_ARGS}}
 
+  lobby:
+    desc: Open 8 Chrome tabs that auto-join a fresh room, waiting to start. Start `task run` first. (macOS)
+    # Creates one empty room via the API, then opens a tab per player at
+    # /?room=CODE&name=NAME. The web client auto-joins when a link carries
+    # both params (see maybeAutoJoinFromURL in web/index.html). The FIRST
+    # tab to connect becomes host (first-joiner-is-host), so it gets the
+    # "Start game" controls; the rest sit in the lobby. Uses macOS `open`.
+    cmds:
+      - |
+        base="http://localhost${ADDR:-:8080}"
+        code=$(curl -fsS -X POST "$base/api/rooms" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+        if [ -z "$code" ]; then
+          echo "could not create room — is 'task run' up on ${ADDR:-:8080}?" >&2
+          exit 1
+        fi
+        echo "room $code — opening 8 Chrome tabs (host: Alice)"
+        # Tabs open in Chrome specifically: it throttles background-tab
+        # audio far less than Safari, so the host tab keeps narrating even
+        # while you click around the other players' tabs in the sim.
+        #
+        # Open the host tab FIRST and give it a real head start. The host
+        # is whoever's join lands first server-side, not whoever's `open`
+        # runs first — a cold tab needs time to load the page, open its
+        # WebSocket, and send the join. Too short a gap and a later tab
+        # wins the race, so the host ends up arbitrary. ~2.5s reliably
+        # lets Alice connect + claim host before the rest pile in.
+        open -a "Google Chrome" "$base/?room=$code&name=Alice"
+        sleep 2.5
+        for name in Bob Charlie Diana Edward Fiona George Hannah; do
+          open -a "Google Chrome" "$base/?room=$code&name=$name"
+          sleep 0.3
+        done
+
   stop:
     desc: Stop the dev server (ADDR=:8080 by default). Sends SIGTERM, then SIGKILL after 5s.
     # We target the listening socket rather than a process name so this

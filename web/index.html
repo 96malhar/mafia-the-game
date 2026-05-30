@@ -972,6 +972,16 @@
         return raw.trim().toUpperCase();
       }
 
+      // Reads ?name=Alice from the URL (trimmed). Returns null when the
+      // param is absent or blank. Only consulted by the auto-join demo
+      // flow (maybeAutoJoinFromURL); normal share links never carry it.
+      function nameFromURL() {
+        const raw = new URLSearchParams(location.search).get("name");
+        if (!raw) return null;
+        const trimmed = raw.trim();
+        return trimmed.length > 0 ? trimmed : null;
+      }
+
       function showGame(code) {
         $("lobby").classList.add("hidden");
         $("game").classList.remove("hidden");
@@ -2584,6 +2594,22 @@
         refreshLobbyButtons();
       }
 
+      // maybeAutoJoinFromURL is a dev/demo convenience: a link carrying
+      // BOTH ?room= and ?name= joins immediately, skipping the manual
+      // name-entry + click. The `task lobby` helper uses this to open a
+      // tab per bot player straight into the lobby. Regular share links
+      // (room only, no name) are unaffected — they still land on the
+      // name-entry lobby. Returns true if an auto-join was launched.
+      function maybeAutoJoinFromURL() {
+        const code = roomFromURL();
+        const name = nameFromURL();
+        if (!code || !name) return false;
+        $("name").value = name;
+        refreshLobbyButtons();
+        joinRoom(code);
+        return true;
+      }
+
       // ----- wiring -------------------------------------------------------
 
       $("name").addEventListener("input", refreshLobbyButtons);
@@ -2651,6 +2677,9 @@
       // makes a tab refresh a no-op from the player's perspective.
       if (!tryAutoRejoin()) {
         applyURLState();
+        // A ?room=&name= link (the `task lobby` demo) auto-joins; a
+        // plain ?room= share link just shows the name-entry lobby.
+        maybeAutoJoinFromURL();
       }
 
       // Quick health probe to confirm the server is up before anyone clicks.

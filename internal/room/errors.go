@@ -60,12 +60,18 @@ var sentinelCodes = []struct {
 // (whole-package) enforces that every wire.ErrorCode has a matching
 // sentinel here.
 func errorFor(err error) OutError {
+	out := OutError{Code: wire.ErrCodeInternal, Message: err.Error()}
 	for _, m := range sentinelCodes {
 		if errors.Is(err, m.err) {
-			return OutError{Code: m.code, Message: err.Error()}
+			out = OutError{Code: m.code, Message: err.Error()}
+			break
 		}
 	}
-	return OutError{Code: wire.ErrCodeInternal, Message: err.Error()}
+	// Single chokepoint for every rejection: record it as a metric
+	// (labelled by code) instead of logging, so we get trends/alerting
+	// without flooding the logs with normal user errors.
+	recordCommandRejected(out.Code)
+	return out
 }
 
 // joinErrorFor is errorFor specialized for the first-time join

@@ -105,6 +105,12 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Track the live connection for the lifetime of the handler (both
+	// pumps run below and we block on wg.Wait, so the defer fires on
+	// disconnect).
+	recordConnOpen()
+	defer recordConnClose()
+
 	// Per-connection context. Cancelled when either pump exits, when
 	// the request is cancelled (client disconnects mid-handler), or
 	// when the manager shuts down.

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/malhar/mafia-the-game/internal/transport/ws"
 )
@@ -75,11 +76,19 @@ func New(cfg Config) *Server {
 	r := chi.NewRouter()
 	registerRoutes(r, cfg)
 
+	// Wrap the whole router so every request feeds the standard
+	// http.server.* metrics into the global (Prometheus-backed) meter
+	// provider, surfacing them at /metrics. No tracer provider is
+	// installed, so the span side is a cheap no-op. otelhttp's response
+	// writer forwards Unwrap()/Hijack(), so the WebSocket upgrade still
+	// works through it.
+	handler := otelhttp.NewHandler(r, "http.server")
+
 	return &Server{
 		cfg: cfg,
 		http: &http.Server{
 			Addr:    cfg.Addr,
-			Handler: r,
+			Handler: handler,
 			// ReadHeaderTimeout bounds slow-header (slowloris) attacks.
 			// We intentionally do NOT set ReadTimeout/WriteTimeout: the
 			// WebSocket connections are long-lived and hijacked after

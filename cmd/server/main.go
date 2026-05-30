@@ -2,20 +2,27 @@
 //
 // Configuration is entirely via environment variables (see envConfig):
 //
-//	ADDR                        listen address            (default ":8080")
+//	ADDR                        public listen address     (default ":8080")
+//	METRICS_ADDR                private /metrics address   (default ":9091")
 //	LOG_LEVEL                   debug|info|warn|error     (default "info")
 //	ALLOWED_ORIGINS             comma-separated WS origin allowlist
 //	INSECURE_SKIP_ORIGIN_CHECK  disable WS origin check   (default false)
 //	TRUSTED_CLIENT_IP_HEADER    proxy header for real IP  (e.g. Fly-Client-IP)
 //	ROOM_CREATE_RPM             per-IP room-create limit  (0 = disabled)
+//	LOG_FORMAT                  text|json                 (default "text")
+//	DEPLOY_ENV                  resource deployment.environment (e.g. "prod")
 //
 // Local dev needs none of these: the secure defaults work for same-
-// origin access via http://localhost:8080.
+// origin access via http://localhost:8080. Metrics are exposed at
+// GET /metrics on METRICS_ADDR (a separate port from the public app so
+// they aren't internet-reachable behind a single-port proxy like fly).
 package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -23,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/malhar/mafia-the-game/internal/obs"
 	"github.com/malhar/mafia-the-game/internal/room"
 	"github.com/malhar/mafia-the-game/internal/server"
 	"github.com/malhar/mafia-the-game/internal/transport/ws"
@@ -37,9 +45,20 @@ var version = "dev"
 func main() {
 	cfg := loadEnvConfig()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: cfg.logLevel,
-	}))
+	// Configure logging and a Prometheus-backed meter provider. The
+	// returned handler renders /metrics; metrics are scraped (pull), not
+	// pushed, so there's nothing to flush on shutdown.
+	logger, metricsHandler, err := obs.Setup(obs.Config{
+		ServiceName: "mafia",
+		Version:     version,
+		Environment: cfg.deployEnv,
+		LogLevel:    cfg.logLevel,
+		LogFormat:   cfg.logFormat,
+	})
+	if err != nil {
+		slog.Error("observability setup failed", "err", err)
+		os.Exit(1)
+	}
 
 	// Build the room manager first so the WebSocket handler can reach
 	// it. The manager owns its own context which we cancel during
@@ -62,6 +81,7 @@ func main() {
 	logger.Info("starting",
 		"version", version,
 		"addr", cfg.addr,
+		"metrics_addr", cfg.metricsAddr,
 		"origin_check", !cfg.insecureSkipOriginCheck,
 		"allowed_origins", cfg.allowedOrigins,
 		"trusted_ip_header", cfg.trustedClientIPHeader,
@@ -76,6 +96,13 @@ func main() {
 		TrustedClientIPHeader: cfg.trustedClientIPHeader,
 		RoomCreateRPM:         cfg.roomCreateRPM,
 	})
+
+	// Serve /metrics on its OWN listener, separate from the public app
+	// server. On fly.io the public proxy only routes the ports declared
+	// under [http_service]; this port is not one of them, so /metrics is
+	// reachable only over the private 6PN network that fly's managed
+	// Prometheus scrapes from — never from the public internet.
+	metricsSrv := startMetricsServer(cfg.metricsAddr, metricsHandler, logger)
 
 	// Run the server in a goroutine so main() can wait for either
 	// a fatal startup error or a shutdown signal, whichever comes first.
@@ -99,17 +126,42 @@ func main() {
 			logger.Error("graceful shutdown failed", "err", err)
 			os.Exit(1)
 		}
+		_ = metricsSrv.Shutdown(ctx)
 		if err := mgr.Close(ctx); err != nil {
 			logger.Error("manager shutdown failed", "err", err)
 		}
 	}
 }
 
+// startMetricsServer runs a minimal HTTP server that serves only the
+// Prometheus scrape endpoint at /metrics on addr, in its own goroutine.
+// It deliberately has none of the app middleware (no access log, no body
+// limit). A failure here is logged but non-fatal: losing metrics must
+// never take down live games.
+func startMetricsServer(addr string, h http.Handler, logger *slog.Logger) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", h)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server failed", "err", err)
+		}
+	}()
+	return srv
+}
+
 // envConfig is the fully-resolved runtime configuration read from the
 // environment, with defaults applied.
 type envConfig struct {
 	addr                    string
+	metricsAddr             string
 	logLevel                slog.Level
+	logFormat               string
+	deployEnv               string
 	allowedOrigins          []string
 	insecureSkipOriginCheck bool
 	trustedClientIPHeader   string
@@ -119,12 +171,23 @@ type envConfig struct {
 func loadEnvConfig() envConfig {
 	return envConfig{
 		addr:                    envOr("ADDR", ":8080"),
+		metricsAddr:             envOr("METRICS_ADDR", ":9091"),
 		logLevel:                parseLogLevel(os.Getenv("LOG_LEVEL")),
+		logFormat:               parseLogFormat(os.Getenv("LOG_FORMAT")),
+		deployEnv:               strings.TrimSpace(os.Getenv("DEPLOY_ENV")),
 		allowedOrigins:          parseCSV(os.Getenv("ALLOWED_ORIGINS")),
 		insecureSkipOriginCheck: parseBool(os.Getenv("INSECURE_SKIP_ORIGIN_CHECK")),
 		trustedClientIPHeader:   strings.TrimSpace(os.Getenv("TRUSTED_CLIENT_IP_HEADER")),
 		roomCreateRPM:           parseInt(os.Getenv("ROOM_CREATE_RPM"), 0),
 	}
+}
+
+// parseLogFormat normalizes LOG_FORMAT to "json" or "text" (the default).
+func parseLogFormat(s string) string {
+	if strings.EqualFold(strings.TrimSpace(s), "json") {
+		return "json"
+	}
+	return "text"
 }
 
 func envOr(key, fallback string) string {

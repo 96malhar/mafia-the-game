@@ -148,9 +148,9 @@ func readPump(
 
 		if err := dispatchClientMessage(ctx, r, sub, tag, payload); err != nil {
 			// dispatchClientMessage returns errors only for transport-
-			// level failures (room closed, ctx cancelled). Stop the
-			// pump in that case.
-			logger.Info("ws dispatch ended", "err", err)
+			// level failures (room closed, ctx cancelled) — i.e. normal
+			// teardown — so this is debug-level, not a problem to flag.
+			logger.Debug("ws dispatch ended", "err", err)
 			return
 		}
 	}
@@ -279,7 +279,8 @@ func dispatchClientMessage(
 //
 // `code` is typed (wire.ErrorCode) so a typo at the call site is a
 // Go compile error rather than a silent wire mismatch.
-func sendErrorViaRoom(_ context.Context, _ *room.Room, sub *room.Subscriber, code wire.ErrorCode, msg string) {
+func sendErrorViaRoom(ctx context.Context, _ *room.Room, sub *room.Subscriber, code wire.ErrorCode, msg string) {
+	recordMessageRejected(ctx, code)
 	_ = sub.TrySend(room.OutError{Code: code, Message: msg})
 }
 

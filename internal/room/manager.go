@@ -148,6 +148,7 @@ func (m *Manager) CreateRoom(cfg Config) (*Room, error) {
 		return nil, err
 	}
 	m.rooms[code] = r
+	recordRoomOpened()
 
 	go r.Run()
 	go m.reapWhenDone(r)
@@ -208,6 +209,7 @@ func (m *Manager) reapWhenDone(r *Room) {
 	m.mu.Lock()
 	delete(m.rooms, r.code)
 	m.mu.Unlock()
+	recordRoomClosed()
 	m.logger.Info("room reaped", "code", r.code)
 }
 

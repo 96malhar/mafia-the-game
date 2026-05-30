@@ -31,7 +31,7 @@ func registerRoutes(r chi.Router, cfg Config) {
 	r.Use(securityHeaders())
 	r.Use(limitBody(maxRequestBytes))
 	r.Use(middleware.Compress(5))
-	r.Use(middleware.Recoverer)
+	r.Use(recoverer(cfg.Logger))
 
 	r.Get("/healthz", handleHealth)
 

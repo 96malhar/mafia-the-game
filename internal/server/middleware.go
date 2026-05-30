@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -69,21 +70,78 @@ func limitBody(n int64) func(http.Handler) http.Handler {
 // requestLogger is a chi-compatible access log built on slog. We write our
 // own (rather than using middleware.Logger) so output is structured JSON-
 // friendly and uses the same logger as the rest of the app.
+//
+// It logs through the request context and scales severity to the
+// response status: 5xx -> Error, 4xx -> Warn, and the happy path
+// (incl. WS upgrades) -> Debug. The intent is "log when something is
+// wrong": at the default info level only failed requests appear, while
+// per-request volume/latency lives in the http_server_* metrics exposed
+// at /metrics. Set LOG_LEVEL=debug to get a full access log.
+//
+// Successful /healthz probes are dropped entirely — Fly polls it every
+// few seconds, so even at debug it's pure noise; a failing probe still
+// logs (status >= 400). (/metrics is served on a separate port that
+// never reaches this middleware.)
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
-			logger.Info("http",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", ww.Status(),
-				"bytes", ww.BytesWritten(),
-				"dur_ms", time.Since(start).Milliseconds(),
-				"req_id", middleware.GetReqID(r.Context()),
-				"remote", r.RemoteAddr,
+
+			status := ww.Status()
+			if status < 400 && r.URL.Path == "/healthz" {
+				return
+			}
+
+			level := slog.LevelDebug
+			switch {
+			case status >= 500:
+				level = slog.LevelError
+			case status >= 400:
+				level = slog.LevelWarn
+			}
+			logger.LogAttrs(r.Context(), level, "http",
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+				slog.Int("status", status),
+				slog.Int("bytes", ww.BytesWritten()),
+				slog.Int64("dur_ms", time.Since(start).Milliseconds()),
+				slog.String("req_id", middleware.GetReqID(r.Context())),
+				slog.String("remote", r.RemoteAddr),
 			)
+		})
+	}
+}
+
+// recoverer catches panics from downstream handlers, logs them through
+// slog (with stack + request context, so they're structured and carry
+// trace IDs) at Error level, and returns 500. We use this instead of
+// chi's middleware.Recoverer, which writes the stack to stderr outside
+// our logger.
+func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				rec := recover()
+				if rec == nil {
+					return
+				}
+				// net/http uses ErrAbortHandler as a sentinel to abort a
+				// connection silently; honour it rather than logging.
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				logger.LogAttrs(r.Context(), slog.LevelError, "panic recovered",
+					slog.Any("panic", rec),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.String("req_id", middleware.GetReqID(r.Context())),
+					slog.String("stack", string(debug.Stack())),
+				)
+				w.WriteHeader(http.StatusInternalServerError)
+			}()
+			next.ServeHTTP(w, r)
 		})
 	}
 }

@@ -39,8 +39,11 @@ All configuration is via environment variables (read in `cmd/server/main.go`):
 
 | Variable                     | Default   | Purpose                                                                                  |
 | ---------------------------- | --------- | ---------------------------------------------------------------------------------------- |
-| `ADDR`                       | `:8080`   | TCP listen address.                                                                      |
+| `ADDR`                       | `:8080`   | Public TCP listen address (app + WebSocket).                                             |
+| `METRICS_ADDR`               | `:9091`   | Separate listen address for `GET /metrics`. Kept off the public port so it isn't internet-reachable. |
 | `LOG_LEVEL`                  | `info`    | `debug` \| `info` \| `warn` \| `error`.                                                  |
+| `LOG_FORMAT`                 | `text`    | `text` (human-readable) or `json` (structured, recommended for prod).                    |
+| `DEPLOY_ENV`                 | _(empty)_ | Sets the `deployment.environment` resource attribute on exported metrics (e.g. `prod`). |
 | `ALLOWED_ORIGINS`            | _(empty)_ | Comma-separated WebSocket origin allowlist. Empty enforces **same-origin**.              |
 | `INSECURE_SKIP_ORIGIN_CHECK` | `false`   | Disables WS origin checking. **Never enable in production**; only for cross-origin dev.  |
 | `TRUSTED_CLIENT_IP_HEADER`   | _(empty)_ | Proxy header to read the real client IP from (e.g. `Fly-Client-IP`). Empty = don't trust any header. |
@@ -69,6 +72,12 @@ fly deploy
 ```
 
 Edit `app`, `primary_region`, and (optionally) `ALLOWED_ORIGINS` in `fly.toml` before deploying.
+
+## Observability
+
+Logging is structured via `slog` and always goes to stdout (`text` locally, `json` in prod via `LOG_FORMAT`). The philosophy is "log when something needs attention": successful requests (including `/healthz` and `/metrics` scrapes) are dropped at the default `info` level and only appear under `LOG_LEVEL=debug`, while `4xx` log at warn, `5xx` and recovered panics at error. Normal user-facing rejections (wrong phase, duplicate name, voting yourself, malformed frames) are returned to the client and **not** logged — they're tracked as metrics instead.
+
+Metrics use OpenTelemetry with a **Prometheus pull** model. `GET /metrics` serves them in Prometheus text format on a **dedicated port** (`METRICS_ADDR`, default `:9091`) that is intentionally separate from the public app port. On Fly this matters: the public proxy only routes ports declared under `[http_service]`, so by keeping `9091` out of that list the scrape endpoint is reachable only over Fly's private 6PN network — never from the internet — while Fly's managed Prometheus (configured via the `[metrics]` block in `fly.toml`) still scrapes it. View the series in Fly's hosted Grafana at [fly-metrics.net](https://fly-metrics.net). Alongside `otelhttp`'s `http_server_*` series, the app exposes custom instruments: `room_active`, `ws_connections_active`, `game_command_rejected{code}`, and `ws_message_rejected{reason}`. The pure game engine emits no telemetry; only the transport/room/server layers do.
 
 ## Common tasks
 

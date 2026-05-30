@@ -18,6 +18,10 @@ primary_region = "sjc"          # change to your nearest region
 [env]
   ADDR = ":8080"
   LOG_LEVEL = "info"
+  # Structured logs to stdout; `fly logs` streams them.
+  LOG_FORMAT = "json"
+  # Labels exported metrics with deployment.environment (target_info).
+  DEPLOY_ENV = "production"
   # fly's edge forwards the real client IP in this header; trust it so
   # access logs and the room-create rate limiter key on the real client
   # rather than fly's internal proxy address.
@@ -29,6 +33,17 @@ primary_region = "sjc"          # change to your nearest region
   # already passes. Uncomment to allow additional origins (e.g. a custom
   # domain):
   # ALLOWED_ORIGINS = "mafia-the-game.fly.dev,play.example.com"
+
+# Fly's managed Prometheus scrapes this endpoint over the PRIVATE 6PN
+# network; view the series in Fly's hosted Grafana at
+# https://fly-metrics.net (or `fly dashboard metrics`). The app serves
+# /metrics on a dedicated port (9091) that is deliberately NOT listed
+# under [http_service] below — so the public proxy never routes to it
+# and the metrics (http_server_*, room_active, ws_connections_active,
+# the rejection counters) are unreachable from the internet.
+[metrics]
+  port = 9091
+  path = "/metrics"
 
 [http_service]
   internal_port = 8080

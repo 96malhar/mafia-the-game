@@ -66,8 +66,14 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # The git tag/release keep the leading `v` (vX.Y.Z); image tags
+          # follow Docker convention and drop it. `type=semver` strips the
+          # `v` and emits rolling 1.2.3 / 1.2 / 1 tags. The explicit
+          # `value=` overrides the (branch) ref so it works on dispatch.
           tags: |
-            type=raw,value=${{ inputs.version }}
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=semver,pattern={{major}},value=${{ inputs.version }}
             type=raw,value=latest
 
       - name: Build and push image

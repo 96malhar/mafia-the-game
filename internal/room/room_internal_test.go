@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"runtime"
 	"testing"
 	"time"
 
@@ -167,25 +166,34 @@ func TestRoom_DisconnectSlowSubscriber(t *testing.T) {
 	fast.setPlayerID("fast")
 	r.subs[fast] = struct{}{}
 	r.players["fast"] = &playerSlot{id: "fast", sub: fast}
-	go func() {
-		for range fast.Outbound() { //nolint:revive // intentional drain
-		}
-	}()
 
 	// A public event so both subscribers receive it.
 	makeEvent := func() game.Event {
 		return game.PlayerJoined{PlayerID: "x", Name: "x"}
 	}
 
-	// Push events into the room until slow is disconnected. We yield
-	// after each broadcast so the fast subscriber's drainer goroutine
-	// gets a chance to run — without this the test loop dominates the
-	// CPU and the drainer falls behind, causing FAST to fill its
-	// buffer and be incorrectly disconnected too.
+	// Drain whatever is currently buffered for fast. Broadcasts here are
+	// synchronous (we call appendAndBroadcast directly), so doing this in
+	// the test goroutine keeps fast's channel empty deterministically —
+	// no scheduling race. The earlier background-drainer goroutine could
+	// fall behind under load (e.g. CI under -race) and let fast fill up
+	// and be disconnected too, flaking this test.
+	drainFast := func() {
+		for {
+			select {
+			case <-fast.Outbound():
+			default:
+				return
+			}
+		}
+	}
+
+	// Push events until slow fills its buffer and is disconnected,
+	// draining fast after each broadcast so only slow ever backs up.
 	disconnected := false
 	for i := 0; i < outboundChanCapacity*2; i++ {
 		r.appendAndBroadcast([]game.Event{makeEvent()})
-		runtime.Gosched()
+		drainFast()
 		if _, stillSubscribed := r.subs[slow]; !stillSubscribed {
 			disconnected = true
 			break

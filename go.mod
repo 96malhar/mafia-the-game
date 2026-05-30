@@ -1,6 +1,6 @@
-module github.com/malhar/mafia-the-game
+module github.com/96malhar/mafia-the-game
 
-go 1.25.10
+go 1.26.3
 
 require (
 	github.com/coder/websocket v1.8.14

@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/malhar/mafia-the-game/internal/room"
-	"github.com/malhar/mafia-the-game/internal/transport/ws"
+	"github.com/96malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/transport/ws"
 )
 
 // newTestServer builds a Server backed by an in-memory filesystem so tests

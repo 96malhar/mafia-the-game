@@ -5,7 +5,7 @@ import (
 	mrand "math/rand/v2"
 	"time"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // Config tunes a room. All fields are optional; zero values get safe

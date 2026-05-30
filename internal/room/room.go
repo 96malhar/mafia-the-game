@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // inboxCapacity bounds the room's inbound queue. Larger than the

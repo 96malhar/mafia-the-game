@@ -18,7 +18,7 @@
 // independent of each other.
 package room
 
-import "github.com/malhar/mafia-the-game/internal/game"
+import "github.com/96malhar/mafia-the-game/internal/game"
 
 // inbound is the closed sum type of messages a subscriber can send to a
 // room. The room's select loop dispatches on the concrete type.

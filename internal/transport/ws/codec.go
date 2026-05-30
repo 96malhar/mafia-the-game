@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/malhar/mafia-the-game/internal/game"
-	"github.com/malhar/mafia-the-game/internal/room"
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // encodeEvent translates an engine game.Event into the wire-shape

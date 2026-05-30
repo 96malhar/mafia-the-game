@@ -3,7 +3,7 @@ package room
 import (
 	"time"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // This file owns the room → subscribers fan-out path and the

@@ -23,7 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/malhar/mafia-the-game/internal/transport/ws"
+	"github.com/96malhar/mafia-the-game/internal/transport/ws"
 )
 
 // Config holds runtime configuration for the server.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // TestConfig_SubPhaseDuration pins the per-sub-phase duration logic.

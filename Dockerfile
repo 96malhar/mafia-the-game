@@ -6,9 +6,9 @@
 # Pinned by digest for reproducible, supply-chain-safe builds. The tag is
 # kept in the comment for readability; bump both together (Dependabot can
 # track the digest). Resolve a new digest with:
-#   docker buildx imagetools inspect golang:1.25-alpine
-# golang:1.25-alpine (multi-arch index)
-FROM golang:1.25-alpine@sha256:8d22e29d960bc50cd025d93d5b7c7d220b1ee9aa7a239b3c8f55a57e987e8d45 AS build
+#   docker buildx imagetools inspect golang:1.26-alpine
+# golang:1.26-alpine (multi-arch index)
+FROM golang:1.26-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS build
 
 WORKDIR /src
 

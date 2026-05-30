@@ -1,8 +1,8 @@
 package room
 
 import (
-	"github.com/malhar/mafia-the-game/internal/game"
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // Outbound is the closed sum type of messages a room sends back to a

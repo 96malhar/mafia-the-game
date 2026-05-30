@@ -46,7 +46,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // projectionFixture builds a started game in a known state, then returns

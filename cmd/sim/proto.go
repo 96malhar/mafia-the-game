@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // The sim treats the server as a black box reachable via the public

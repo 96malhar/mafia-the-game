@@ -15,8 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
-	"github.com/malhar/mafia-the-game/internal/room"
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // silentLogger discards all log output so tests don't pollute stdout.

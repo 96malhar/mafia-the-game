@@ -2,6 +2,8 @@ package ws
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -12,8 +14,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 
-	"github.com/malhar/mafia-the-game/internal/game"
-	"github.com/malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/room"
 )
 
 // Handler bundles the WebSocket upgrade endpoint and the small JSON
@@ -59,9 +61,16 @@ func NewHandler(mgr *room.Manager, logger *slog.Logger, cfg HandlerConfig) *Hand
 // CreateRoom handles POST /api/rooms. The body is currently empty; we
 // reserve it for future room-config knobs (custom roster, seed, etc.).
 //
+// Each room gets a fresh crypto-random shuffle seed here. This is the
+// production entrypoint, so it's the right place to inject entropy: the
+// engine and tests stay deterministic-by-seed (Config.Seed defaults to
+// 0), while real games shuffle roles independently. Without this every
+// game shared Seed=0, making role assignment a fixed function of join
+// order — predictable and exploitable.
+//
 // Response: { "code": "ABCD" }
 func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
-	r, err := h.mgr.CreateRoom(room.Config{Logger: h.logger})
+	r, err := h.mgr.CreateRoom(room.Config{Logger: h.logger, Seed: randSeed()})
 	if err != nil {
 		// At-capacity is an expected, transient condition (the server
 		// is full, not broken) — 503 lets clients/proxies treat it as
@@ -77,6 +86,20 @@ func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": r.Code()})
+}
+
+// randSeed returns 8 bytes of OS entropy as an int64, used as the
+// per-room role-shuffle seed. crypto/rand is the source so seeds aren't
+// guessable from a known PRNG sequence. On the practically-impossible
+// event the OS RNG is unavailable it falls back to the wall clock —
+// far weaker, but a never-fail path matters more here than seed quality,
+// since failing room creation over a shuffle seed would be absurd.
+func randSeed() int64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return time.Now().UnixNano()
+	}
+	return int64(binary.BigEndian.Uint64(b[:]))
 }
 
 // Connect handles GET /ws/{code}. It upgrades the connection and runs

@@ -3,7 +3,7 @@ package room
 import (
 	"sync/atomic"
 
-	"github.com/malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/game"
 )
 
 // outboundChanCapacity is the buffer size on each subscriber's outgoing

@@ -1228,6 +1228,25 @@
         return names;
       }
 
+      // projectedLynch mirrors the server's strict-majority rule
+      // (resolveDayVote in internal/game/rules_day.go): it returns the
+      // player who WOULD be lynched if the host finalized right now — the
+      // single target whose vote count is more than half the living
+      // population (count*2 > living) — or null when no target clears
+      // that bar (a tie, a plurality short of half, abstentions, or no
+      // votes). Only meaningful once votes are revealed, since the full
+      // tally isn't local before then. KEEP IN SYNC with the server rule.
+      function projectedLynch() {
+        let living = 0;
+        for (const p of players.values()) if (p.alive) living++;
+        // At most one target can clear >50%, so the first match is THE
+        // majority target — same uniqueness argument as the server.
+        for (const p of players.values()) {
+          if (tallyFor(p.id) * 2 > living) return p;
+        }
+        return null;
+      }
+
       // canActAtNight reports whether the LOCAL player has a night
       // action available given their role. Villager has none. The
       // engine also forbids the doctor from self-saving on Night 0,
@@ -1577,13 +1596,26 @@
 
           case "day_vote": {
             headline.textContent = votesRevealed ? "Votes revealed" : "Vote";
-            if (!iAmAlive) {
-              hint.textContent = votesRevealed
-                ? "Votes are in. Roster below shows who voted for whom."
-                : "You're out. You may not vote.";
-            } else if (votesRevealed) {
-              hint.textContent =
-                "Votes are locked and shown below. A player is voted out only with a majority (more than half the living players); otherwise no one is. Waiting on the host to finalize.";
+            if (votesRevealed) {
+              // Surface the finalize outcome to the WHOLE room (incl. the
+              // dead) before the host commits: name who will be lynched,
+              // or state that nobody will. projectedLynch mirrors the
+              // server's strict-majority rule, so this preview matches
+              // what finalize actually does.
+              const target = projectedLynch();
+              const outcome = target
+                ? `${target.name} has a majority and will be lynched once the host finalizes.`
+                : "No one has a majority, so nobody will be lynched once the host finalizes.";
+              hint.textContent = "Votes are locked and shown below.";
+              // Render the projected outcome on its own line so it reads
+              // as the headline consequence rather than trailing prose. A
+              // pending lynch is tinted rose; "no lynch" stays neutral.
+              const outcomeLine = document.createElement("span");
+              outcomeLine.className = `mt-1 block font-medium ${target ? "text-rose-300" : "text-slate-300"}`;
+              outcomeLine.textContent = outcome;
+              hint.appendChild(outcomeLine);
+            } else if (!iAmAlive) {
+              hint.textContent = "You're out. You may not vote.";
             } else {
               const myVote = votes.get(myId);
               hint.textContent = myVote

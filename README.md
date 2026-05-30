@@ -1,5 +1,10 @@
 # Mafia
 
+[![CI](https://github.com/96malhar/mafia-the-game/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/96malhar/mafia-the-game/actions/workflows/ci.yml?query=branch%3Amain)
+[![Release](https://img.shields.io/github/v/release/96malhar/mafia-the-game?sort=semver)](https://github.com/96malhar/mafia-the-game/releases/latest)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/96malhar/mafia-the-game)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/96malhar/mafia-the-game)](https://goreportcard.com/report/github.com/96malhar/mafia-the-game)
+
 A real-time, browser-based Mafia (Werewolf) game. Go backend, vanilla-JS frontend, WebSocket transport, event-driven game engine.
 
 ## Status
@@ -8,7 +13,7 @@ Playable end-to-end: create/join a room, automatic role assignment, the night/da
 
 ## Requirements
 
-- Go 1.25 or newer (matches the toolchain in `go.mod`).
+- Go 1.26 or newer (matches the toolchain in `go.mod`).
 
 ## Run
 

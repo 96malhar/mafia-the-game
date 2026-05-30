@@ -3,8 +3,8 @@ package room
 import (
 	"errors"
 
-	"github.com/malhar/mafia-the-game/internal/game"
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/game"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // sentinelCodes is the single mapping table from a known sentinel

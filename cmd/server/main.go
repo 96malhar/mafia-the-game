@@ -30,10 +30,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/malhar/mafia-the-game/internal/obs"
-	"github.com/malhar/mafia-the-game/internal/room"
-	"github.com/malhar/mafia-the-game/internal/server"
-	"github.com/malhar/mafia-the-game/internal/transport/ws"
+	"github.com/96malhar/mafia-the-game/internal/obs"
+	"github.com/96malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/server"
+	"github.com/96malhar/mafia-the-game/internal/transport/ws"
 )
 
 // version is the build version, injected at link time via

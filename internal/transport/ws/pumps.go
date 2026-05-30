@@ -8,8 +8,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/malhar/mafia-the-game/internal/room"
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/room"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // readLimit caps the size of a single inbound JSON frame. 64 KiB is

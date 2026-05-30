@@ -8,11 +8,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // meterName scopes this package's OpenTelemetry instruments.
-const meterName = "github.com/malhar/mafia-the-game/internal/room"
+const meterName = "github.com/96malhar/mafia-the-game/internal/room"
 
 // Instruments are created lazily on first use rather than at import time:
 // the global (Prometheus-backed) MeterProvider is installed by obs.Setup

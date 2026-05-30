@@ -139,7 +139,7 @@ tasks:
     cmds:
       - |
         if command -v goimports >/dev/null 2>&1; then
-          goimports -w -local github.com/malhar/mafia-the-game .
+          goimports -w -local github.com/96malhar/mafia-the-game .
         else
           gofmt -s -w .
         fi

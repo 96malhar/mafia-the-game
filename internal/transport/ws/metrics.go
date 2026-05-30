@@ -9,11 +9,11 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/malhar/mafia-the-game/internal/wire"
+	"github.com/96malhar/mafia-the-game/internal/wire"
 )
 
 // meterName scopes this package's OpenTelemetry instruments.
-const meterName = "github.com/malhar/mafia-the-game/internal/transport/ws"
+const meterName = "github.com/96malhar/mafia-the-game/internal/transport/ws"
 
 // Lazily initialised; the global (Prometheus-backed) MeterProvider is set
 // by obs.Setup before any connection is served, so these surface at

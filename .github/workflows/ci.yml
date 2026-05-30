@@ -49,3 +49,23 @@ jobs:
 
       - name: Run CI checks
         run: task ci
+
+  # Validate the production image actually builds and boots: this is the
+  # only check that exercises the multi-stage Dockerfile, the distroless
+  # runtime, the non-root user, and the web/ asset path — things the Go
+  # unit tests can't cover. Delegates to `task docker:smoke` so local runs
+  # and CI exercise the identical build + /healthz probe.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image and smoke test /healthz
+        run: task docker:smoke

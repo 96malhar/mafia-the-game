@@ -84,7 +84,7 @@ const DefaultActionDuration = 60 * time.Second
 // DefaultSettleDuration is the universal post-sleep beat. Lets the
 // "Mafia, go to sleep." cue land cleanly before the next role's
 // "wake up" begins.
-const DefaultSettleDuration = 2 * time.Second
+const DefaultSettleDuration = 3 * time.Second
 
 // DefaultPonderRealSubmit is the post-submit pause for non-detective
 // real roles. A small breath between "action recorded" and the
@@ -148,7 +148,7 @@ const DefaultMafiaNarrateDayN = 1500 * time.Millisecond
 // brush up against it; short enough that abandoned rooms (any
 // flavor: empty, full of zombies, ended) don't accumulate forever
 // on a long-running server.
-const DefaultMaxLifetime = 10 * time.Hour
+const DefaultMaxLifetime = 5 * time.Hour
 
 // DefaultHostGracePeriod is how long a room tolerates a disconnected
 // host before migrating the role to another connected player. Sized to

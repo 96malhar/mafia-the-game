@@ -63,6 +63,7 @@ const (
 	EventHostChanged           = "hostChanged"
 	EventGameStarted           = "gameStarted"
 	EventRoleAssigned          = "roleAssigned"
+	EventMafiaRoster           = "mafiaRoster"
 	EventPhaseChanged          = "phaseChanged"
 	EventNightOpeningStarted   = "nightOpeningStarted"
 	EventNightNarrationStarted = "nightNarrationStarted"

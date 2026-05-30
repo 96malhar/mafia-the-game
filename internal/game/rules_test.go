@@ -397,10 +397,20 @@ func TestStartGame(t *testing.T) {
 
 		// StartGame now deals roles only. The host's BeginNight is
 		// what transitions to PhaseNight. So events here are:
-		// GameStarted + 5 RoleAssigned. No PhaseChanged.
-		require.Len(t, evts, 6)
+		// GameStarted + 5 RoleAssigned + 1 MafiaRosterRevealed. No
+		// PhaseChanged.
+		require.Len(t, evts, 7)
 		_, ok := findEvent[game.GameStarted](evts)
 		require.True(t, ok, "GameStarted present")
+
+		roster, ok := findEvent[game.MafiaRosterRevealed](evts)
+		require.True(t, ok, "MafiaRosterRevealed present")
+		require.Len(t, roster.Members, 1, "1-mafia roster lists exactly the mafia")
+		vis := roster.Visibility()
+		require.Equal(t, "faction", vis.Audience,
+			"mafia roster must be faction-scoped, never public")
+		require.Equal(t, game.FactionMafia, vis.Faction,
+			"mafia roster is scoped to the mafia faction")
 
 		_, ok = findEvent[game.PhaseChanged](evts)
 		require.False(t, ok, "StartGame must NOT transition phases (BeginNight does that)")

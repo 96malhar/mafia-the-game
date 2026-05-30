@@ -186,6 +186,7 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
 		game.GameStarted{},
 		game.RoleAssigned{PlayerID: "p1", Role: game.RoleMafia},
+		game.MafiaRosterRevealed{Members: []game.PlayerID{"p1", "p2"}},
 		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
 		// One NightSubPhaseStarted per Sub so every night wire tag is
 		// still exercised through the single event type.

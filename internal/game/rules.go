@@ -274,14 +274,24 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	events := make([]Event, 0, len(dealt)+1)
 	events = append(events, GameStarted{})
 
+	var mafiaIDs []PlayerID
 	for i := range g.state.players {
 		g.state.players[i].role = dealt[i]
 		events = append(events, RoleAssigned{
 			PlayerID: g.state.players[i].id,
 			Role:     dealt[i],
 		})
+		if dealt[i].Faction() == FactionMafia {
+			mafiaIDs = append(mafiaIDs, g.state.players[i].id)
+		}
 	}
 	g.state.rolesDealt = true
+
+	// Reveal the full mafia roster to the mafia faction so each member
+	// knows their teammates (FactionOnly, so town never sees it). Emitted
+	// after the RoleAssigned events so a client has every player's slot
+	// before it learns which of them are allies.
+	events = append(events, MafiaRosterRevealed{Members: mafiaIDs})
 
 	return events, nil
 }

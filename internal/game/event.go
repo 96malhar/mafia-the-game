@@ -123,6 +123,24 @@ type RoleAssigned struct {
 func (e RoleAssigned) isEvent()               {}
 func (e RoleAssigned) Visibility() Visibility { return PrivateTo(e.PlayerID) }
 
+// MafiaRosterRevealed tells the mafia who their fellow mafia are. Emitted
+// once at StartGame so every mafioso knows their whole team from the
+// outset. In the in-person game this is the "mafia, open your eyes and
+// recognize each other" beat; in the remote UI we surface it explicitly
+// since players can't physically see the table.
+//
+// Members lists every mafia PlayerID (including the recipient's own).
+// FactionOnly so only LIVING mafia ever receive it — town never sees the
+// roster, and a dead mafioso loses access on rejoin like other faction
+// secrets (NightActionRecorded). Roles still stay hidden from town until
+// GameEnded; this only ever widens knowledge within the mafia faction.
+type MafiaRosterRevealed struct {
+	Members []PlayerID
+}
+
+func (MafiaRosterRevealed) isEvent()               {}
+func (MafiaRosterRevealed) Visibility() Visibility { return FactionOnly(FactionMafia) }
+
 // PhaseChanged records a phase transition and the (in-game) day number.
 // Day 1 begins after the first night.
 type PhaseChanged struct {

@@ -27,6 +27,7 @@ func newProjectionFixture(t *testing.T) projectionFixture {
 		game.NightActionRecorded{
 			Actor: "mafia1", Target: "town1", Faction: game.FactionMafia,
 		},
+		game.MafiaRosterRevealed{Members: []game.PlayerID{"mafia1"}},
 		game.DetectiveResult{
 			Detective: "det", Target: "mafia1", IsMafia: true,
 		},
@@ -148,6 +149,28 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 			for _, e := range out {
 				_, leaked := e.(game.NightActionRecorded)
 				require.False(t, leaked, "viewer %q must not see NightActionRecorded", viewer)
+			}
+		}
+	})
+
+	t.Run("alive mafia sees the mafia roster; town never does", func(t *testing.T) {
+		// The roster reveal is the whole point of the feature: mafia learn
+		// their teammates, town must not. A leak here would hand the town
+		// a guaranteed mafia ID, so this is a security-critical assertion.
+		mafiaView := game.Project("mafia1", f.events, f.g.State())
+		var mafiaSaw bool
+		for _, e := range mafiaView {
+			if _, ok := e.(game.MafiaRosterRevealed); ok {
+				mafiaSaw = true
+			}
+		}
+		require.True(t, mafiaSaw, "alive mafia must see the mafia roster")
+
+		for _, viewer := range []game.PlayerID{"det", "doc", "town1", "town2", "stranger"} {
+			out := game.Project(viewer, f.events, f.g.State())
+			for _, e := range out {
+				_, leaked := e.(game.MafiaRosterRevealed)
+				require.False(t, leaked, "viewer %q must not see the mafia roster", viewer)
 			}
 		}
 	})

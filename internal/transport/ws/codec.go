@@ -46,6 +46,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.RoleAssigned:
 		tag = wire.EventRoleAssigned
 		data = kv{"playerId": string(v.PlayerID), "role": string(v.Role)}
+	case game.MafiaRosterRevealed:
+		tag = wire.EventMafiaRoster
+		data = kv{"members": playerIDsToStrings(v.Members)}
 	case game.PhaseChanged:
 		tag = wire.EventPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
@@ -309,6 +312,18 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 }
 
 // --- Small utility shims --------------------------------------------------
+
+// playerIDsToStrings flattens a slice of PlayerIDs to plain strings for
+// the wire (used by the MafiaRosterRevealed event). Always non-nil so
+// the client receives [] rather than null for an (impossible) empty
+// roster.
+func playerIDsToStrings(ids []game.PlayerID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
+}
 
 func rolesMapToStrings(m map[game.PlayerID]game.Role) map[string]string {
 	out := make(map[string]string, len(m))

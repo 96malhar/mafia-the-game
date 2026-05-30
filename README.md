@@ -41,7 +41,7 @@ All configuration is via environment variables (read in `cmd/server/main.go`):
 | ---------------------------- | --------- | ---------------------------------------------------------------------------------------- |
 | `ADDR`                       | `:8080`   | Public TCP listen address (app + WebSocket).                                             |
 | `METRICS_ADDR`               | `:9091`   | Separate listen address for `GET /metrics`. Kept off the public port so it isn't internet-reachable. |
-| `LOG_LEVEL`                  | `info`    | `debug` \| `info` \| `warn` \| `error`.                                                  |
+| `LOG_LEVEL`                  | `debug`   | `debug` \| `info` \| `warn` \| `error`. Production sets `info` (see `fly.toml`).         |
 | `LOG_FORMAT`                 | `text`    | `text` (human-readable) or `json` (structured, recommended for prod).                    |
 | `DEPLOY_ENV`                 | _(empty)_ | Sets the `deployment.environment` resource attribute on exported metrics (e.g. `prod`). |
 | `ALLOWED_ORIGINS`            | _(empty)_ | Comma-separated WebSocket origin allowlist. Empty enforces **same-origin**.              |

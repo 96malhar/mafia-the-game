@@ -4,7 +4,7 @@
 //
 //	ADDR                        public listen address     (default ":8080")
 //	METRICS_ADDR                private /metrics address   (default ":9091")
-//	LOG_LEVEL                   debug|info|warn|error     (default "info")
+//	LOG_LEVEL                   debug|info|warn|error     (default "debug")
 //	ALLOWED_ORIGINS             comma-separated WS origin allowlist
 //	INSECURE_SKIP_ORIGIN_CHECK  disable WS origin check   (default false)
 //	TRUSTED_CLIENT_IP_HEADER    proxy header for real IP  (e.g. Fly-Client-IP)
@@ -199,14 +199,16 @@ func envOr(key, fallback string) string {
 
 func parseLogLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
 	case "warn", "warning":
 		return slog.LevelWarn
 	case "error":
 		return slog.LevelError
 	default:
-		return slog.LevelInfo
+		// Default to debug (incl. unset): verbose by default for local
+		// dev. Production sets LOG_LEVEL=info explicitly (see fly.toml).
+		return slog.LevelDebug
 	}
 }
 

@@ -100,3 +100,35 @@ jobs:
             --target "${{ github.sha }}" \
             --title "$VERSION" \
             --generate-notes
+
+  # Ship the just-published image to fly.io. Runs only after the image
+  # exists in GHCR and the release is cut, so a deploy always maps to a
+  # real release. Requires the FLY_API_TOKEN repo secret (a deploy-scoped
+  # token: `fly tokens create deploy -a mafia-the-game`).
+  deploy:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      # Checkout brings fly.toml onto the runner; flyctl reads ./fly.toml
+      # for env, [metrics], checks, http_service and VM size.
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # --image overrides fly.toml's [build] so Fly pulls the exact,
+      # CI-tested image instead of rebuilding (${VERSION#v} strips the
+      # leading v: v1.2.3 -> the 1.2.3 Docker tag pushed above).
+      # --ha=false keeps it to a SINGLE machine: rooms live in memory, so
+      # a second instance would split games (fly.toml can't express this).
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --app mafia-the-game \
+            --image ghcr.io/${{ github.repository }}:${VERSION#v} \
+            --ha=false

@@ -514,14 +514,21 @@ func TestConsort_DetectiveReadsConsortAsMafiaOnlyAfterPromotion(t *testing.T) {
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
 		"promotion keeps the mafia side alive — the game continues")
 
-	// Night 2 — the consort now holds RoleMafia, so there is no separate
-	// consort turn: the order is Mafia -> Detective -> Doctor. Walk from
-	// the mafia act window to the detective's and re-investigate her.
+	// Night 2 — the consort now holds RoleMafia, but her CONSORT turn
+	// still runs as a phantom (queued from the dealt-time consort, not
+	// the live role) so the night cadence is unchanged and the takeover
+	// stays hidden. Order is Mafia -> Consort(phantom) -> Detective ->
+	// Doctor. Walk from the mafia act window through the phantom consort
+	// turn to the detective's and re-investigate her.
 	consortBeginNight(t, g) // BeginNight -> ... -> mafia act window
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-	walkRestOfTurn(t, g) // mafia idles -> detective act
-	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole(),
-		"a promoted consort leaves no separate consort turn in the queue")
+	walkRestOfTurn(t, g) // mafia idles -> consort phantom ponder
+	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole(),
+		"a promoted consort still keeps her phantom turn to hide the takeover")
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"the promoted consort's turn is phantom — ponder substitutes for act")
+	walkRestOfTurn(t, g) // consort phantom -> detective act
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
 
 	evts2 := nightAction(t, g, "det", "consort")
 	res2, ok := findEvent[game.DetectiveResult](evts2)
@@ -529,6 +536,57 @@ func TestConsort_DetectiveReadsConsortAsMafiaOnlyAfterPromotion(t *testing.T) {
 	require.Equal(t, game.PlayerID("consort"), res2.Target)
 	require.True(t, res2.IsMafia,
 		"after promotion the consort holds RoleMafia — reads as mafia")
+}
+
+// TestConsort_PromotedConsortKeepsPhantomTurn pins the anti-leak
+// invariant: once a consort is promoted to RoleMafia, her CONSORT turn
+// must STILL run every night as a phantom. Dropping it would shorten
+// the moderator's night cadence the instant a promotion happens,
+// betraying the secret takeover to anyone counting the beats. The turn
+// is queued from the dealt-time consort (consortEnabled), not the live
+// role, and substitutes ponder for the act window because no living
+// player holds RoleConsort once she's been promoted.
+func TestConsort_PromotedConsortKeepsPhantomTurn(t *testing.T) {
+	g := fixedRosterWithConsort(t)
+
+	// Night 1: everyone idles; back to day.
+	runConsortNightToDay(t, g, nil)
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+	// Lynch the only original mafia -> promotes the living consort.
+	lynchEvts := lynch(t, g, "mafia1")
+	_, promoted := findEvent[game.ConsortPromoted](lynchEvts)
+	require.True(t, promoted, "lynching the last mafia promotes the consort")
+
+	// Night 2: from the mafia act window, walking the rest of the turn
+	// must land on the consort's PHANTOM turn (ponder, not act).
+	consortBeginNight(t, g)
+	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+
+	evts := walkRestOfTurn(t, g) // mafia act -> consort phantom ponder
+	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole(),
+		"the promoted consort's phantom turn must still run")
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a phantom turn substitutes ponder for the act window")
+
+	// The consort narrate emitted while walking into this turn must be
+	// flagged Phantom so the room sizes it as the (randomized) phantom
+	// window rather than a live narrate.
+	narr, ok := findNightSub(evts, game.NightSubNarrate)
+	require.True(t, ok, "the consort turn must emit a narrate")
+	require.Equal(t, game.RoleConsort, narr.Role)
+	require.True(t, narr.Phantom,
+		"a promoted consort's narrate must be Phantom — she no longer holds RoleConsort")
+
+	// And no one can act on the phantom consort turn: the promoted
+	// consort now holds RoleMafia, so she's not the current night role.
+	_, err := g.Apply(game.NightAction{Actor: "consort", Target: "town1"})
+	require.ErrorIs(t, err, game.ErrNotYourTurn,
+		"a phantom consort turn accepts no action")
+
+	// The night still completes normally through detective and doctor.
+	walkRestOfTurn(t, g) // consort phantom -> detective act
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
 }
 
 // --- promotion + win conditions -------------------------------------------

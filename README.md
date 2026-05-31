@@ -65,7 +65,7 @@ task docker:build                 # or: docker build -t mafia-the-game .
 task docker:run                   # or: docker run --rm -p 8080:8080 mafia-the-game
 ```
 
-A multi-stage build produces a small image: a static binary on a digest-pinned `distroless/static:nonroot` base (no shell, runs as a non-root user). The `web/` assets are read from disk at runtime, so they're copied into the image alongside the binary. Health is exposed at `GET /healthz` for orchestrator probes (the distroless image has no shell, so there's no in-image `HEALTHCHECK`).
+A multi-stage build produces a small image: a static binary on a digest-pinned `distroless/static:nonroot` base (no shell, runs as a non-root user). The `web/` assets are embedded into the binary via `go:embed`, so the image is just the single self-contained executable — no `web/` directory to copy. Health is exposed at `GET /healthz` for orchestrator probes (the distroless image has no shell, so there's no in-image `HEALTHCHECK`).
 
 ### fly.io
 

@@ -47,12 +47,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # gcr.io/distroless/static:nonroot (multi-arch index)
 FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 
-# The server loads its web assets from ./web relative to the working
-# directory (os.DirFS("web") in cmd/server/main.go), so WORKDIR and the
-# copied web/ directory must line up.
+# The web assets are embedded into the binary via go:embed (see web/web.go),
+# so the image only needs the single static binary — no web/ directory.
 WORKDIR /app
 COPY --from=build /out/server /app/server
-COPY web /app/web
 
 # Default listen address; override at runtime with -e ADDR=:9000.
 ENV ADDR=:8080

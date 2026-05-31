@@ -431,8 +431,17 @@ func (g *Game) beginNightTurns() []Event {
 	// consort turn is queued only when the role was actually dealt
 	// (alive OR dead, to keep a dead consort's turn phantom and hide her
 	// death); an optional role that was never dealt has no turn at all.
+	//
+	// We key off consortEnabled — the dealt-time fact that this game
+	// HAS a consort — rather than the live roster role. A consort
+	// promoted to RoleMafia (promoteConsortIfNeeded) no longer "holds"
+	// RoleConsort, but her turn must keep running as a PHANTOM: dropping
+	// it would shorten the night cadence the moment a promotion happens,
+	// leaking the secret takeover to anyone counting the moderator's
+	// beats. The phantom substitution (no act window) falls out of the
+	// usual HasLivingRole(RoleConsort)==false check in enterNightSubPhase.
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleMafia)
-	if g.state.rosterHasRole(RoleConsort) {
+	if g.state.consortEnabled {
 		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleConsort)
 	}
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue,

@@ -34,6 +34,7 @@ import (
 	"github.com/96malhar/mafia-the-game/internal/room"
 	"github.com/96malhar/mafia-the-game/internal/server"
 	"github.com/96malhar/mafia-the-game/internal/transport/ws"
+	"github.com/96malhar/mafia-the-game/web"
 )
 
 // version is the build version, injected at link time via
@@ -90,7 +91,7 @@ func main() {
 
 	srv := server.New(server.Config{
 		Addr:                  cfg.addr,
-		WebFS:                 os.DirFS("web"),
+		WebFS:                 web.FS,
 		WS:                    wsHandler,
 		Logger:                logger,
 		TrustedClientIPHeader: cfg.trustedClientIPHeader,

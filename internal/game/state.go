@@ -348,20 +348,6 @@ func (s *GameState) livingHolderOf(r Role) (PlayerID, bool) {
 	return "", false
 }
 
-// rosterHasRole reports whether ANY player (alive or dead) holds role r.
-// Used to decide whether to queue a role's night turn: an optional role
-// that was never dealt has no turn, but one whose holder has since died
-// keeps a phantom turn (to hide the death), matching the always-present
-// roles' behavior.
-func (s *GameState) rosterHasRole(r Role) bool {
-	for i := range s.players {
-		if s.players[i].role == r {
-			return true
-		}
-	}
-	return false
-}
-
 // mafiaAlignedLivingCount returns the number of living players on the
 // mafia side — mafia plus a not-yet-promoted consort. Used by checkWin:
 // the town only wins once EVERY mafia-aligned player is dead, and the

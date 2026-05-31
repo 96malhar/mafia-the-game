@@ -7,9 +7,9 @@
 //	handlers.go    HTTP handler funcs.
 //	middleware.go  Custom middleware.
 //
-// In later steps we'll add WebSocket upgrade handlers and inject a room
-// manager via Config. For now the server only serves static files from the
-// web/ directory and a /healthz endpoint for liveness checks.
+// The server serves the static frontend (embedded via go:embed; see
+// web/web.go), the WebSocket/REST game routes, and a /healthz endpoint
+// for liveness checks.
 package server
 
 import (
@@ -31,9 +31,9 @@ type Config struct {
 	// Addr is the TCP address to listen on, e.g. ":8080".
 	Addr string
 
-	// WebFS is the filesystem containing static assets (index.html, app.js, ...).
-	// We accept an fs.FS rather than a path so tests can pass an in-memory FS
-	// and so we can later switch to go:embed without changing this package.
+	// WebFS is the filesystem containing static assets (index.html, favicon.png).
+	// We accept an fs.FS rather than a path so production can pass the
+	// go:embed FS (web.FS) while tests pass an in-memory FS.
 	WebFS fs.FS
 
 	// WS is the WebSocket handler that owns the room manager. If nil,

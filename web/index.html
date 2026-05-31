@@ -389,11 +389,19 @@
       //   myAction     — Target this player submitted THIS night.
       //                  Populated from the actor's own
       //                  nightActionRecorded event.
+      //   mafiaKillTarget — The faction's locked kill target for THIS
+      //                  night. The mafia turn is a faction-collective:
+      //                  the server sends the nightActionRecorded ack to
+      //                  EVERY living mafioso (not just the submitter),
+      //                  so co-mafia who didn't click still see who the
+      //                  team locked in. Null until the first mafioso
+      //                  submits; reset every phase.
       //   votes        — Map<voter, target> for the current day_vote.
       //   winner       — Faction string set by gameEnded.
       let phase = "lobby";
       let day = 0;
       let myAction = null;
+      let mafiaKillTarget = null;
       let votes = new Map();
       // votesRevealed mirrors the engine's same-named flag. While false
       // (voting open) the tally is HIDDEN: each client's `votes` map
@@ -1076,6 +1084,7 @@
         phase = "lobby";
         day = 0;
         myAction = null;
+        mafiaKillTarget = null;
         votes = new Map();
         votesRevealed = false;
         winner = null;
@@ -1281,6 +1290,14 @@
         // so the mafia can see their allies at a glance.
         if (mafiaPeers.has(p.id)) {
           nameLine.appendChild(badge("Mafia", "shrink-0 bg-rose-800 text-rose-100"));
+        }
+        // Faction-collective kill: once any mafioso locks a target, badge
+        // that player on every mafioso's roster (including teammates who
+        // didn't submit) so the locked kill is visible at a glance. Only
+        // mafia ever have mafiaKillTarget set (town acks are private), so
+        // this never leaks to the village.
+        if (myRole === "mafia" && mafiaKillTarget === p.id) {
+          nameLine.appendChild(badge("Target", "shrink-0 bg-rose-600 text-rose-50"));
         }
 
         left.appendChild(nameLine);
@@ -1650,6 +1667,14 @@
                 const t = players.get(myAction);
                 const verb = myRole === "consort" ? "Blocked" : "Targeted";
                 extras.appendChild(noteChip(`${verb}: ${t ? t.name : myAction}`, "bg-amber-700/60"));
+              } else if (myRole === "mafia" && mafiaKillTarget) {
+                // A co-mafioso locked the kill before us (the first
+                // submission ends the act window for the whole faction).
+                // Show the team's target so we're not left staring at a
+                // dead picker wondering what happened.
+                hint.textContent = "A teammate locked in the kill for the family.";
+                const t = players.get(mafiaKillTarget);
+                extras.appendChild(noteChip(`Team target: ${t ? t.name : mafiaKillTarget}`, "bg-rose-800/70"));
               } else if (currentNightSubPhase !== "act") {
                 // We're in narrate / ponder / sleep / settle (or it's
                 // the global opening). The action window hasn't opened
@@ -1703,14 +1728,26 @@
               // the discussion controls. The chip persists across
               // renders + refreshes (lastNightVictim is rebuilt
               // from the event log), unlike the dawn narration
-              // which fires once. Hidden when the night was
-              // quiet (doctor saved, or no kill at all).
+              // which fires once. This daybreak branch
+              // (dayLynchResolved === false) is only ever reached
+              // coming from night, so a null victim here means the
+              // night was genuinely quiet — show a neutral
+              // "nobody died" chip to mirror the dawn narration.
+              // A doctor save also lands here as "nobody died",
+              // which is intentional: the save is private to the
+              // doctor, so the town must not be able to tell a save
+              // apart from a night with no attack at all.
               if (lastNightVictim) {
                 const v = players.get(lastNightVictim);
                 const name = v ? v.name : lastNightVictim;
                 extras.appendChild(noteChip(
                   `Last night: ${name} was killed`,
                   "bg-rose-700/60",
+                ));
+              } else {
+                extras.appendChild(noteChip(
+                  "Last night: nobody died",
+                  "bg-slate-700/60",
                 ));
               }
               if (myIsHost) {
@@ -2173,6 +2210,7 @@
             phase = to;
             if (typeof env.data.day === "number") day = env.data.day;
             myAction = null;
+            mafiaKillTarget = null;
             votes = new Map();
             // Each fresh phase (notably a new day_vote opened by the
             // host) starts with the tally hidden again.
@@ -2344,8 +2382,18 @@
             break;
 
           case "nightActionRecorded":
+            // The mafia turn is a faction-collective: the server sends
+            // this ack to EVERY living mafioso, so a teammate's locked
+            // kill must update our view even though we didn't click.
+            // Town acks (doctor/detective) are PrivateTo the actor, so
+            // for those env.data.actor === myId always holds.
+            if (env.data.faction === "mafia") {
+              mafiaKillTarget = env.data.target;
+            }
             if (env.data.actor === myId) {
               myAction = env.data.target;
+            }
+            if (env.data.actor === myId || env.data.faction === "mafia") {
               renderActionPanel();
               renderPlayers();
             }

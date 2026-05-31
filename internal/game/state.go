@@ -115,10 +115,17 @@ type GameState struct {
 // machine:
 //
 //	opening ─▶ first role's narrate
-//	narrate ─▶ act ─[submit]──────▶ ponder(2s) ─▶ sleep ─▶ settle(3s) ─▶ next role
-//	narrate ─▶ act ─[timer 60s]──▶               sleep ─▶ settle(3s) ─▶ next role
-//	narrate ─▶ act ─[timer 7s, blocked]─▶        sleep ─▶ settle(3s) ─▶ next role
-//	narrate ──────────────────────▶ ponder(5–10s)─▶ sleep ─▶ settle(3s) ─▶ next role   (phantom)
+//	narrate ─▶ act ─[submit]─────────────▶ ponder(2s) ──▶ sleep ─▶ settle(3s) ─▶ next role
+//	narrate ─▶ act ─[timeout 60s]────────▶ ponder(2s) ──▶ sleep ─▶ settle(3s) ─▶ next role
+//	narrate ─▶ act ─[timeout 7s, blocked]▶ ponder(2s) ──▶ sleep ─▶ settle(3s) ─▶ next role
+//	narrate ─────────────────────────────▶ ponder(5–10s) ▶ sleep ─▶ settle(3s) ─▶ next role  (phantom)
+//
+// Every real turn passes through ponder: the act→ponder edge fires on a
+// submission OR on the act-window timeout, so submit and timeout are
+// indistinguishable downstream. The three act rows differ ONLY in the
+// window length and what triggers that edge — never in whether ponder
+// happens. (A blocked actor can't submit, so its short window always
+// times out into ponder.)
 //
 // Each transition is driven by a single AdvancePhase command from the
 // room layer (whose timer fires at the end of the sub-phase) OR, for

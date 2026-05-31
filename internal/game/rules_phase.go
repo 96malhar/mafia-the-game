@@ -11,8 +11,8 @@ import "maps"
 // Each AdvancePhase advances exactly one sub-phase boundary. The five-
 // step state machine per role turn is:
 //
-//	narrate ─▶ act ─[submit]─▶ ponder(short) ─▶ sleep ─▶ settle ─▶ next role
-//	narrate ─▶ act ─[timer]──▶                  sleep ─▶ settle ─▶ next role
+//	narrate ─▶ act ─[submit]─▶ ponder(short) ──▶ sleep ─▶ settle ─▶ next role
+//	narrate ─▶ act ─[timer]──▶ ponder(short) ──▶ sleep ─▶ settle ─▶ next role
 //	narrate ────────────────▶ ponder(random)──▶ sleep ─▶ settle ─▶ next role   (phantom)
 //
 // Submission (NightAction) drives the act→ponder edge directly; every
@@ -28,15 +28,16 @@ import "maps"
 //	Lobby / DayDiscussion / DayVote -> ErrWrongPhase
 //	Ended                           -> ErrGameEnded
 //	Night, narrate                  -> Sub=act (real) OR Sub=ponder (phantom)
-//	Night, act    (timeout)         -> Sub=sleep
+//	Night, act    (timeout)         -> Sub=ponder
 //	Night, ponder                   -> Sub=sleep
 //	Night, sleep                    -> Sub=settle
 //	Night, settle (midQueue)        -> Sub=narrate (next role)
 //	Night, settle (lastRole)        -> resolveNight + PhaseChanged
 //
-// AdvancePhase received during NightSubAct counts as the timeout
-// branch: no submission was recorded for this turn, so we skip
-// ponder and go straight to sleep.
+// AdvancePhase received during NightSubAct is the timeout branch: no
+// submission was recorded for this turn, but it STILL passes through
+// ponder (exactly like a submit) so the submit/timeout cadence stays
+// uniform — observers can't tell them apart.
 func (g *Game) applyAdvancePhase(_ AdvancePhase) ([]Event, error) {
 	if g.state.id == "" {
 		return nil, ErrWrongPhase

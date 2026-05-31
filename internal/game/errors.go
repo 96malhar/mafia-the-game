@@ -75,4 +75,12 @@ var (
 	// turn it currently is. Used by the strict turn-order rule that
 	// makes Nights playable in person ("Mafia wake up… now Detective").
 	ErrNotYourTurn = errors.New("game: it is not your role's turn")
+
+	// ErrBlocked is returned when a roleblocked NON-mafia actor (a town
+	// info role the Consort distracted this night) tries to submit a
+	// night action. A correct client never reaches this — it's told it's
+	// blocked at the start of the turn (the Blocked event) and hides the
+	// target picker — so this rejects a client that bypasses the UI.
+	// Mafia are immune to the block and never see this error.
+	ErrBlocked = errors.New("game: your night action is blocked tonight")
 )

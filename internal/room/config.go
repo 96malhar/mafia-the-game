@@ -26,16 +26,6 @@ type Config struct {
 	// 0 (the default) is a valid seed.
 	Seed int64
 
-	// SubPhaseDurationOverride, if non-nil, is consulted before the
-	// built-in night sub-phase durations. Returning ok=true uses the
-	// returned duration for that sub-phase; ok=false falls through to
-	// the default for that sub-phase. This is a TEST-ONLY seam:
-	// production leaves it nil and every duration comes from the
-	// Default* constants below (the single source of wall-clock truth —
-	// the engine is timeless). Tests use it to shrink whole nights to
-	// milliseconds, or to pin one sub-phase's duration.
-	SubPhaseDurationOverride func(evt game.NightSubPhaseStarted, submitted bool) (time.Duration, bool)
-
 	// MaxLifetime is the hard upper bound on a room's wall-clock age.
 	// Once a room has existed for this long the manager's sweeper
 	// closes it unconditionally — no matter how many subscribers are
@@ -80,6 +70,18 @@ const DefaultOpeningDuration = 7 * time.Second
 // it shows the countdown by reading the server-stamped deadline on
 // NightActionStarted, so this number is single-source-of-truth here.
 const DefaultActionDuration = 60 * time.Second
+
+// DefaultBlockedActionDuration is the (much shorter) act window a
+// roleblocked NON-mafia actor gets. A blocked player can't do anything
+// this night — their client shows the "you're blocked" notice instead
+// of a target picker — so there's no reason to make them (and the rest
+// of the table) wait out the full action window. The trade-off: the
+// shorter act-window deadline is broadcast publicly, so an observer can
+// in principle infer that the acting role was blocked this night. We
+// accept that minor leak in exchange for keeping the game's pace up.
+// See the night sub-phase state machine (game.NightSubPhase) for where
+// this slots into the act→ponder edge.
+const DefaultBlockedActionDuration = 7 * time.Second
 
 // DefaultSettleDuration is the universal post-sleep beat. Lets the
 // "Mafia, go to sleep." cue land cleanly before the next role's
@@ -159,11 +161,13 @@ const DefaultHostGracePeriod = 45 * time.Second
 
 // defaultSubPhaseDuration returns the built-in wall-clock duration for
 // a night sub-phase. These values are the single source of timing
-// truth (the engine is timeless); Config.SubPhaseDurationOverride can
-// shadow them, primarily in tests. `submitted` is accepted for parity
-// with the override hook but intentionally unused here — we want a
-// submitted act and a timed-out act to be indistinguishable by the
-// audio cadence alone.
+// truth (the engine is timeless).
+//
+// The `blocked` signal isn't on the event: it shortens a roleblocked
+// actor's act window — see DefaultBlockedActionDuration. Submit vs
+// timeout deliberately gets NO duration distinction (same audio cadence,
+// so observers can't tell them apart), so the engine doesn't even track
+// it and it isn't a parameter here.
 //
 // Narrate is the one sub-phase with per-role variation today: mafia's
 // Day-0 "look around and recognize each other" beat runs longer than
@@ -173,7 +177,7 @@ const DefaultHostGracePeriod = 45 * time.Second
 // This switch MUST cover every NightSubPhase value. A missing case
 // returns 0, which the caller treats as "no timer to arm" — that would
 // silently deadlock the night, so subPhaseDuration logs loudly on 0.
-func defaultSubPhaseDuration(e game.NightSubPhaseStarted, _ bool) time.Duration {
+func defaultSubPhaseDuration(e game.NightSubPhaseStarted, blocked bool) time.Duration {
 	switch e.Sub {
 	case game.NightSubOpening:
 		return DefaultOpeningDuration
@@ -186,6 +190,11 @@ func defaultSubPhaseDuration(e game.NightSubPhaseStarted, _ bool) time.Duration 
 		}
 		return DefaultNarrateDuration
 	case game.NightSubAct:
+		if blocked {
+			// A blocked actor can't act — give them a brief window to
+			// read the "you're blocked" notice, then advance.
+			return DefaultBlockedActionDuration
+		}
 		return DefaultActionDuration
 	case game.NightSubPonder:
 		return defaultPonderDuration(e.Role, e.Phantom)
@@ -235,8 +244,8 @@ func (c *Config) applyDefaults() {
 	// (keeping the "what's the default lobby?" answer in one place).
 	//
 	// Night sub-phase durations are NOT primed here: they resolve in
-	// subPhaseDuration from the Default* constants (or the optional
-	// SubPhaseDurationOverride seam), so there's no per-field wiring.
+	// subPhaseDuration from the Default* constants, so there's no
+	// per-field wiring.
 	if c.MaxLifetime == 0 {
 		c.MaxLifetime = DefaultMaxLifetime
 	}
@@ -253,15 +262,10 @@ func (c *Config) applyDefaults() {
 // armSubPhaseTimer to size the deadline / timer for a freshly emitted
 // NightSubPhaseStarted event.
 //
-// Every piece of context the defaults need (sub, role, day, phantom)
-// rides on the event itself — stamped by the engine at emit time and
-// preserved to late joiners via the event log. The one piece that
-// ISN'T on the event is `submitted` (the engine emits the ponder
-// sub-phase whether the actor submitted or timed out); it's threaded
-// in separately because it's a room-config concern, not engine state.
-//
-// Resolution order: the optional SubPhaseDurationOverride seam first
-// (tests), then the built-in defaultSubPhaseDuration.
+// `blocked` (whether the acting role was roleblocked by the Consort this
+// night) isn't on the event — it's engine state, threaded in separately
+// — and shortens a blocked actor's act window; see
+// DefaultBlockedActionDuration.
 //
 // Non-sub-phase events return 0 SILENTLY: the sole caller
 // (stampNightDeadlines) probes every event in a batch and skips those
@@ -269,19 +273,13 @@ func (c *Config) applyDefaults() {
 // here is the normal, expected case — not an error. The loud log is
 // reserved for a NightSubPhaseStarted carrying a Sub we don't size,
 // which would silently deadlock the night (the caller arms no timer).
-func (c *Config) subPhaseDuration(evt game.Event, submitted bool) time.Duration {
+func (c *Config) subPhaseDuration(evt game.Event, blocked bool) time.Duration {
 	e, ok := evt.(game.NightSubPhaseStarted)
 	if !ok {
 		return 0
 	}
 
-	if c.SubPhaseDurationOverride != nil {
-		if d, ok := c.SubPhaseDurationOverride(e, submitted); ok {
-			return d
-		}
-	}
-
-	dur := defaultSubPhaseDuration(e, submitted)
+	dur := defaultSubPhaseDuration(e, blocked)
 	if dur <= 0 {
 		c.logger().Error("room: no duration for night sub-phase",
 			"sub", string(e.Sub))

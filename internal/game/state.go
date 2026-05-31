@@ -44,6 +44,12 @@ type GameState struct {
 	maxPlayers int // hard cap on AddPlayer
 	mafiaCount int // number of Mafia roles to deal at StartGame
 
+	// consortEnabled records whether the host has toggled the optional
+	// Consort role on for the upcoming game. Set via SetConsort while in
+	// PhaseLobby; consumed by composeRoster at StartGame to add one
+	// RoleConsort (taking the slot of a villager).
+	consortEnabled bool
+
 	phase   Phase
 	day     int // day number; 0 in Lobby/first Night, 1 after first day starts
 	players []Player
@@ -91,13 +97,6 @@ type GameState struct {
 	// values) any time the game is not in PhaseNight, or when the
 	// queue is exhausted just before resolveNight runs.
 	//
-	// nightSubmitted records whether the active turn's actor submitted
-	// an action (true) or the turn is going to/already timed out
-	// (false). The room reads this when sizing the post-act ponder
-	// duration: submitted → short fixed pause, timed-out → skip
-	// straight to sleep, phantom → randomized "ponder" instead of an
-	// act sub-phase at all.
-	//
 	// We keep these as ENGINE-OWNED state because the engine is the
 	// authority on "whose turn is it AND what part of it". The engine
 	// itself is timeless: wall-clock deadlines are NOT stored here.
@@ -108,7 +107,6 @@ type GameState struct {
 	currentNightRole     Role
 	currentNightSubPhase NightSubPhase
 	nightTurnQueue       []Role
-	nightSubmitted       bool
 }
 
 // NightSubPhase is the sub-state during PhaseNight. Every night opens
@@ -117,9 +115,10 @@ type GameState struct {
 // machine:
 //
 //	opening ─▶ first role's narrate
-//	narrate ─▶ act ─[submit]─▶ ponder(2s) ─▶ sleep ─▶ settle(2s) ─▶ next role
-//	narrate ─▶ act ─[timer]──▶                sleep ─▶ settle(2s) ─▶ next role
-//	narrate ──────────────────▶ ponder(5–10s)─▶ sleep ─▶ settle(2s) ─▶ next role   (phantom)
+//	narrate ─▶ act ─[submit]──────▶ ponder(2s) ─▶ sleep ─▶ settle(3s) ─▶ next role
+//	narrate ─▶ act ─[timer 60s]──▶               sleep ─▶ settle(3s) ─▶ next role
+//	narrate ─▶ act ─[timer 7s, blocked]─▶        sleep ─▶ settle(3s) ─▶ next role
+//	narrate ──────────────────────▶ ponder(5–10s)─▶ sleep ─▶ settle(3s) ─▶ next role   (phantom)
 //
 // Each transition is driven by a single AdvancePhase command from the
 // room layer (whose timer fires at the end of the sub-phase) OR, for
@@ -128,6 +127,12 @@ type GameState struct {
 // AdvancePhase. Phantom turns substitute `ponder` for `act` so the
 // audio cues (narrate + sleep) still play, but no action can be
 // submitted.
+//
+// The act window's length depends on the actor: a normal turn gets the
+// full window (DefaultActionDuration), but a Consort-blocked NON-mafia
+// actor gets a much shorter one (DefaultBlockedActionDuration) — they
+// can't do anything, so there's no reason to make the table wait. Both
+// are sized by the room (see internal/room/config.go subPhaseDuration).
 //
 // Note that NightSubOpening is a NIGHT-scoped sub-phase (no
 // currentNightRole during it); all others are role-scoped.
@@ -213,6 +218,10 @@ func (s *GameState) MaxPlayers() int { return s.maxPlayers }
 // game is in PhaseLobby.
 func (s *GameState) MafiaCount() int { return s.mafiaCount }
 
+// ConsortEnabled reports whether the optional Consort role is toggled on
+// for the upcoming game. Adjustable via SetConsort while in PhaseLobby.
+func (s *GameState) ConsortEnabled() bool { return s.consortEnabled }
+
 // DayLynchResolved reports whether the current day has already had a
 // vote finalized (i.e. a lynch has been resolved or the day was
 // otherwise concluded). Used by the UI to decide which host buttons
@@ -242,14 +251,6 @@ func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
 // empty NightSubPhase outside of an active turn. See NightSubPhase
 // for the per-role state machine.
 func (s *GameState) CurrentNightSubPhase() NightSubPhase { return s.currentNightSubPhase }
-
-// NightTurnSubmitted reports whether an actor has submitted a
-// NightAction during the current role's act window. Used by the room
-// when sizing the post-act ponder duration: true → short fixed beat
-// to absorb the submission; false → ponder is skipped (timeout) or
-// uses the phantom-substitute random window. Always returns false
-// outside of PhaseNight.
-func (s *GameState) NightTurnSubmitted() bool { return s.nightSubmitted }
 
 // HasLivingRole reports whether at least one living player holds the
 // given role. Exported so the room layer can size phantom-vs-real
@@ -284,6 +285,84 @@ func (s *GameState) livingCount() int {
 	n := 0
 	for i := range s.players {
 		if s.players[i].alive {
+			n++
+		}
+	}
+	return n
+}
+
+// isNightBlocked reports whether a living Consort has targeted pid with
+// her block this night. It scans the in-flight pendingNight map for a
+// consort→pid entry. Used in two places: at the start of a town role's
+// act window (enterNightSubPhase) to emit the private Blocked notice,
+// and at submit time (applyNightAction) to reject a blocked non-mafia
+// actor with ErrBlocked. Mafia are immune — the caller guards on the
+// role before consulting this.
+func (s *GameState) isNightBlocked(pid PlayerID) bool {
+	for actor, target := range s.pendingNight {
+		if target != pid {
+			continue
+		}
+		if ap, ok := s.findPlayer(actor); ok && ap.role == RoleConsort {
+			return true
+		}
+	}
+	return false
+}
+
+// CurrentActorBlocked reports whether the role whose night turn is in
+// flight has been roleblocked by the Consort this night. Mafia are
+// immune — and in practice never blocked, since they act before the
+// consort — so this only ever returns true for a town info role. The
+// room consults it when sizing the act window: a blocked actor can't do
+// anything, so their window is shortened (see DefaultBlockedActionDuration).
+// The Consort acts earlier in the night queue, so by the time a town
+// role's act window opens her block is already recorded in pendingNight.
+func (s *GameState) CurrentActorBlocked() bool {
+	if s.currentNightRole == "" || s.currentNightRole == RoleMafia {
+		return false
+	}
+	holder, ok := s.livingHolderOf(s.currentNightRole)
+	if !ok {
+		return false
+	}
+	return s.isNightBlocked(holder)
+}
+
+// livingHolderOf returns the first living player holding role r, in join
+// order. Used to notify a roleblocked town actor at the start of their
+// own turn (detective/doctor are unique, so "first" is "the" holder).
+func (s *GameState) livingHolderOf(r Role) (PlayerID, bool) {
+	for i := range s.players {
+		if s.players[i].alive && s.players[i].role == r {
+			return s.players[i].id, true
+		}
+	}
+	return "", false
+}
+
+// rosterHasRole reports whether ANY player (alive or dead) holds role r.
+// Used to decide whether to queue a role's night turn: an optional role
+// that was never dealt has no turn, but one whose holder has since died
+// keeps a phantom turn (to hide the death), matching the always-present
+// roles' behavior.
+func (s *GameState) rosterHasRole(r Role) bool {
+	for i := range s.players {
+		if s.players[i].role == r {
+			return true
+		}
+	}
+	return false
+}
+
+// mafiaAlignedLivingCount returns the number of living players on the
+// mafia side — mafia plus a not-yet-promoted consort. Used by checkWin:
+// the town only wins once EVERY mafia-aligned player is dead, and the
+// mafia side reaches a winning parity counting the consort as a threat.
+func (s *GameState) mafiaAlignedLivingCount() int {
+	n := 0
+	for i := range s.players {
+		if s.players[i].alive && s.players[i].role.Faction().MafiaAligned() {
 			n++
 		}
 	}

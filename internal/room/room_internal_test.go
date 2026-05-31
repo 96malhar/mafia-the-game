@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -14,9 +13,7 @@ import (
 
 // TestConfig_SubPhaseDuration pins the per-sub-phase duration logic.
 // Durations resolve through c.subPhaseDuration from the Default*
-// constants (the single source of wall-clock truth) unless the
-// SubPhaseDurationOverride seam shadows them. This test verifies both
-// the defaults and the override path.
+// constants — the single source of wall-clock truth.
 func TestConfig_SubPhaseDuration(t *testing.T) {
 	c := Config{}
 	c.applyDefaults()
@@ -69,22 +66,33 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 		}
 	})
 
-	t.Run("ponder default - submitted real role is the short beat", func(t *testing.T) {
+	t.Run("blocked actor gets the short act window", func(t *testing.T) {
+		require.Equal(t, DefaultBlockedActionDuration,
+			c.subPhaseDuration(sub(game.NightSubAct, game.RoleDoctor, 1, false), true),
+			"a blocked actor's act window is shortened")
+		require.Less(t, DefaultBlockedActionDuration, DefaultActionDuration,
+			"the blocked window must be shorter than the normal one")
+		// blocked only affects the act sub-phase; narrate/sleep ignore it.
+		require.Equal(t, DefaultNarrateDuration,
+			c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleDoctor, 1, false), true),
+			"blocked must not change non-act sub-phases")
+	})
+
+	t.Run("ponder default - non-detective real role is the short beat", func(t *testing.T) {
+		// Submit vs timeout is intentionally indistinguishable, so the
+		// ponder beat depends only on the role.
 		require.Equal(t, DefaultPonderRealSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false), true),
-			"submitted non-detective: short post-submit beat")
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false), false),
+			"non-detective real ponder uses the short beat")
+		require.Equal(t, DefaultPonderRealSubmit,
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false), false),
+			"doctor too")
 	})
 
 	t.Run("ponder default - detective gets a longer beat", func(t *testing.T) {
 		require.Equal(t, DefaultPonderDetectiveSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false), true),
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false), false),
 			"detective ponder is sized for read-modal pause")
-	})
-
-	t.Run("ponder default - timeout matches submit (audio-cadence parity)", func(t *testing.T) {
-		require.Equal(t, DefaultPonderRealSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false), false),
-			"timeout uses the same beat as submit so observers can't distinguish them")
 	})
 
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {
@@ -100,31 +108,6 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 		// A phantom MAFIA turn is unreachable (the game ends as soon as
 		// the last mafia dies; see beginNextNightTurn's doc), so we
 		// don't assert phantom bounds for mafia.
-	})
-
-	t.Run("SubPhaseDurationOverride shadows specific sub-phases", func(t *testing.T) {
-		oc := Config{
-			SubPhaseDurationOverride: func(e game.NightSubPhaseStarted, _ bool) (time.Duration, bool) {
-				switch e.Sub {
-				case game.NightSubOpening:
-					return 100 * time.Millisecond, true
-				case game.NightSubSettle:
-					return 50 * time.Millisecond, true
-				}
-				return 0, false // others fall through to defaults
-			},
-		}
-		oc.applyDefaults()
-		require.Equal(t, 100*time.Millisecond,
-			oc.subPhaseDuration(sub(game.NightSubOpening, "", 0, false), false),
-			"override pins opening")
-		require.Equal(t, 50*time.Millisecond,
-			oc.subPhaseDuration(sub(game.NightSubSettle, game.RoleDoctor, 0, false), false),
-			"override pins settle")
-		// A sub-phase the override declines falls back to the default.
-		require.Equal(t, DefaultActionDuration,
-			oc.subPhaseDuration(sub(game.NightSubAct, game.RoleMafia, 0, false), false),
-			"declined sub-phase uses the built-in default")
 	})
 }
 

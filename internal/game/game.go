@@ -39,6 +39,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyAddPlayer(c)
 	case SetMafiaCount:
 		return g.applySetMafiaCount(c)
+	case SetConsort:
+		return g.applySetConsort(c)
 	case StartGame:
 		return g.applyStartGame(c)
 	case BeginNight:

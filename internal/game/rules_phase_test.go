@@ -143,11 +143,10 @@ func walkRestOfTurn(t *testing.T, g *game.Game) []game.Event {
 			// ponder after narrate elapses. We want to stop at the
 			// caller-meaningful boundary — act for real roles, ponder
 			// for phantoms — so we let narrate elapse but stop at the
-			// next sub-phase.
-			if sp == game.NightSubAct {
-				return out
-			}
-			if sp == game.NightSubPonder && !g.State().NightTurnSubmitted() {
+			// next sub-phase. A real role always passes through act
+			// (where we stop), so reaching ponder at a fresh-turn
+			// boundary can only mean a phantom (act-less) turn.
+			if sp == game.NightSubAct || sp == game.NightSubPonder {
 				return out
 			}
 		}
@@ -360,8 +359,6 @@ func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
 	_, pondered := findNightSub(evts, game.NightSubPonder)
 	require.True(t, pondered, "submit must emit a ponder sub-phase")
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
-	require.True(t, g.State().NightTurnSubmitted(),
-		"NightTurnSubmitted must be true after a submit")
 
 	// ponder → sleep.
 	evts = advancePhase(t, g)
@@ -377,14 +374,13 @@ func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
 	require.Equal(t, game.RoleMafia, st.Role)
 	require.Equal(t, game.NightSubSettle, g.State().CurrentNightSubPhase())
 
-	// settle → next role's narrate. The submitted flag resets.
+	// settle → next role's narrate.
 	evts = advancePhase(t, g)
 	ns, ok := findNightSub(evts, game.NightSubNarrate)
 	require.True(t, ok, "settle → next role must emit a narrate sub-phase")
 	require.Equal(t, game.RoleDetective, ns.Role)
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
-	require.False(t, g.State().NightTurnSubmitted())
 }
 
 func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
@@ -392,8 +388,7 @@ func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
 	// submitted) is the timeout branch. It transitions through
 	// NightSubPonder — same as the submit branch — so the audio
 	// cadence is uniform across submit/timeout and observers can't
-	// distinguish them. nightSubmitted stays false so the room's
-	// Ponder function can pick a timeout-appropriate duration.
+	// distinguish them.
 	g := fixedRoster(t)
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
@@ -404,8 +399,6 @@ func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
 	require.False(t, ponder.Phantom,
 		"mafia is alive — Phantom must be false even on timeout")
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase())
-	require.False(t, g.State().NightTurnSubmitted(),
-		"timeout means no submit — NightTurnSubmitted must stay false")
 
 	// One more AdvancePhase: ponder → sleep.
 	evts = advancePhase(t, g)
@@ -493,8 +486,6 @@ func TestNight_DeadRoleEmitsPhantomTurn(t *testing.T) {
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
 		"dead detective: act window is substituted with ponder")
-	require.False(t, g.State().NightTurnSubmitted(),
-		"phantom ponder is NOT post-submit (no act happened)")
 
 	// A dead detective trying to submit gets ErrPlayerDead (actor
 	// alive check fires before sub-phase check).

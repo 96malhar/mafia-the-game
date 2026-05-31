@@ -61,17 +61,16 @@ func (r *Room) appendAndBroadcast(events []game.Event) {
 // never reads engine state.
 func (r *Room) stampNightDeadlines(events []game.Event) {
 	now := time.Now()
-	// All sizing context (role, day, phantom-vs-real) rides on the
-	// event itself. `submitted` is the only extra signal — it tells
-	// subPhaseDuration whether a Ponder beat is after a real
-	// submission vs a timeout, which today's defaults treat
-	// identically but an override may not. Engine state, post-Apply,
-	// already reflects the just-applied command's nightSubmitted
-	// flag, so reading it here is correct.
-	submitted := r.g.State().NightTurnSubmitted()
+	// All sizing context (role, day, phantom-vs-real) rides on the event
+	// itself. The one extra signal is `blocked`: a roleblocked actor's
+	// act window is shortened (the consort acts earlier in the night, so
+	// her block is already recorded by the time any town role's act
+	// window is stamped here). Only the act sub-phase consults this flag,
+	// so computing it once for the batch is safe.
+	blocked := r.g.State().CurrentActorBlocked()
 
 	for i := range events {
-		dur := r.cfg.subPhaseDuration(events[i], submitted)
+		dur := r.cfg.subPhaseDuration(events[i], blocked)
 		if dur <= 0 {
 			continue
 		}

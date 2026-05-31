@@ -59,6 +59,7 @@ const (
 	clientMsgClearVotes    clientMsgType = wire.ClientMsgClearVotes
 	clientMsgFinalizeVotes clientMsgType = wire.ClientMsgFinalizeVotes
 	clientMsgSetMafia      clientMsgType = wire.ClientMsgSetMafia
+	clientMsgSetConsort    clientMsgType = wire.ClientMsgSetConsort
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled
@@ -85,6 +86,13 @@ type clientVoteData struct {
 // transport just forwards the number.
 type clientSetMafiaData struct {
 	Count int `json:"count"`
+}
+
+// clientSetConsortData carries a host-driven toggle of the optional
+// Consort role during PhaseLobby. The engine validates phase/no-op; the
+// transport just forwards the flag.
+type clientSetConsortData struct {
+	Enabled bool `json:"enabled"`
 }
 
 // --- Server → Client messages --------------------------------------------

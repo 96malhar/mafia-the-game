@@ -45,6 +45,12 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			wantData: clientSetMafiaData{Count: 3},
 		},
 		{
+			name:     "setConsort enabled",
+			raw:      `{"type":"setConsort","data":{"enabled":true}}`,
+			wantTag:  clientMsgSetConsort,
+			wantData: clientSetConsortData{Enabled: true},
+		},
+		{
 			name:    "startGame no data",
 			raw:     `{"type":"startGame"}`,
 			wantTag: clientMsgStartGame,
@@ -187,6 +193,9 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.GameStarted{},
 		game.RoleAssigned{PlayerID: "p1", Role: game.RoleMafia},
 		game.MafiaRosterRevealed{Members: []game.PlayerID{"p1", "p2"}},
+		game.ConsortChanged{Enabled: true},
+		game.Blocked{PlayerID: "p3"},
+		game.ConsortPromoted{PlayerID: "p4"},
 		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
 		// One NightSubPhaseStarted per Sub so every night wire tag is
 		// still exercised through the single event type.

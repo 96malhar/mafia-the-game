@@ -38,6 +38,7 @@ const (
 	ClientMsgClearVotes    = "clearVotes"
 	ClientMsgFinalizeVotes = "finalizeVotes"
 	ClientMsgSetMafia      = "setMafia"
+	ClientMsgSetConsort    = "setConsort"
 )
 
 // --- Server → client message types ---------------------------------------
@@ -64,6 +65,9 @@ const (
 	EventGameStarted           = "gameStarted"
 	EventRoleAssigned          = "roleAssigned"
 	EventMafiaRoster           = "mafiaRoster"
+	EventConsortChanged        = "consortChanged"
+	EventBlocked               = "blocked"
+	EventConsortPromoted       = "consortPromoted"
 	EventPhaseChanged          = "phaseChanged"
 	EventNightOpeningStarted   = "nightOpeningStarted"
 	EventNightNarrationStarted = "nightNarrationStarted"

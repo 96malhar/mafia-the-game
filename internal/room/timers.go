@@ -77,18 +77,16 @@ func (r *Room) stopPhaseTimer() {
 
 // armSubPhaseTimer arms phaseTimer for the duration of the sub-phase
 // just started by `evt`. Duration is sourced from c.subPhaseDuration
-// (the Default* constants, or the SubPhaseDurationOverride seam). The
-// deadline stamped on the broadcast event uses the same source, so
-// server and clients agree on when this sub-phase will end.
+// (the Default* constants). The deadline stamped on the broadcast event
+// uses the same source, so server and clients agree on when this
+// sub-phase will end.
 //
-// The `submitted` flag is the only piece of context not carried on
-// the event itself — it distinguishes a real-actor-submitted ponder
-// from a real-actor-timed-out one, which the room may want to size
-// differently. We read it from engine state, which (post-Apply)
-// already reflects the just-applied command's nightSubmitted flag.
+// The `blocked` flag isn't carried on the event itself — it shortens a
+// roleblocked actor's act window and is read from engine state, which
+// (post-Apply) already reflects the just-applied command.
 func (r *Room) armSubPhaseTimer(evt game.Event) {
 	r.stopPhaseTimer()
-	dur := r.cfg.subPhaseDuration(evt, r.g.State().NightTurnSubmitted())
+	dur := r.cfg.subPhaseDuration(evt, r.g.State().CurrentActorBlocked())
 	if dur <= 0 {
 		return
 	}

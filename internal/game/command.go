@@ -52,6 +52,18 @@ type SetMafiaCount struct {
 
 func (SetMafiaCount) isCommand() {}
 
+// SetConsort toggles the optional Consort role for the upcoming game.
+// Valid only in PhaseLobby (before roles are dealt). Setting it to its
+// current value is a no-op (ErrNoChange). When enabled, StartGame deals
+// exactly one RoleConsort, taking the slot of a villager — so the same
+// 1 ≤ mafia ≤ playerCount-3 envelope still applies. Host-only at the
+// transport layer.
+type SetConsort struct {
+	Enabled bool
+}
+
+func (SetConsort) isCommand() {}
+
 // AddPlayer joins a player to the lobby. Only valid in PhaseLobby.
 type AddPlayer struct {
 	PlayerID PlayerID

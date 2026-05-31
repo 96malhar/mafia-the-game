@@ -34,6 +34,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.MafiaCountChanged:
 		tag = wire.EventMafiaCountChanged
 		data = kv{"from": v.From, "to": v.To}
+	case game.ConsortChanged:
+		tag = wire.EventConsortChanged
+		data = kv{"enabled": v.Enabled}
 	case game.PlayerJoined:
 		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
@@ -49,6 +52,12 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.MafiaRosterRevealed:
 		tag = wire.EventMafiaRoster
 		data = kv{"members": playerIDsToStrings(v.Members)}
+	case game.Blocked:
+		tag = wire.EventBlocked
+		data = kv{"playerId": string(v.PlayerID)}
+	case game.ConsortPromoted:
+		tag = wire.EventConsortPromoted
+		data = kv{"playerId": string(v.PlayerID)}
 	case game.PhaseChanged:
 		tag = wire.EventPhaseChanged
 		data = kv{"from": string(v.From), "to": string(v.To), "day": v.Day}
@@ -241,6 +250,13 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		}
 		return clientMsgSetMafia, d, nil
 
+	case clientMsgSetConsort:
+		var d clientSetConsortData
+		if err := unmarshalData(env.Data, &d); err != nil {
+			return "", nil, err
+		}
+		return clientMsgSetConsort, d, nil
+
 	case clientMsgStartGame:
 		return clientMsgStartGame, struct{}{}, nil
 
@@ -294,6 +310,9 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgSetMafia:
 		d := data.(clientSetMafiaData)
 		return game.SetMafiaCount{Count: d.Count}, true
+	case clientMsgSetConsort:
+		d := data.(clientSetConsortData)
+		return game.SetConsort{Enabled: d.Enabled}, true
 	case clientMsgStartGame:
 		return game.StartGame{}, true
 	case clientMsgBeginNight:

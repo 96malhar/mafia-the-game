@@ -666,97 +666,11 @@ func TestRoom_JoinErrorForPassesUnrelatedCodesThrough(t *testing.T) {
 // drain loop starts, the room is still emitting broadcasts and the
 // drainer keeps the buffer below capacity forever.
 
-// --- Phase timers --------------------------------------------------------
-
-func TestRoom_NightTurnTimersAutoAdvance(t *testing.T) {
-	// Daytime is host-driven, so the only timer the room arms in
-	// production is the Night per-turn timer. This test verifies that
-	// after StartGame + BeginNight, the room walks the three night
-	// turns to a complete Night resolution without the host doing
-	// anything — purely by per-turn timeouts.
-	//
-	// We shrink every night sub-phase to a few milliseconds so the
-	// test runs in well under a second. All six sub-phases (opening +
-	// narrate + act + ponder + sleep + settle) × 3 roles × 1 night
-	// dominate the wall-clock here; tiny durations turn this from a
-	// 10s-plus integration into a sub-second unit test.
-	//
-	// Shrink every night sub-phase to 1ms via the test-only override
-	// seam; production leaves SubPhaseDurationOverride nil and reads
-	// the Default* constants.
-	m := newTestManager(t)
-	r, err := m.CreateRoom(Config{
-		Logger: silentLogger(),
-		SubPhaseDurationOverride: func(game.NightSubPhaseStarted, bool) (time.Duration, bool) {
-			return time.Millisecond, true
-		},
-	})
-	require.NoError(t, err)
-
-	subs := make([]*Subscriber, 5)
-	for i := range subs {
-		subs[i], _ = connect(t, r, string(rune('A'+i)))
-	}
-	for _, s := range subs {
-		_ = drain(s, 20*time.Millisecond)
-	}
-
-	// Host (subs[0]) deals roles and begins night.
-	require.NoError(t, r.submit(context.Background(), inCommand{
-		From: subs[0], Cmd: game.StartGame{},
-	}))
-	require.NoError(t, r.submit(context.Background(), inCommand{
-		From: subs[0], Cmd: game.BeginNight{},
-	}))
-
-	// Expect: Lobby → Night (BeginNight) then Night → DayDiscussion
-	// (after all three turn timers fire). No further auto-advance.
-	wantSeq := []struct {
-		from game.Phase
-		to   game.Phase
-	}{
-		{from: game.PhaseLobby, to: game.PhaseNight},
-		{from: game.PhaseNight, to: game.PhaseDayDiscussion},
-	}
-	idx := 0
-	deadline := time.After(2 * time.Second)
-	for idx < len(wantSeq) {
-		select {
-		case msg, ok := <-subs[0].Outbound():
-			if !ok {
-				t.Fatal("subscriber channel closed early")
-			}
-			ev, isEvent := msg.(OutEvent)
-			if !isEvent {
-				continue
-			}
-			pc, isPC := ev.Event.(game.PhaseChanged)
-			if !isPC {
-				continue
-			}
-			want := wantSeq[idx]
-			if pc.From == want.from && pc.To == want.to {
-				idx++
-			}
-		case <-deadline:
-			t.Fatalf("night timer stalled after %d/%d transitions (next want %v→%v)",
-				idx, len(wantSeq), wantSeq[idx].from, wantSeq[idx].to)
-		}
-	}
-
-	// Confirm the room SITS in DayDiscussion (no auto-advance to
-	// DayVote). We drain briefly and verify no PhaseChanged out.
-	noMore := drain(subs[0], 200*time.Millisecond)
-	for _, msg := range noMore {
-		ev, ok := msg.(OutEvent)
-		if !ok {
-			continue
-		}
-		if _, isPC := ev.Event.(game.PhaseChanged); isPC {
-			t.Fatalf("day_discussion auto-advanced; host-driven flow violated: %#v", ev.Event)
-		}
-	}
-}
+// Night per-turn timer auto-advance is covered by
+// TestRoomSynctest_NightAutoAdvancesWithRealDurations (room_synctest_test.go),
+// which walks a full night with production durations on synctest's fake
+// clock — no wall-clock waits, exact deadline assertions, and a check
+// that DayDiscussion does NOT auto-advance.
 
 // --- Lifetime reaping ----------------------------------------------------
 
@@ -1038,5 +952,63 @@ func TestRoom_HostRejoinWithinGraceKeepsHost(t *testing.T) {
 			_, isHC := ev.Event.(game.HostChanged)
 			require.False(t, isHC, "no migration should occur on a within-grace rejoin")
 		}
+	}
+}
+
+// --- SetConsort host gating ----------------------------------------------
+
+func TestRoom_SetConsortIsClassifiedHostOnly(t *testing.T) {
+	// Unit guard: the consort toggle must be on the host-only list so a
+	// non-host can't reconfigure the roster.
+	require.True(t, isHostOnly(game.SetConsort{Enabled: true}),
+		"SetConsort must be host-only")
+}
+
+func TestRoom_NonHostSetConsortRejected(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")     // first joiner becomes host
+	other, _ := connect(t, r, "Player2") // non-host
+	_ = drain(host, 50*time.Millisecond)
+	_ = drain(other, 50*time.Millisecond)
+
+	// Non-host attempt is rejected with Forbidden and changes nothing.
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: other, Cmd: game.SetConsort{Enabled: true},
+	}))
+	errOut := recvType[OutError](t, other)
+	require.Equal(t, wire.ErrCodeForbidden, errOut.Code,
+		"a non-host SetConsort must be forbidden")
+
+	// No ConsortChanged should have been broadcast to anyone.
+	for _, msg := range drain(host, 100*time.Millisecond) {
+		if ev, ok := msg.(OutEvent); ok {
+			_, isCC := ev.Event.(game.ConsortChanged)
+			require.False(t, isCC, "a rejected toggle must not broadcast ConsortChanged")
+		}
+	}
+}
+
+func TestRoom_HostSetConsortBroadcastsConsortChanged(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")
+	other, _ := connect(t, r, "Player2")
+	_ = drain(host, 50*time.Millisecond)
+	_ = drain(other, 50*time.Millisecond)
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: host, Cmd: game.SetConsort{Enabled: true},
+	}))
+
+	// Both the host and the other player receive the public toggle.
+	for _, sub := range []*Subscriber{host, other} {
+		var sawEnabled bool
+		for _, msg := range drain(sub, 200*time.Millisecond) {
+			if ev, ok := msg.(OutEvent); ok {
+				if cc, isCC := ev.Event.(game.ConsortChanged); isCC {
+					sawEnabled = cc.Enabled
+				}
+			}
+		}
+		require.True(t, sawEnabled, "every subscriber should see ConsortChanged{Enabled:true}")
 	}
 }

@@ -296,6 +296,86 @@ func TestProjection_VoteSecrecyAndReveal(t *testing.T) {
 	})
 }
 
+func TestProjection_ConsortMafiaMutualIgnorance(t *testing.T) {
+	// The whole point of the consort's separate faction: she is mafia-
+	// aligned for winning but must NOT see mafia coordination, and the
+	// mafia must not learn she exists. The mafia roster reveal is the
+	// canonical mafia-only event — it must reach the mafia and never the
+	// consort.
+	g := fixedRosterWithConsort(t)
+	events := []game.Event{
+		game.MafiaRosterRevealed{Members: []game.PlayerID{"mafia1"}},
+		game.NightActionRecorded{
+			Actor: "mafia1", Target: "town1", Faction: game.FactionMafia,
+		},
+	}
+
+	t.Run("alive mafia sees the roster and the kill ack", func(t *testing.T) {
+		out := game.Project("mafia1", events, g.State())
+		var sawRoster, sawAck bool
+		for _, e := range out {
+			switch e.(type) {
+			case game.MafiaRosterRevealed:
+				sawRoster = true
+			case game.NightActionRecorded:
+				sawAck = true
+			}
+		}
+		require.True(t, sawRoster, "mafia must see the roster")
+		require.True(t, sawAck, "mafia must see the faction kill ack")
+	})
+
+	t.Run("consort sees NEITHER the roster nor the kill ack", func(t *testing.T) {
+		out := game.Project("consort", events, g.State())
+		for _, e := range out {
+			switch e.(type) {
+			case game.MafiaRosterRevealed:
+				t.Fatal("consort must NOT see the mafia roster")
+			case game.NightActionRecorded:
+				t.Fatal("consort must NOT see mafia-only coordination")
+			}
+		}
+	})
+}
+
+func TestProjection_BlockedNoticeIsPrivateToTarget(t *testing.T) {
+	// The Blocked notice is private to the blocked player; the room must
+	// never learn who the consort targeted.
+	g := fixedRosterWithConsort(t)
+	events := []game.Event{game.Blocked{PlayerID: "doc"}}
+
+	t.Run("the blocked player sees their own notice", func(t *testing.T) {
+		out := game.Project("doc", events, g.State())
+		require.Len(t, out, 1, "the doctor must see their own Blocked notice")
+	})
+
+	t.Run("nobody else sees it — not even the consort", func(t *testing.T) {
+		for _, viewer := range []game.PlayerID{"mafia1", "consort", "det", "town1", "town2", "stranger"} {
+			out := game.Project(viewer, events, g.State())
+			require.Empty(t, out, "viewer %q must not see the doctor's Blocked notice", viewer)
+		}
+	})
+}
+
+func TestProjection_ConsortPromotedIsPrivateToPromotee(t *testing.T) {
+	// Promotion is a secret takeover: only the promoted consort learns
+	// it. The accompanying roster reveal is mafia-only and now lists her.
+	g := fixedRosterWithConsort(t)
+	events := []game.Event{game.ConsortPromoted{PlayerID: "consort"}}
+
+	t.Run("the promoted player sees the promotion", func(t *testing.T) {
+		out := game.Project("consort", events, g.State())
+		require.Len(t, out, 1, "the consort must see her own promotion")
+	})
+
+	t.Run("nobody else sees the promotion", func(t *testing.T) {
+		for _, viewer := range []game.PlayerID{"mafia1", "det", "doc", "town1", "town2", "stranger"} {
+			out := game.Project(viewer, events, g.State())
+			require.Empty(t, out, "viewer %q must not learn a sleeper took over", viewer)
+		}
+	})
+}
+
 func TestProjection_UnknownViewerSeesOnlyPublic(t *testing.T) {
 	f := newProjectionFixture(t)
 	out := game.Project("stranger", f.events, f.g.State())

@@ -34,6 +34,7 @@ var sentinelCodes = []struct {
 	{game.ErrGameEnded, wire.ErrCodeGameEnded},
 	{game.ErrNoChange, wire.ErrCodeNoChange},
 	{game.ErrAlreadyActed, wire.ErrCodeAlreadyActed},
+	{game.ErrBlocked, wire.ErrCodeBlocked},
 
 	// Room / transport sentinels (sentinels.go).
 	{ErrAuthFailed, wire.ErrCodeAuthFailed},

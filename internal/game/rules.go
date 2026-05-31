@@ -218,6 +218,34 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	return []Event{MafiaCountChanged{From: prev, To: c.Count}}, nil
 }
 
+// applySetConsort toggles the optional Consort role during PhaseLobby.
+// See SetConsort in command.go for the validity envelope. Like the mafia
+// count, the toggle is locked once roles are dealt (composeRoster has
+// already run), so a late flip is rejected rather than silently ignored.
+func (g *Game) applySetConsort(c SetConsort) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase == PhaseEnded {
+		return nil, ErrGameEnded
+	}
+	if g.state.phase != PhaseLobby {
+		return nil, ErrWrongPhase
+	}
+	if g.state.rolesDealt {
+		return nil, ErrWrongPhase
+	}
+	if c.Enabled == g.state.consortEnabled {
+		return nil, ErrNoChange
+	}
+
+	g.state.consortEnabled = c.Enabled
+	// SetConsort and ConsortChanged are structurally identical (a single
+	// Enabled bool), so a direct conversion is clean; if either ever
+	// gains a field, this stops compiling and forces a re-check.
+	return []Event{ConsortChanged(c)}, nil
+}
+
 // applyStartGame deals roles and locks the lobby; the game stays in
 // PhaseLobby until the host issues BeginNight.
 //
@@ -261,7 +289,7 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 		return nil, ErrRosterMismatch
 	}
 
-	dealt := composeRoster(n, g.state.mafiaCount)
+	dealt := composeRoster(n, g.state.mafiaCount, g.state.consortEnabled)
 
 	// Use rand/v2 PCG with a derived seed. We split the user-supplied
 	// int64 into two uint64 halves of fresh entropy so two games that
@@ -296,20 +324,28 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	return events, nil
 }
 
-// composeRoster builds the role multiset for a game with `n` players
-// and `mafia` mafia. Composition is fixed:
+// composeRoster builds the role multiset for a game with `n` players,
+// `mafia` mafia, and an optional Consort. Composition is fixed:
 //
-//	mafia × Mafia + 1 × Detective + 1 × Doctor + (n - mafia - 2) × Villager
+//	mafia × Mafia + 1 × Detective + 1 × Doctor +
+//	  (consort ? 1 × Consort : 0) + (n - mafia - 2 - consort) × Villager
 //
-// Caller must have validated that the inputs satisfy
-// 1 ≤ mafia ≤ n - reservedTownRoles - 1.
-func composeRoster(n, mafia int) []Role {
+// The Consort takes the slot of a villager, so the mafia-count envelope
+// is unchanged: 1 ≤ mafia ≤ n - reservedTownRoles - 1 still leaves the
+// villager count ≥ 0 whether or not a consort is dealt. Caller must
+// have validated that bound.
+func composeRoster(n, mafia int, consort bool) []Role {
 	out := make([]Role, 0, n)
 	for range mafia {
 		out = append(out, RoleMafia)
 	}
 	out = append(out, RoleDetective, RoleDoctor)
-	for i := 0; i < n-mafia-reservedTownRoles; i++ {
+	reserved := reservedTownRoles
+	if consort {
+		out = append(out, RoleConsort)
+		reserved++
+	}
+	for range n - mafia - reserved {
 		out = append(out, RoleVillager)
 	}
 	return out

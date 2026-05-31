@@ -77,6 +77,17 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		return nil, ErrNotYourTurn
 	}
 
+	// Roleblock: a blocked NON-mafia actor cannot act at all. The Consort
+	// acts earlier in the queue, so her block is already recorded when
+	// the detective/doctor window opens. A correct client never reaches
+	// here — it's told it's blocked at the start of the turn (the
+	// act-window Blocked event) and hides the target picker — so this
+	// rejects a client that bypasses the UI. Mafia are immune (the
+	// faction kill ignores the block) and fall through unaffected.
+	if actor.role != RoleMafia && g.state.isNightBlocked(actor.id) {
+		return nil, ErrBlocked
+	}
+
 	if c.Target == "" {
 		return nil, ErrUnknownPlayer
 	}
@@ -120,6 +131,15 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	// is purely role-based (target.role.Faction()), so it doesn't
 	// depend on the resolve step at all.
 	if actor.role == RoleDetective {
+		// A blocked detective never reaches this point — applyNightAction
+		// rejects their submission with ErrBlocked above — so we always
+		// have a genuine result to deliver here.
+		//
+		// IsMafia checks the STRICT mafia role, not mafia-alignment: an
+		// un-promoted Consort (role RoleConsort, faction FactionConsort)
+		// reads as NOT mafia, so investigating her is misleading by
+		// design. Only once she's promoted to RoleMafia (the cabal was
+		// wiped out) does she read as mafia.
 		events = append(events, DetectiveResult{
 			Detective: actor.id,
 			Target:    target.id,
@@ -127,12 +147,10 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		})
 	}
 
-	// Drive act → ponder. The submitted flag is set so the room can
-	// look it up when sizing the ponder duration (short fixed beat
-	// post-submit, vs longer for detective so the modal lands, vs
-	// random for phantom — but phantom turns never enter NightSubAct
-	// in the first place).
-	g.state.nightSubmitted = true
+	// Drive act → ponder. Both submit (here) and timeout (AdvancePhase
+	// during the act window) pass through ponder, so the audio cadence
+	// and sub-phase sequence are uniform — observers can't tell a real
+	// submission from a timed-out turn.
 	events = append(events, g.enterNightSubPhase(NightSubPonder)...)
 	return events, nil
 }
@@ -184,6 +202,17 @@ func (g *Game) runNightPhase(ctx *nightContext, phase nightPhase) {
 			continue
 		}
 		if spec.NightAction.Phase != phase {
+			continue
+		}
+		// Roleblock backstop (defense-in-depth). applyNightAction now
+		// rejects a blocked non-mafia submission with ErrBlocked, so a
+		// blocked actor is never in pendingNight and this branch is
+		// unreachable in normal flow. It stays as a safety net: if that
+		// check is ever bypassed, the action is still nullified here (no
+		// save scheduled, no reveal run). Mafia are immune by design
+		// (blocking a mafioso is a wasted night — the kill is a faction
+		// action), and the consort is never her own target.
+		if ctx.hasBlock && actor.id == ctx.blocked && actor.role != RoleMafia {
 			continue
 		}
 		tp, ok := g.state.findPlayer(target)

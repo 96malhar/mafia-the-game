@@ -97,12 +97,9 @@ func (g *Game) advanceNightSubPhase() []Event {
 		// Reaching here means AdvancePhase fired during the act
 		// window — i.e. the timer expired without a submission.
 		// We still pass through ponder so the audio cadence and
-		// sub-phase sequence are uniform across submit/timeout. The
-		// room's Ponder function reads nightSubmitted (false here)
-		// to pick an appropriate post-timeout duration; the default
-		// reuses the post-submit beat (~2s) so observers can't
+		// sub-phase sequence are uniform across submit/timeout: the
+		// ponder beat is sized the same either way, so observers can't
 		// distinguish submit from timeout by listening alone.
-		g.state.nightSubmitted = false
 		return g.enterNightSubPhase(NightSubPonder)
 
 	case NightSubPonder:
@@ -122,7 +119,6 @@ func (g *Game) advanceNightSubPhase() []Event {
 		// resolve the night and transition to DayDiscussion.
 		g.state.currentNightRole = ""
 		g.state.currentNightSubPhase = ""
-		g.state.nightSubmitted = false
 		if len(g.state.nightTurnQueue) > 0 {
 			return g.beginNextNightTurn()
 		}
@@ -147,13 +143,27 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 	// sleep/settle carry the flag harmlessly (the wire encoder omits
 	// it for those sub-phases). Deadline is left 0 — the room stamps a
 	// wall-clock value before broadcasting.
-	return []Event{NightSubPhaseStarted{
+	events := []Event{NightSubPhaseStarted{
 		Sub:      sub,
 		Role:     role,
 		Day:      g.state.day,
 		Deadline: 0,
 		Phantom:  role != "" && !g.state.HasLivingRole(role),
 	}}
+
+	// At the START of a real act window, a roleblocked NON-mafia actor
+	// is privately told they're blocked — during their own turn — so
+	// their client can show the notice and suppress the target picker
+	// (the consort distracted them; their action can't land). Mafia are
+	// immune (the block is a no-op against the faction kill). The block
+	// is also enforced server-side at resolveNight as a backstop, in
+	// case a client submits an action anyway.
+	if sub == NightSubAct && role != RoleMafia {
+		if holder, ok := g.state.livingHolderOf(role); ok && g.state.isNightBlocked(holder) {
+			events = append(events, Blocked{PlayerID: holder})
+		}
+	}
+	return events
 }
 
 // resolveAndExitNight is the common Night-end path: it's called from
@@ -370,6 +380,11 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	}
 	events = append(events, PlayerLynched{PlayerID: target})
 
+	// If that lynch wiped out the last mafia but a consort still lives,
+	// she's promoted to mafia BEFORE the win check — otherwise the town
+	// would be handed a premature victory.
+	events = append(events, g.promoteConsortIfNeeded()...)
+
 	if endEvt, ended := g.checkWin(); ended {
 		events = append(events, endEvt)
 		from := g.state.phase
@@ -405,16 +420,27 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 // Returns the events to be appended after PhaseChanged.
 func (g *Game) beginNightTurns() []Event {
 	g.state.nightTurnQueue = g.state.nightTurnQueue[:0]
-	// Canonical order. Mafia first so the doctor (last) saves with the
-	// most information about who's been targeted.
+	// Canonical order: Mafia first, then the Consort (when present),
+	// then the town info roles. The Consort sits right after the Mafia
+	// and crucially BEFORE the detective and doctor, so her block is
+	// already recorded when their act windows open — that's what lets us
+	// notify a blocked town role at the start of their own turn and
+	// suppress the detective's result. Mafia lead so the doctor (last)
+	// saves with the most information about who's been targeted. The
+	// consort turn is queued only when the role was actually dealt
+	// (alive OR dead, to keep a dead consort's turn phantom and hide her
+	// death); an optional role that was never dealt has no turn at all.
+	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleMafia)
+	if g.state.rosterHasRole(RoleConsort) {
+		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleConsort)
+	}
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue,
-		RoleMafia, RoleDetective, RoleDoctor)
+		RoleDetective, RoleDoctor)
 	// Enter the night-scoped opening sub-phase. currentNightRole
 	// stays empty until the opening elapses and advanceNightSubPhase
 	// pops the first role.
 	g.state.currentNightRole = ""
 	g.state.currentNightSubPhase = NightSubOpening
-	g.state.nightSubmitted = false
 	return []Event{NightSubPhaseStarted{
 		Sub:      NightSubOpening,
 		Day:      g.state.day,
@@ -444,7 +470,6 @@ func (g *Game) beginNextNightTurn() []Event {
 	next := g.state.nightTurnQueue[0]
 	g.state.nightTurnQueue = g.state.nightTurnQueue[1:]
 	g.state.currentNightRole = next
-	g.state.nightSubmitted = false
 	return g.enterNightSubPhase(NightSubNarrate)
 }
 
@@ -452,14 +477,21 @@ func (g *Game) beginNextNightTurn() []Event {
 // the GameEnded event and true. Otherwise returns the zero event and
 // false.
 //
-// Mafia win:  living mafia >= living town  (they can no longer be lynched).
-// Town win:   living mafia == 0.
+// Mafia win:  living mafia-aligned >= living town  (can't be out-voted).
+// Town win:   living mafia-aligned == 0.
+//
+// "Mafia-aligned" counts both the mafia and a surviving (not-yet-
+// promoted) Consort — she's a threat the town must eliminate, and she
+// keeps the mafia side at parity. Note that a wiped-out cabal with a
+// living consort never reaches the town-win branch here: callers run
+// promoteConsortIfNeeded first, converting her to RoleMafia so she's
+// counted as mafia rather than ending the game.
 //
 // These conditions are mutually exclusive once both have at least one
 // living member at the start of any check, which is invariant from the
 // roster validation in CreateGame.
 func (g *Game) checkWin() (GameEnded, bool) {
-	mafia := g.state.factionLivingCount(FactionMafia)
+	mafia := g.state.mafiaAlignedLivingCount()
 	town := g.state.factionLivingCount(FactionTown)
 
 	switch {
@@ -475,4 +507,37 @@ func (g *Game) checkWin() (GameEnded, bool) {
 		}, true
 	}
 	return GameEnded{}, false
+}
+
+// promoteConsortIfNeeded elevates a surviving Consort to full RoleMafia
+// when the original mafia cabal has been wiped out (no living RoleMafia
+// remains). This is the "sleeper takes over" mechanic: with the mafia
+// gone, the consort inherits the kill and joins the mafia turn from the
+// next night on.
+//
+// Returns the events to append (private to the promoted player, so the
+// town never learns a takeover happened), or nil if no promotion
+// applies. Callers MUST invoke this AFTER applying a death and BEFORE
+// checkWin, so a cabal-ending lynch promotes the consort rather than
+// handing the town a win. The only way the mafia count reaches zero is a
+// lynch (mafia can't be killed at night), so applyFinalizeVotes is the
+// sole caller today.
+func (g *Game) promoteConsortIfNeeded() []Event {
+	if g.state.factionLivingCount(FactionMafia) > 0 {
+		return nil // cabal still alive; nothing to take over
+	}
+	for i := range g.state.players {
+		p := &g.state.players[i]
+		if p.alive && p.role == RoleConsort {
+			p.role = RoleMafia
+			return []Event{
+				ConsortPromoted{PlayerID: p.id},
+				// She is now the (sole) mafia; re-issue the roster so
+				// her client recognizes its new faction. FactionOnly,
+				// so it reaches only her.
+				MafiaRosterRevealed{Members: []PlayerID{p.id}},
+			}
+		}
+	}
+	return nil
 }

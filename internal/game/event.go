@@ -76,6 +76,17 @@ type MafiaCountChanged struct {
 func (MafiaCountChanged) isEvent()               {}
 func (MafiaCountChanged) Visibility() Visibility { return Public() }
 
+// ConsortChanged records a host-driven toggle of the optional Consort
+// role during PhaseLobby. Public so every observer sees the configured
+// composition update in real time (it does NOT reveal who, if anyone,
+// will be dealt the role — that stays secret until GameEnded).
+type ConsortChanged struct {
+	Enabled bool
+}
+
+func (ConsortChanged) isEvent()               {}
+func (ConsortChanged) Visibility() Visibility { return Public() }
+
 // PlayerJoined records a successful lobby join.
 type PlayerJoined struct {
 	PlayerID PlayerID
@@ -259,6 +270,33 @@ type PlayerSaved struct {
 
 func (e PlayerSaved) isEvent()               {}
 func (e PlayerSaved) Visibility() Visibility { return PrivateTo(e.Doctor) }
+
+// Blocked tells a player that the Consort nullified their night action.
+// Emitted only when a real action was actually cancelled (a blocked
+// doctor's save or detective's investigation) — never for a blocked
+// villager (no action to lose) or a blocked mafioso (the kill is
+// immune). Private to the blocked player; the room must never learn who
+// the consort targeted.
+type Blocked struct {
+	PlayerID PlayerID
+}
+
+func (e Blocked) isEvent()               {}
+func (e Blocked) Visibility() Visibility { return PrivateTo(e.PlayerID) }
+
+// ConsortPromoted records that the Consort has been elevated to full
+// RoleMafia because the original mafia cabal was wiped out while she
+// still lived (see promoteConsortIfNeeded). Private to the promoted
+// player: the town must NOT learn that a sleeper has taken over the
+// kill — to everyone else the game simply continues. A fresh
+// MafiaRosterRevealed (now listing just her) is emitted alongside so
+// her client recognizes its new faction.
+type ConsortPromoted struct {
+	PlayerID PlayerID
+}
+
+func (e ConsortPromoted) isEvent()               {}
+func (e ConsortPromoted) Visibility() Visibility { return PrivateTo(e.PlayerID) }
 
 // DetectiveResult delivers an investigation outcome privately to the
 // detective.

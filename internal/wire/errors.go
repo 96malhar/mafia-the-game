@@ -46,6 +46,7 @@ const (
 	ErrCodeGameEnded       ErrorCode = "game_ended"
 	ErrCodeNoChange        ErrorCode = "no_change"
 	ErrCodeAlreadyActed    ErrorCode = "already_acted"
+	ErrCodeBlocked         ErrorCode = "blocked"
 
 	// --- Room / transport-layer codes -----------------------------
 	//
@@ -101,6 +102,7 @@ var ErrorCodes = []ErrorCode{
 	ErrCodeGameEnded,
 	ErrCodeNoChange,
 	ErrCodeAlreadyActed,
+	ErrCodeBlocked,
 
 	ErrCodeAuthFailed,
 	ErrCodeNotJoined,

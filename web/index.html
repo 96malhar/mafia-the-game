@@ -281,8 +281,9 @@
       </section>
 
       <!--
-        Detective result modal. Placed as a SIBLING of #game (not
-        nested inside) because:
+        Shared notice modal — reused by the detective result, the
+        "Blocked" notice, and the promotion announcement. Placed as a
+        SIBLING of #game (not nested inside) because:
 
         On a live result, the engine emits detectiveResult in the
         same WS batch as phaseChanged → day_discussion. The day
@@ -302,18 +303,18 @@
         by "hidden" so they have no visual effect until the modal
         fires.
       -->
-      <div id="detective-modal"
+      <div id="notice-modal"
            class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-6 backdrop-blur-sm"
            role="dialog"
            aria-modal="true"
            aria-live="polite">
-        <div id="detective-modal-card"
+        <div id="notice-modal-card"
              class="max-w-lg rounded-xl border-2 px-8 py-8 text-center shadow-2xl
                     border-rose-500/70 bg-rose-950/95 text-rose-100
                     border-emerald-500/70 bg-emerald-950/95 text-emerald-100">
-          <div id="detective-modal-eyebrow" class="text-sm uppercase tracking-widest opacity-70">Investigation result</div>
-          <div id="detective-modal-body" class="mt-4 text-3xl font-bold tracking-wide leading-snug"></div>
-          <button id="detective-modal-dismiss"
+          <div id="notice-modal-eyebrow" class="text-sm uppercase tracking-widest opacity-70">Investigation result</div>
+          <div id="notice-modal-body" class="mt-4 text-3xl font-bold tracking-wide leading-snug"></div>
+          <button id="notice-modal-dismiss"
                   class="mt-8 rounded-lg bg-slate-800 px-6 py-3 text-base font-semibold text-white hover:bg-slate-700">
             Got it
           </button>
@@ -435,6 +436,11 @@
       let lobbyMaxPlayers = null;
       let mafiaCount = null;
 
+      // consortEnabled mirrors the engine's optional-Consort toggle for
+      // the upcoming game. Event-sourced from consortChanged (replayed on
+      // join), defaulting to false until the first event lands.
+      let consortEnabled = false;
+
       // --- Night turn state (mirrors the engine's per-role sub-phase) ---
       //
       // During PhaseNight each role flows through a five-step sub-phase
@@ -454,6 +460,12 @@
       // the live sub-phase.
       let currentNightRole = "";
       let nightTurnDeadlineMs = 0;
+
+      // iAmBlocked is set true when the server tells us (privately) that
+      // the Consort blocked our action this night — delivered at the
+      // start of our own act window. It suppresses the target picker for
+      // the turn and is cleared at the start of each night.
+      let iAmBlocked = false;
       // currentNightSubPhase mirrors the engine's NightSubPhase value.
       // Drives the audio cue selection (narrate/sleep speak; act/ponder/
       // settle/opening are silent or already-spoken) and the visibility
@@ -618,21 +630,36 @@
       // while reading. The modal is local-only — it never echoes
       // via narrator TTS, since the detective's result is private
       // and we don't want the host's phone speaking it aloud.
-      function showDetectiveToast(targetName, isMafia) {
-        const modal = $("detective-modal");
-        const card = $("detective-modal-card");
-        const body = $("detective-modal-body");
+      // Modal color palettes, shared by the detective result and the
+      // consort-related notices (block / promotion). showModalCard always
+      // strips ALL palettes before applying one, so back-to-back notices
+      // of different colors never stack classes.
+      const MODAL_ROSE    = ["border-rose-500/70",    "bg-rose-950/95",    "text-rose-100"];
+      const MODAL_EMERALD = ["border-emerald-500/70", "bg-emerald-950/95", "text-emerald-100"];
+      const MODAL_AMBER   = ["border-amber-500/70",   "bg-amber-950/95",   "text-amber-100"];
+
+      // modalAutoDismisses marks the currently-shown modal as one that
+      // should clear itself when the actor's night turn advances past its
+      // ponder (the "Blocked" notice), rather than waiting for a manual
+      // "Got it" tap. The detective result and the promotion announcement
+      // leave this false: they must NOT vanish on a timer.
+      let modalAutoDismisses = false;
+
+      function showModalCard(text, palette, eyebrow = "Investigation result", autoDismiss = false) {
+        const modal = $("notice-modal");
+        const card = $("notice-modal-card");
+        const body = $("notice-modal-body");
         if (!modal || !card || !body) return;
-
-        const rose    = ["border-rose-500/70",    "bg-rose-950/95",    "text-rose-100"];
-        const emerald = ["border-emerald-500/70", "bg-emerald-950/95", "text-emerald-100"];
-        card.classList.remove(...rose, ...emerald);
-        card.classList.add(...(isMafia ? rose : emerald));
-
-        body.textContent = isMafia
-          ? `${targetName} IS a mafia member.`
-          : `${targetName} is NOT a mafia member.`;
-
+        modalAutoDismisses = autoDismiss;
+        // The eyebrow is the small uppercase heading above the body. It
+        // defaults to the detective's label, so block/promotion notices
+        // must pass their own — otherwise they'd misleadingly read
+        // "Investigation result".
+        const eyebrowEl = $("notice-modal-eyebrow");
+        if (eyebrowEl) eyebrowEl.textContent = eyebrow;
+        card.classList.remove(...MODAL_ROSE, ...MODAL_EMERALD, ...MODAL_AMBER);
+        card.classList.add(...palette);
+        body.textContent = text;
         modal.classList.remove("hidden");
         // Inline display:flex wins over EVERY Tailwind utility, no
         // matter what order .hidden / .flex appear in the generated
@@ -640,13 +667,44 @@
         modal.style.display = "flex";
       }
 
-      function hideDetectiveToast() {
-        const modal = $("detective-modal");
+      function showDetectiveToast(targetName, isMafia) {
+        showModalCard(
+          isMafia
+            ? `${targetName} IS a mafia member.`
+            : `${targetName} is NOT a mafia member.`,
+          isMafia ? MODAL_ROSE : MODAL_EMERALD
+        );
+      }
+
+      // showBlockedToast tells a roleblocked player their action was
+      // nullified. Reuses the shared notice modal (same "Got it" dismissal).
+      function showBlockedToast() {
+        showModalCard(
+          "The Consort distracted you. You cannot act.",
+          MODAL_AMBER,
+          "Blocked",
+          true // auto-clears when our ponder elapses (see nightSleepStarted)
+        );
+      }
+
+      // showPromotedToast announces a consort's promotion to full mafia
+      // (the cabal was wiped out and she's taken over the kill).
+      function showPromotedToast() {
+        showModalCard(
+          "The mafia have been wiped out — you are now the Mafia. You'll choose the kill from the next night on.",
+          MODAL_ROSE,
+          "You've been promoted"
+        );
+      }
+
+      function hideModalCard() {
+        const modal = $("notice-modal");
         if (!modal) return;
         modal.classList.add("hidden");
         modal.style.display = "none";
-        const body = $("detective-modal-body");
+        const body = $("notice-modal-body");
         if (body) body.textContent = "";
+        modalAutoDismisses = false;
       }
 
       // --- Night countdown bar -----------------------------------------
@@ -1038,18 +1096,20 @@
         lobbyMinPlayers = null;
         lobbyMaxPlayers = null;
         mafiaCount = null;
+        consortEnabled = false;
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
         currentNightSubPhase = "";
         currentNightTurnPhantom = false;
+        iAmBlocked = false;
         dayDiscussionPendingDeath = null;
         lastNightVictim = null;
         narrationsSeen.clear();
         stopNightCountdown();
-        // Clear any open detective modal so a refresh doesn't carry
+        // Clear any open notice modal so a refresh doesn't carry
         // a stale "X IS a mafia member" card into the new session.
-        hideDetectiveToast();
+        hideModalCard();
         $("my-role").textContent = "—";
         renderAll();
       }
@@ -1292,7 +1352,12 @@
       // error flow into the log. Conservative behavior.
       function canActAtNight() {
         if (!myRole) return false;
-        return myRole === "mafia" || myRole === "doctor" || myRole === "detective";
+        return (
+          myRole === "mafia" ||
+          myRole === "doctor" ||
+          myRole === "detective" ||
+          myRole === "consort"
+        );
       }
 
       // phaseActionButton returns a per-row action button suitable for
@@ -1342,6 +1407,7 @@
           currentNightRole === myRole &&
           currentNightSubPhase === "act" &&
           !currentNightTurnPhantom &&
+          !iAmBlocked &&
           p.alive &&
           canTargetThisRow
         ) {
@@ -1350,9 +1416,15 @@
           b.className = submitted
             ? `${rowBtnBase} bg-amber-600 text-white`
             : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
-          b.textContent = submitted
-            ? (isSelfRow ? "Saving self" : "Targeted")
-            : (isSelfRow ? "Save self" : "Target");
+          // The Consort "blocks" rather than "targets"; the doctor
+          // "saves" (and may pick their own row). Everyone else "targets".
+          if (myRole === "consort") {
+            b.textContent = submitted ? "Blocked" : "Block";
+          } else {
+            b.textContent = submitted
+              ? (isSelfRow ? "Saving self" : "Targeted")
+              : (isSelfRow ? "Save self" : "Target");
+          }
           b.addEventListener("click", () => send("nightAction", { target: p.id }));
           return b;
         }
@@ -1449,10 +1521,19 @@
           const youArePlayingThisRole =
             currentNightRole === myRole && !!(me && me.alive);
           if (youArePlayingThisRole) {
-            bannerText.textContent =
-              currentNightSubPhase === "act"
-                ? `Your turn — ${display}. Pick a target on the Players panel below.`
-                : `Your turn — ${display}. Listen to the moderator…`;
+            const pickPhrase =
+              myRole === "consort"
+                ? "Pick someone to block"
+                : "Pick a target";
+            if (currentNightSubPhase === "act" && iAmBlocked) {
+              bannerText.textContent =
+                `Your turn — ${display}. You were blocked tonight — your action won't land.`;
+            } else {
+              bannerText.textContent =
+                currentNightSubPhase === "act"
+                  ? `Your turn — ${display}. ${pickPhrase} on the Players panel below.`
+                  : `Your turn — ${display}. Listen to the moderator…`;
+            }
           } else {
             bannerText.textContent = `${display} is choosing. Eyes closed.`;
           }
@@ -1518,6 +1599,7 @@
             if (!rolesDealt) {
               const mafiaPicker = renderMafiaPicker();
               if (mafiaPicker) extras.appendChild(mafiaPicker);
+              extras.appendChild(renderConsortToggle());
             }
 
             if (myIsHost) {
@@ -1566,14 +1648,21 @@
               if (myAction) {
                 hint.textContent = "Submitted. The next role will be summoned shortly.";
                 const t = players.get(myAction);
-                extras.appendChild(noteChip(`Targeted: ${t ? t.name : myAction}`, "bg-amber-700/60"));
+                const verb = myRole === "consort" ? "Blocked" : "Targeted";
+                extras.appendChild(noteChip(`${verb}: ${t ? t.name : myAction}`, "bg-amber-700/60"));
               } else if (currentNightSubPhase !== "act") {
                 // We're in narrate / ponder / sleep / settle (or it's
                 // the global opening). The action window hasn't opened
                 // yet (or has already closed). Keep the actor listening.
                 hint.textContent = "Listen to the moderator…";
+              } else if (iAmBlocked) {
+                hint.textContent =
+                  "You were blocked tonight — your action won't land. Sit tight.";
               } else {
-                hint.textContent = "Pick your target on the Players panel below.";
+                hint.textContent =
+                  myRole === "consort"
+                    ? "Pick someone to block on the Players panel below."
+                    : "Pick your target on the Players panel below.";
               }
             } else if (canActAtNight()) {
               hint.textContent =
@@ -1795,6 +1884,41 @@
         return wrapper;
       }
 
+      // renderConsortToggle builds the lobby control for the optional
+      // Consort role. Host sees an on/off toggle (setConsort); everyone
+      // else sees a read-only Yes/No so the whole room knows whether the
+      // role is in play. Like the mafia picker, it's only shown before
+      // roles are dealt (the engine rejects setConsort afterward).
+      function renderConsortToggle() {
+        const wrapper = document.createElement("div");
+        wrapper.className =
+          "flex items-center gap-2 rounded bg-slate-700/60 px-3 py-1.5 text-xs";
+
+        const label = document.createElement("span");
+        label.className = "uppercase tracking-wide opacity-70";
+        label.textContent = "Consort";
+        wrapper.appendChild(label);
+
+        if (!myIsHost) {
+          const val = document.createElement("span");
+          val.className = "font-mono text-sm";
+          val.textContent = consortEnabled ? "Yes" : "No";
+          wrapper.appendChild(val);
+          return wrapper;
+        }
+
+        const btn = document.createElement("button");
+        btn.className = consortEnabled
+          ? "inline-flex h-9 items-center justify-center rounded bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-600"
+          : "inline-flex h-9 items-center justify-center rounded bg-slate-600 px-3 text-sm font-semibold hover:bg-slate-500";
+        btn.textContent = consortEnabled ? "On" : "Off";
+        btn.addEventListener("click", () =>
+          send("setConsort", { enabled: !consortEnabled })
+        );
+        wrapper.appendChild(btn);
+        return wrapper;
+      }
+
       function disabledNote(text) {
         const span = document.createElement("span");
         span.className = "text-xs opacity-70";
@@ -1974,6 +2098,11 @@
             renderActionPanel();
             break;
 
+          case "consortChanged":
+            consortEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
           case "playerJoined":
             upsertPlayer(env.data.playerId, {
               name: env.data.name,
@@ -2056,6 +2185,7 @@
               nightTurnDeadlineMs = 0;
               currentNightSubPhase = "";
               currentNightTurnPhantom = false;
+              iAmBlocked = false;
               stopNightCountdown();
               dayLynchResolved = false;
               // A new night invalidates the previous night's
@@ -2157,6 +2287,10 @@
             currentNightSubPhase = "sleep";
             nightTurnDeadlineMs = env.data.deadline || 0;
             if (!replaying) {
+              // Sleep means our ponder just elapsed. If the auto-dismiss
+              // "Blocked" notice is still up, clear it now so the player
+              // isn't stuck behind it even if they never tapped "Got it".
+              if (modalAutoDismisses) hideModalCard();
               startNightCountdown(nightTurnDeadlineMs);
               narrateRoleSleep(currentNightRole);
             }
@@ -2239,6 +2373,31 @@
             }
             break;
           }
+
+          case "blocked":
+            // PrivateTo us, delivered at the START of our act window:
+            // the Consort blocked us, so our action can't land. Set the
+            // flag on EVERY path (incl. replay) so the target picker
+            // stays hidden for the turn even after a refresh; pop the
+            // modal only live so a reconnect doesn't re-pop a stale one.
+            iAmBlocked = true;
+            if (!replaying) showBlockedToast();
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "consortPromoted":
+            // PrivateTo us: we (the Consort) have been elevated to full
+            // mafia because the cabal was wiped out. Apply the role
+            // change on EVERY path (including replay) so a reconnecting
+            // promoted consort knows their new faction and gets the
+            // mafia night turn; only pop the announcement modal live.
+            // The mafiaRoster event that follows badges us as Mafia.
+            myRole = "mafia";
+            $("my-role").textContent = "mafia";
+            if (!replaying) showPromotedToast();
+            renderAll();
+            break;
 
           // Pre-reveal, the server only delivers a voter THEIR OWN
           // cast/change/retract (the events are private), so these keep
@@ -2396,6 +2555,9 @@
           day0:    "Mafia, wake up. Look around and recognize each other. Then choose your target.",
           default: "Mafia, wake up. Choose your target.",
         },
+        consort: {
+          default: "Consort, wake up. Choose someone to block.",
+        },
         detective: {
           default: "Detective, wake up. Choose someone to investigate.",
         },
@@ -2406,6 +2568,7 @@
 
       const ROLE_SLEEP = {
         mafia:     "Mafia, go to sleep.",
+        consort:   "Consort, go to sleep.",
         detective: "Detective, go to sleep.",
         doctor:    "Doctor, go to sleep.",
       };
@@ -2677,16 +2840,16 @@
         if (code) joinRoom(code);
       });
 
-      // Detective modal dismissal: the button, clicking the dimmed
+      // Notice modal dismissal: the button, clicking the dimmed
       // overlay (but not the card), and Escape all close it.
-      $("detective-modal-dismiss").addEventListener("click", hideDetectiveToast);
-      $("detective-modal").addEventListener("click", (e) => {
-        if (e.target.id === "detective-modal") hideDetectiveToast();
+      $("notice-modal-dismiss").addEventListener("click", hideModalCard);
+      $("notice-modal").addEventListener("click", (e) => {
+        if (e.target.id === "notice-modal") hideModalCard();
       });
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
-          const m = $("detective-modal");
-          if (m && !m.classList.contains("hidden")) hideDetectiveToast();
+          const m = $("notice-modal");
+          if (m && !m.classList.contains("hidden")) hideModalCard();
         }
       });
 

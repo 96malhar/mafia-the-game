@@ -79,6 +79,16 @@ type nightContext struct {
 	// (detective, etc.) can read this if they care.
 	died PlayerID
 
+	// blocked is the player the Consort targeted tonight (empty if no
+	// consort acted). hasBlock distinguishes "blocked nobody" from a
+	// block on the player whose id happens to be the zero value. A
+	// block nullifies the blocked player's night action UNLESS they are
+	// mafia (blocking a mafioso is allowed but has no effect — the kill
+	// is a faction action). Exactly one player can be blocked per night
+	// (a single consort), so no per-actor de-dup flag is needed.
+	blocked  PlayerID
+	hasBlock bool
+
 	// events accumulates events to be appended after resolution.
 	events []Event
 }
@@ -178,6 +188,35 @@ var roleSpecs = map[Role]roleSpec{
 				ctx.saveTarget = target.id
 				ctx.hasSave = true
 				ctx.savingDoctor = actor.id
+			},
+		},
+	},
+
+	RoleConsort: {
+		// Mafia-aligned for winning, but her OWN faction so she is
+		// isolated from mafia coordination (FactionOnly(FactionMafia)
+		// events never reach FactionConsort, and the mafia roster is
+		// collected by faction == FactionMafia, excluding her).
+		Faction: FactionConsort,
+		// The block resolves in nightPhaseBlock — strictly BEFORE the
+		// schedule (kill/save) and reveal phases — so a blocked role's
+		// action is nullified before it would otherwise run.
+		NightAction: &nightActionSpec{
+			Phase: nightPhaseBlock,
+			Validate: func(_ *GameState, actor, target *Player) error {
+				if actor.id == target.id {
+					// A consort blocking herself is meaningless.
+					return ErrSelfTarget
+				}
+				// Any other living target is allowed — including a
+				// mafioso. Blocking a mafioso simply has no effect
+				// (resolveNight never skips a mafia kill); the consort
+				// just wastes her night.
+				return nil
+			},
+			Apply: func(ctx *nightContext, _, target *Player) {
+				ctx.blocked = target.id
+				ctx.hasBlock = true
 			},
 		},
 	},

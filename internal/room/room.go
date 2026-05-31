@@ -596,7 +596,8 @@ func isHostOnly(cmd game.Command) bool {
 		game.RevealVotes,
 		game.ClearVotes,
 		game.FinalizeVotes,
-		game.SetMafiaCount:
+		game.SetMafiaCount,
+		game.SetConsort:
 		return true
 	}
 	return false

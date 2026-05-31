@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,39 @@ func TestRoomCreateRateLimit(t *testing.T) {
 			require.Equal(t, http.StatusOK, postRoom(t, ts.URL),
 				"no limiter should be installed at RPM=0")
 		}
+	})
+}
+
+func TestCheckRoom(t *testing.T) {
+	ts := newTestServerWithWS(t, 0)
+
+	// Create a room, then read back its code from the JSON response.
+	resp, err := http.Post(ts.URL+"/api/rooms", "application/json", nil)
+	require.NoError(t, err)
+	var created struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	_ = resp.Body.Close()
+	require.NotEmpty(t, created.Code)
+
+	t.Run("existing room returns 200 with code", func(t *testing.T) {
+		r, err := http.Get(ts.URL + "/api/rooms/" + created.Code)
+		require.NoError(t, err)
+		defer func() { _ = r.Body.Close() }()
+		require.Equal(t, http.StatusOK, r.StatusCode)
+		var got struct {
+			Code string `json:"code"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		require.Equal(t, created.Code, got.Code)
+	})
+
+	t.Run("missing room returns 404", func(t *testing.T) {
+		r, err := http.Get(ts.URL + "/api/rooms/NOPE")
+		require.NoError(t, err)
+		defer func() { _ = r.Body.Close() }()
+		require.Equal(t, http.StatusNotFound, r.StatusCode)
 	})
 }
 

@@ -48,6 +48,10 @@ func registerRoutes(r chi.Router, cfg Config) {
 			}
 			r.Post("/api/rooms", cfg.WS.CreateRoom)
 		})
+		// Room-existence probe (not rate-limited: it's a cheap read the
+		// lobby hits before joining so it can distinguish "room not
+		// found" from "server unreachable" — see CheckRoom).
+		r.Get("/api/rooms/{code}", cfg.WS.CheckRoom)
 		r.Get("/ws/{code}", cfg.WS.Connect)
 	}
 

@@ -1284,12 +1284,19 @@
         if (p.id === myId) {
           nameLine.appendChild(badge("You", "shrink-0 bg-emerald-700 text-emerald-100"));
         }
-        // mafiaPeers is populated only from the faction-scoped mafiaRoster
-        // event, so it's always empty for town — the "Mafia" badge can
-        // only ever appear on a mafioso's own screen. Shown in every phase
-        // so the mafia can see their allies at a glance.
+        // Single role/faction identity badge per row, mutually exclusive
+        // by construction:
+        //   - mafiaPeers (populated only from the faction-scoped
+        //     mafiaRoster event, so empty for town) badges every known
+        //     mafioso "Mafia" — that's the row's identity, whether it's
+        //     self or a teammate, and it covers a promoted consort too.
+        //   - otherwise the LOCAL player sees their own dealt role next
+        //     to "You" (town never learns others' roles, so this is
+        //     self-only). myRole is null until roles are dealt.
         if (mafiaPeers.has(p.id)) {
           nameLine.appendChild(badge("Mafia", "shrink-0 bg-rose-800 text-rose-100"));
+        } else if (p.id === myId && myRole) {
+          nameLine.appendChild(badge(capitalize(myRole), "shrink-0 bg-indigo-700 text-indigo-100"));
         }
         // Faction-collective kill: once any mafioso locks a target, badge
         // that player on every mafioso's roster (including teammates who
@@ -2764,11 +2771,34 @@
         }
       }
 
-      function joinRoom(code) {
+      async function joinRoom(code) {
         const name = currentName();
         if (!name || !code) return;
         const stored = credStore.getItem(storageKey(code));
         const creds = stored ? JSON.parse(stored) : null;
+        // Probe the room BEFORE opening the WebSocket. A browser can't
+        // read the HTTP status of a failed WS handshake (a 404 surfaces
+        // only as an opaque close → a bare "disconnected"), so we ask
+        // the server up front whether the room exists and give a precise
+        // message. If we hold stored creds we skip the probe and let the
+        // rejoin path (and its own recovery messaging) run. If the probe
+        // itself errors (network/CORS), we fall through to connect rather
+        // than block a legitimate join on a flaky preflight.
+        if (!creds) {
+          setStatus(`checking room ${code}…`, "text-slate-300");
+          try {
+            const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`);
+            if (res.status === 404) {
+              setStatus(`room ${code} not found`, "text-rose-400");
+              showError(`Room ${code} doesn't exist. Check the code or ask the host for a new invite link.`);
+              return;
+            }
+          } catch {
+            // Probe unreachable — don't block the join; the WS attempt
+            // below will surface a connection error if the server is
+            // genuinely down.
+          }
+        }
         connect(code, name, creds);
       }
 

@@ -88,6 +88,28 @@ func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": r.Code()})
 }
 
+// CheckRoom handles GET /api/rooms/{code}. It's a lightweight existence
+// probe the client hits BEFORE opening the WebSocket: a browser can't
+// read the HTTP status of a failed WS handshake (a 404 surfaces only as
+// an opaque close), so without this a join to a non-existent room looks
+// identical to the server being unreachable. This endpoint lets the
+// lobby show a precise "room not found" instead of a bare "disconnected".
+//
+// It deliberately mirrors Connect's lookup (raw code, no normalization)
+// so the two always agree on what "exists" means.
+//
+// Response: 200 { "code": "ABCD" } if the room exists, 404 otherwise.
+func (h *Handler) CheckRoom(w http.ResponseWriter, req *http.Request) {
+	code := chi.URLParam(req, "code")
+	r, err := h.mgr.Get(code)
+	if err != nil {
+		http.Error(w, "room not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": r.Code()})
+}
+
 // randSeed returns 8 bytes of OS entropy as an int64, used as the
 // per-room role-shuffle seed. crypto/rand is the source so seeds aren't
 // guessable from a known PRNG sequence. On the practically-impossible

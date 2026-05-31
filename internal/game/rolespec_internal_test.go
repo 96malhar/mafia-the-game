@@ -18,7 +18,7 @@ func TestRegistry_RoleConstantsHaveSpecs(t *testing.T) {
 	// roleSpecs. We hand-enumerate the constants here (the one place
 	// it's appropriate) so adding a const without a spec entry is a
 	// hard test failure, not a silent "unknown role" at runtime.
-	roles := []Role{RoleVillager, RoleMafia, RoleDetective, RoleDoctor}
+	roles := []Role{RoleVillager, RoleMafia, RoleDetective, RoleDoctor, RoleConsort}
 	for _, r := range roles {
 		_, ok := roleSpecs[r]
 		require.True(t, ok, "role const %q has no entry in roleSpecs", r)

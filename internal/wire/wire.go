@@ -1,6 +1,6 @@
 // Package wire holds the stable string tags that ride on the JSON
 // wire between the Mafia server and any client (the browser front-
-// end, the sim's bot harness, future native clients).
+// end, future native clients).
 //
 // What lives here:
 //   - Client → server message type tags (the "type" field of inbound
@@ -9,14 +9,15 @@
 //     envelopes, e.g. "joined", "event", "error").
 //   - Engine event tags (the "type" field of the inner event envelope
 //     carried inside a server "event" message, e.g. "playerJoined").
-//   - Stable string representations of game-domain enums (Role,
-//     Phase, Faction) that show up on the wire.
 //
 // What does NOT live here:
 //   - Go DTOs (clientJoinData / serverJoinedData / etc). Those are
-//     transport-internal Go types in internal/transport/ws. The sim
-//     intentionally redeclares its own to assert the contract from
-//     outside as a black-box client.
+//     transport-internal Go types in internal/transport/ws.
+//   - The on-wire spellings of domain enums (Role, Phase, Faction).
+//     Those ARE the engine's own string-typed values (game.Role etc.):
+//     the codec writes them straight to the wire via string(v.Role), so
+//     the engine is the single source of truth and there is no separate
+//     mirror to keep in sync.
 //   - JSON encoding helpers. Each side owns its own marshalling.
 //
 // Anything declared here must keep its on-the-wire string value
@@ -89,36 +90,8 @@ const (
 	EventGameEnded             = "gameEnded"
 )
 
-// --- Phase strings -------------------------------------------------------
-//
-// Must mirror the values of game.Phase constants. Defined here too so
-// the sim and any future external client don't have to import the
-// engine package just to recognize a phase string.
-
-const (
-	PhaseLobby         = "lobby"
-	PhaseNight         = "night"
-	PhaseDayDiscussion = "day_discussion"
-	PhaseDayVote       = "day_vote"
-	PhaseEnded         = "ended"
-)
-
-// --- Role strings --------------------------------------------------------
-//
-// Must mirror the values of game.Role constants.
-
-const (
-	RoleVillager  = "villager"
-	RoleMafia     = "mafia"
-	RoleDetective = "detective"
-	RoleDoctor    = "doctor"
-)
-
-// --- Faction strings -----------------------------------------------------
-//
-// Must mirror the values of game.Faction constants.
-
-const (
-	FactionTown  = "town"
-	FactionMafia = "mafia"
-)
+// Note: the on-wire spellings of domain enums (Role, Phase, Faction) are
+// intentionally NOT mirrored here. They are the engine's own
+// string-typed values (game.Role / game.Phase / game.Faction); the codec
+// writes them to the wire directly via string(v.Role), so the engine is
+// the single source of truth.

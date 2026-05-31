@@ -23,13 +23,6 @@ tasks:
     cmds:
       - go run {{.MAIN}}
 
-  sim:
-    desc: Run a scripted bot game against a running server. Start `task run` in another shell first.
-    # Bots open WebSockets to ${ADDR:-:8080}, so the same env var that
-    # `run` and `stop` honour applies here too.
-    cmds:
-      - go run ./cmd/sim -addr "http://localhost${ADDR:-:8080}" {{.CLI_ARGS}}
-
   lobby:
     desc: Open 8 Chrome tabs that auto-join a fresh room, waiting to start. Start `task run` first. (macOS)
     # Creates one empty room via the API, then opens a tab per player at

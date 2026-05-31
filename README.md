@@ -105,7 +105,6 @@ Metrics use OpenTelemetry with a **Prometheus pull** model. `GET /metrics` serve
 
 ```
 cmd/server/            HTTP server entry point: env config, logging, signals
-cmd/sim/               headless bot harness that plays one full game over the wire
 internal/game/         pure, deterministic event-driven game engine
 internal/room/         in-memory room/hub: an engine plus its WS subscribers
 internal/transport/ws/ WebSocket upgrade, JSON codec, per-connection pumps
@@ -121,7 +120,7 @@ A short tour of each package's concern, from the core outward:
 - **`internal/game`** — the engine. A deterministic `Apply(command) -> ([]Event, error)` over in-memory state, with no I/O, time, or networking, so it replays and unit-tests trivially. It emits **full-truth** events; `projection.go` is the single place that redacts them per viewer based on each event's visibility (public / private / faction-only).
 - **`internal/room`** — one goroutine-owned hub per game. It serializes inbound commands, runs them through the engine, and fans the projected events out to that room's WebSocket subscribers. A manager allocates short room codes and tracks live rooms. Everything is in memory.
 - **`internal/transport/ws`** — upgrades HTTP to WebSocket, encodes/decodes the JSON message envelopes, and runs the read/write pumps for each connection. The bridge between raw sockets and the room's command/event channels.
-- **`internal/wire`** — the stable string contract (message-type tags, event tags, and the on-wire spellings of domain enums) shared by the server, the browser, and the sim, so all clients agree on the protocol.
+- **`internal/wire`** — the stable string contract (message-type tags and event tags) shared by the server and the browser, so all clients agree on the protocol. Domain-enum spellings (Role, Phase, Faction) are not duplicated here: they are the engine's own string-typed values, written to the wire directly.
 - **`internal/server`** — the chi HTTP server: routing, middleware (real client IP, security headers, body-size cap, per-IP rate limiting), static file serving, and the `/healthz` endpoint.
 - **`web`** — a single `index.html` (vanilla JS + Tailwind via CDN) that speaks the JSON-over-WebSocket protocol; no build step.
 

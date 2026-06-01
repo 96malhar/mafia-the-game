@@ -1664,13 +1664,22 @@
             const minMafia = 1;
             // Each enabled optional role (Consort, Vigilante) takes a
             // villager slot, so it tightens the mafia cap once more than
-            // one is on. The engine enforces both bounds:
+            // one is on. The engine enforces these bounds (see
+            // applyStartGame in internal/game/rules.go — keep them in sync):
             //   mafia <= total - 3                       (Det + Doc + ≥1 villager)
             //   mafia <= total - 2 - (#optional roles)   (room for the optionals)
-            // which combine to total - 2 - max(1, #optional).
+            //   2*(mafia + #mafia-aligned optionals) < total
+            //       (don't OPEN at the mafia parity win — checkWin counts the
+            //        Consort as mafia-aligned, so a roster sitting at parity
+            //        would hand the mafia an instant win on Night 1).
             const optionalRoles =
               (consortEnabled ? 1 : 0) + (vigilanteEnabled ? 1 : 0);
-            const maxMafiaNow = Math.max(0, total - 2 - Math.max(1, optionalRoles));
+            // Only the Consort is mafia-aligned among the optionals (the
+            // Vigilante is town), so the parity cap subtracts just the consort.
+            const mafiaAlignedOptionals = consortEnabled ? 1 : 0;
+            const slotCap = total - 2 - Math.max(1, optionalRoles);
+            const parityCap = Math.floor((total - 1) / 2) - mafiaAlignedOptionals;
+            const maxMafiaNow = Math.max(0, Math.min(slotCap, parityCap));
             const tooFew = configReady && total < lobbyMinPlayers;
             const tooMany = configReady && total > lobbyMaxPlayers;
             const mafiaOK = configReady && mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;

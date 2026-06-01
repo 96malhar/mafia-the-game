@@ -221,6 +221,10 @@ func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
 //   - PlayerCount must be in [MinPlayers, MaxPlayers].
 //   - MafiaCount must leave room for the reserved town core, i.e.
 //     mafiaCount ≤ playerCount - reservedTownRoles - 1.
+//   - The dealt roster must not already satisfy the mafia's parity win.
+//     Counting mafia-ALIGNED roles the way checkWin does (mafia plus any
+//     mafia-aligned optional like the Consort), we require
+//     2*mafiaAligned < playerCount so the game can't open already decided.
 //   - StartGame is rejected if roles have already been dealt (we detect
 //     this by checking whether the first player has a non-empty role).
 //
@@ -255,6 +259,25 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	// optional role must be ≥ 0.
 	optionals := g.state.enabledOptionalRoles()
 	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 0 {
+		return nil, ErrRosterMismatch
+	}
+
+	// Reject a roster that would START at or past the mafia's parity win.
+	// checkWin counts mafia-ALIGNED roles (the mafia plus any mafia-aligned
+	// optional, e.g. the Consort) against the town faction and ends the game
+	// for the mafia at mafiaAligned >= town. Because checkWin runs at the end
+	// of EVERY night (death or not, see resolveAndExitNight), a roster that
+	// opens at parity hands the mafia an instant, unavoidable win the moment
+	// Night 1 resolves — the town never even gets to vote. The town faction
+	// is exactly n - mafiaAligned, so "not already won" is mafiaAligned <
+	// town, i.e. 2*mafiaAligned < n.
+	mafiaAligned := g.state.mafiaCount
+	for _, r := range optionals {
+		if r.Faction().MafiaAligned() {
+			mafiaAligned++
+		}
+	}
+	if 2*mafiaAligned >= n {
 		return nil, ErrRosterMismatch
 	}
 

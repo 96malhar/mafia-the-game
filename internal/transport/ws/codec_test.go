@@ -51,6 +51,12 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			wantData: clientSetConsortData{Enabled: true},
 		},
 		{
+			name:     "setVigilante enabled",
+			raw:      `{"type":"setVigilante","data":{"enabled":true}}`,
+			wantTag:  clientMsgSetVigilante,
+			wantData: clientSetVigilanteData{Enabled: true},
+		},
+		{
 			name:    "startGame no data",
 			raw:     `{"type":"startGame"}`,
 			wantTag: clientMsgStartGame,
@@ -79,6 +85,11 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			name:    "finalizeVotes no data",
 			raw:     `{"type":"finalizeVotes"}`,
 			wantTag: clientMsgFinalizeVotes,
+		},
+		{
+			name:    "nightPass no data",
+			raw:     `{"type":"nightPass"}`,
+			wantTag: clientMsgNightPass,
 		},
 	}
 	for _, tc := range cases {
@@ -194,6 +205,7 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.RoleAssigned{PlayerID: "p1", Role: game.RoleMafia},
 		game.MafiaRosterRevealed{Members: []game.PlayerID{"p1", "p2"}},
 		game.ConsortChanged{Enabled: true},
+		game.VigilanteChanged{Enabled: true},
 		game.Blocked{PlayerID: "p3"},
 		game.ConsortPromoted{PlayerID: "p4"},
 		game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
@@ -280,6 +292,11 @@ func TestCommandFromClient(t *testing.T) {
 	cmd, ok := commandFromClient(clientMsgNightAction, clientNightActionData{Target: "p2"})
 	require.True(t, ok)
 	require.Equal(t, game.NightAction{Target: "p2"}, cmd)
+
+	// NightPass is payload-less; Actor is filled in server-side.
+	cmd, ok = commandFromClient(clientMsgNightPass, struct{}{})
+	require.True(t, ok)
+	require.Equal(t, game.NightPass{}, cmd)
 
 	cmd, ok = commandFromClient(clientMsgVote, clientVoteData{Target: ""})
 	require.True(t, ok)

@@ -38,22 +38,13 @@ package game
 // folded into the ponder duration (sized by the room's per-role
 // Ponder function) rather than a separate timer hook.
 func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseNight {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseNight); err != nil {
+		return nil, err
 	}
 
-	actor, ok := g.state.findPlayer(c.Actor)
-	if !ok {
-		return nil, ErrUnknownPlayer
-	}
-	if !actor.alive {
-		return nil, ErrPlayerDead
+	actor, err := g.state.requireLivingPlayer(c.Actor)
+	if err != nil {
+		return nil, err
 	}
 
 	spec, ok := roleSpecs[actor.role]
@@ -77,13 +68,13 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		return nil, ErrNotYourTurn
 	}
 
-	// Roleblock: a blocked NON-mafia actor cannot act at all. The Consort
-	// acts earlier in the queue, so her block is already recorded when
-	// the detective/doctor window opens. A correct client never reaches
-	// here — it's told it's blocked at the start of the turn (the
-	// act-window Blocked event) and hides the target picker — so this
-	// rejects a client that bypasses the UI. Mafia are immune (the
-	// faction kill ignores the block) and fall through unaffected.
+	// Roleblock backstop: a blocked NON-mafia actor cannot act at all.
+	// A blocked actor's turn is now phantom (no act window — see
+	// roleTurnIsPhantom), so the sub-phase gate above already rejects any
+	// submission with ErrNotYourTurn before we get here; this ErrBlocked
+	// branch is the deeper backstop kept for defense-in-depth (and in case
+	// the phantom routing ever changes). Mafia are immune (the faction
+	// kill ignores the block) and fall through unaffected.
 	if actor.role != RoleMafia && g.state.isNightBlocked(actor.id) {
 		return nil, ErrBlocked
 	}
@@ -91,12 +82,9 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	if c.Target == "" {
 		return nil, ErrUnknownPlayer
 	}
-	target, ok := g.state.findPlayer(c.Target)
-	if !ok {
-		return nil, ErrUnknownPlayer
-	}
-	if !target.alive {
-		return nil, ErrPlayerDead
+	target, err := g.state.requireLivingPlayer(c.Target)
+	if err != nil {
+		return nil, err
 	}
 
 	if spec.NightAction.Validate != nil {
@@ -131,9 +119,9 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	// is purely role-based (target.role.Faction()), so it doesn't
 	// depend on the resolve step at all.
 	if actor.role == RoleDetective {
-		// A blocked detective never reaches this point — applyNightAction
-		// rejects their submission with ErrBlocked above — so we always
-		// have a genuine result to deliver here.
+		// A blocked detective never reaches this point — his turn is
+		// phantom (no act window), so there's no submission to reach
+		// here — so we always have a genuine result to deliver.
 		//
 		// IsMafia checks the STRICT mafia role, not mafia-alignment: an
 		// un-promoted Consort (role RoleConsort, faction FactionConsort)
@@ -153,6 +141,57 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	// submission from a timed-out turn.
 	events = append(events, g.enterNightSubPhase(NightSubPonder)...)
 	return events, nil
+}
+
+// applyNightPass ends the current actor's act window early WITHOUT
+// recording an action. It's the engine side of the Vigilante's "hold
+// fire" button: declining to act advances straight to ponder (so the
+// table isn't held for the full act window) while preserving any
+// one-shot resource — nothing is written to pendingNight, so resolveNight
+// never sees an intent and the vigilante's bullet stays unspent.
+//
+// Gating mirrors applyNightAction's generic checks, plus the per-role
+// AllowPass opt-in:
+//   - PhaseNight only.
+//   - Actor must be known and alive.
+//   - Actor's role must have a NightAction whose AllowPass is set;
+//     otherwise ErrNotYourAction (villagers, and roles like the detective
+//     /doctor/consort/mafia that don't expose a pass affordance).
+//   - Actor's role must be the current night role AND we must be in the
+//     act sub-phase; otherwise ErrNotYourTurn (a phantom turn — dead,
+//     spent, or blocked — never reaches act, so it's rejected here too).
+//
+// Submit, timeout, and pass all collapse onto the same act → ponder edge,
+// so an observer can't distinguish "fired", "let the timer run", and
+// "held fire" — the secrecy property the act window already guarantees.
+func (g *Game) applyNightPass(c NightPass) ([]Event, error) {
+	if err := g.requirePhase(PhaseNight); err != nil {
+		return nil, err
+	}
+
+	actor, err := g.state.requireLivingPlayer(c.Actor)
+	if err != nil {
+		return nil, err
+	}
+
+	spec, ok := roleSpecs[actor.role]
+	if !ok || spec.NightAction == nil || !spec.NightAction.AllowPass {
+		// The role can't decline-to-act as an explicit move (it just
+		// lets its timer run). Same sentinel as "you have no night
+		// action" so the wire/UI gate it identically.
+		return nil, ErrNotYourAction
+	}
+
+	if actor.role != g.state.currentNightRole {
+		return nil, ErrNotYourTurn
+	}
+	if g.state.currentNightSubPhase != NightSubAct {
+		return nil, ErrNotYourTurn
+	}
+
+	// Advance act → ponder, leaving pendingNight untouched. Identical to
+	// the timeout edge, so no NightActionRecorded and no resource spend.
+	return g.enterNightSubPhase(NightSubPonder), nil
 }
 
 // resolveNight runs each scheduled night action through its role's
@@ -183,6 +222,15 @@ func (g *Game) resolveNight() []Event {
 	// Lookout).
 	g.runNightPhase(ctx, nightPhaseReveal)
 
+	// Spend the vigilante's one-shot bullet if he fired this night. We
+	// flush it here (rather than in the spec's Apply) so the persistent
+	// flag is set exactly once per night and only when a shot was
+	// actually recorded — a blocked vigilante never reaches Apply, so his
+	// bullet is preserved for a later night.
+	if ctx.vigilanteFired {
+		g.state.vigilanteShotUsed = true
+	}
+
 	g.state.pendingNight = nil
 	return ctx.events
 }
@@ -204,14 +252,14 @@ func (g *Game) runNightPhase(ctx *nightContext, phase nightPhase) {
 		if spec.NightAction.Phase != phase {
 			continue
 		}
-		// Roleblock backstop (defense-in-depth). applyNightAction now
-		// rejects a blocked non-mafia submission with ErrBlocked, so a
-		// blocked actor is never in pendingNight and this branch is
-		// unreachable in normal flow. It stays as a safety net: if that
-		// check is ever bypassed, the action is still nullified here (no
-		// save scheduled, no reveal run). Mafia are immune by design
-		// (blocking a mafioso is a wasted night — the kill is a faction
-		// action), and the consort is never her own target.
+		// Roleblock backstop (defense-in-depth). A blocked non-mafia
+		// actor's turn is phantom (no act window — see roleTurnIsPhantom),
+		// so he's never in pendingNight and this branch is unreachable in
+		// normal flow. It stays as a safety net: if the phantom routing is
+		// ever bypassed, the action is still nullified here (no save
+		// scheduled, no reveal run). Mafia are immune by design (blocking
+		// a mafioso is a wasted night — the kill is a faction action), and
+		// the consort is never her own target.
 		if ctx.hasBlock && actor.id == ctx.blocked && actor.role != RoleMafia {
 			continue
 		}

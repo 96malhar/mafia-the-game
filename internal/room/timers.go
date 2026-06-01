@@ -77,16 +77,12 @@ func (r *Room) stopPhaseTimer() {
 
 // armSubPhaseTimer arms phaseTimer for the duration of the sub-phase
 // just started by `evt`. Duration is sourced from c.subPhaseDuration
-// (the Default* constants). The deadline stamped on the broadcast event
-// uses the same source, so server and clients agree on when this
-// sub-phase will end.
-//
-// The `blocked` flag isn't carried on the event itself — it shortens a
-// roleblocked actor's act window and is read from engine state, which
-// (post-Apply) already reflects the just-applied command.
+// (the Default* constants), sized entirely from the event itself. The
+// deadline stamped on the broadcast event uses the same source, so server
+// and clients agree on when this sub-phase will end.
 func (r *Room) armSubPhaseTimer(evt game.Event) {
 	r.stopPhaseTimer()
-	dur := r.cfg.subPhaseDuration(evt, r.g.State().CurrentActorBlocked())
+	dur := r.cfg.subPhaseDuration(evt)
 	if dur <= 0 {
 		return
 	}

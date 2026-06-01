@@ -20,127 +20,35 @@ import (
 //	town1   -> RoleVillager
 //	town2   -> RoleVillager
 //
-// composeRoster(6, 1, consort=true) deals exactly that set (the consort
-// consumes one villager slot). We brute-force seeds until the random
-// deal matches; 6! = 720 permutations make this trivial.
-//
-// On return the game is in PhaseNight sitting on the MAFIA's act window
-// (same postcondition as fixedRoster). The night turn order with a
-// consort present is Mafia -> Consort -> Detective -> Doctor.
+// The consort consumes one villager slot. On return the game is in
+// PhaseNight sitting on the MAFIA's act window (same postcondition as
+// fixedRoster). The night turn order with a consort present is
+// Mafia -> Consort -> Detective -> Doctor.
 func fixedRosterWithConsort(t *testing.T) *game.Game {
 	t.Helper()
-	ids := []game.PlayerID{"mafia1", "consort", "det", "doc", "town1", "town2"}
-	wanted := map[game.PlayerID]game.Role{
-		"mafia1":  game.RoleMafia,
-		"consort": game.RoleConsort,
-		"det":     game.RoleDetective,
-		"doc":     game.RoleDoctor,
-		"town1":   game.RoleVillager,
-		"town2":   game.RoleVillager,
-	}
-
-	for seed := range int64(5000) {
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 6, MaxPlayers: 20, MafiaCount: 1, Seed: seed,
-		})
-		require.NoError(t, err)
-		_, err = g.Apply(game.SetConsort{Enabled: true})
-		require.NoError(t, err)
-		for _, id := range ids {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-
-		match := true
-		for _, p := range g.State().Players() {
-			if wanted[p.ID()] != p.Role() {
-				match = false
-				break
-			}
-		}
-		if !match {
-			continue
-		}
-		consortBeginNight(t, g)
-		return g
-	}
-	t.Fatalf("could not find a seed yielding the fixed consort roster in 5000 attempts")
-	return nil
+	return fixedRosterMatching(t, rosterDeal{
+		ids: []game.PlayerID{"mafia1", "consort", "det", "doc", "town1", "town2"},
+		wanted: map[game.PlayerID]game.Role{
+			"mafia1":  game.RoleMafia,
+			"consort": game.RoleConsort,
+			"det":     game.RoleDetective,
+			"doc":     game.RoleDoctor,
+			"town1":   game.RoleVillager,
+			"town2":   game.RoleVillager,
+		},
+		mafiaCount: 1,
+		consort:    true,
+		maxSeeds:   5000,
+	})
 }
 
-// consortBeginNight issues BeginNight and walks opening -> mafia narrate
-// -> mafia act, leaving the game on the mafia's act window.
-func consortBeginNight(t *testing.T, g *game.Game) {
-	t.Helper()
-	_, err := g.Apply(game.BeginNight{})
-	require.NoError(t, err)
-	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
-	advancePhase(t, g) // opening -> mafia narrate
-	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-	advancePhase(t, g) // mafia narrate -> mafia act
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
-		"consort fixture must leave the game on the mafia act window")
-}
-
-// runConsortNightToDay walks from the mafia act window through the whole
-// night (Mafia -> Consort -> Detective -> Doctor), submitting the given
-// per-role actions; any role missing from the map times out. It returns
-// every event emitted across all sub-phase transitions and the resolve
-// batch. The game ends on PhaseDayDiscussion (or PhaseEnded if the night
-// resolved a win).
+// runConsortNightToDay walks the night with a consort in the queue
+// (Mafia -> Consort -> Detective -> Doctor). See runNightToDay.
 func runConsortNightToDay(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) []game.Event {
 	t.Helper()
-	order := []game.Role{game.RoleMafia, game.RoleConsort, game.RoleDetective, game.RoleDoctor}
-	var all []game.Event
-	for _, r := range order {
-		if g.State().Phase() != game.PhaseNight {
-			return all
-		}
-		require.Equal(t, r, g.State().CurrentNightRole(),
-			"expected %s's turn but got %s", r, g.State().CurrentNightRole())
-		if target, ok := actions[r]; ok && g.State().CurrentNightSubPhase() == game.NightSubAct {
-			actor := livingHolder(t, g, r)
-			all = append(all, nightAction(t, g, actor, target)...)
-		}
-		all = append(all, walkRestOfTurn(t, g)...)
-	}
-	return all
-}
-
-// livingHolder returns the first living player holding role r.
-func livingHolder(t *testing.T, g *game.Game, r game.Role) game.PlayerID {
-	t.Helper()
-	for _, p := range g.State().Players() {
-		if p.Alive() && p.Role() == r {
-			return p.ID()
-		}
-	}
-	t.Fatalf("no living holder of role %s", r)
-	return ""
-}
-
-// lynch drives the current DayDiscussion to a lynch of target: it opens
-// voting, has every living player except the target vote for the target
-// (always a strict majority), and finalizes. Returns the FinalizeVotes
-// events. The game may end (town win) or return to DayDiscussion.
-func lynch(t *testing.T, g *game.Game, target game.PlayerID) []game.Event {
-	t.Helper()
-	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
-	_, err := g.Apply(game.OpenVoting{})
-	require.NoError(t, err)
-	for _, p := range g.State().Players() {
-		if !p.Alive() || p.ID() == target {
-			continue
-		}
-		_, err := g.Apply(game.DayVote{Voter: p.ID(), Target: target})
-		require.NoError(t, err)
-	}
-	evts, err := g.Apply(game.FinalizeVotes{})
-	require.NoError(t, err)
-	return evts
+	return runNightToDay(t, g,
+		[]game.Role{game.RoleMafia, game.RoleConsort, game.RoleDetective, game.RoleDoctor},
+		actions)
 }
 
 // --- roster + toggle ------------------------------------------------------
@@ -187,10 +95,7 @@ func TestConsort_SetConsortLockedAfterDeal(t *testing.T) {
 		GameID: "g1", MinPlayers: 6, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
 	})
 	require.NoError(t, err)
-	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e", "f"} {
-		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-		require.NoError(t, err)
-	}
+	addPlayers(t, g, "a", "b", "c", "d", "e", "f")
 	_, err = g.Apply(game.StartGame{})
 	require.NoError(t, err)
 
@@ -209,10 +114,7 @@ func TestConsort_RosterComposition(t *testing.T) {
 	require.NoError(t, err)
 	_, err = g.Apply(game.SetConsort{Enabled: true})
 	require.NoError(t, err)
-	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e", "f"} {
-		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-		require.NoError(t, err)
-	}
+	addPlayers(t, g, "a", "b", "c", "d", "e", "f")
 	start, err := g.Apply(game.StartGame{})
 	require.NoError(t, err)
 
@@ -269,9 +171,8 @@ func TestConsort_NightTurnOrderIsMafiaConsortDetectiveDoctor(t *testing.T) {
 // --- block resolution -----------------------------------------------------
 
 func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
-	// Mafia kills town1; consort blocks the doctor. The doctor's attempt
-	// to save town1 is REJECTED with ErrBlocked at submit time, so the
-	// kill lands and town1 dies.
+	// Mafia kills town1; consort blocks the doctor. The blocked doctor's
+	// turn is a phantom (no act window), so the kill lands and town1 dies.
 	g := fixedRosterWithConsort(t)
 
 	nightAction(t, g, "mafia1", "town1") // kill town1
@@ -280,19 +181,18 @@ func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
 	nightAction(t, g, "consort", "doc") // block the doctor
 	walkRestOfTurn(t, g)                // -> detective act
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	walkRestOfTurn(t, g) // detective idle -> doctor act
+	walkRestOfTurn(t, g) // detective idle -> doctor (blocked => phantom)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a blocked doctor's turn is phantom — no act window")
 
-	// The blocked doctor's submission is rejected outright.
+	// The blocked doctor has no act window; a bypassing submit is rejected.
 	_, err := g.Apply(game.NightAction{Actor: "doc", Target: "town1"})
-	require.ErrorIs(t, err, game.ErrBlocked,
-		"a blocked doctor cannot submit a save")
+	require.ErrorIs(t, err, game.ErrNotYourTurn,
+		"a blocked doctor has no act window to submit into")
 
 	// Walk to resolve: town1 dies (no save was ever recorded).
-	var evts []game.Event
-	for g.State().Phase() == game.PhaseNight {
-		evts = append(evts, walkRestOfTurn(t, g)...)
-	}
+	evts := finishNight(t, g)
 	killed, ok := findEvent[game.PlayerKilled](evts)
 	require.True(t, ok, "with the save blocked, the kill lands")
 	require.Equal(t, game.PlayerID("town1"), killed.PlayerID)
@@ -320,19 +220,18 @@ func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testin
 	nightAction(t, g, "consort", "doc") // the consort blocks her own savior
 	walkRestOfTurn(t, g)                // -> detective act
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	walkRestOfTurn(t, g) // detective idle -> doctor act
+	walkRestOfTurn(t, g) // detective idle -> doctor (blocked => phantom)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a blocked doctor's turn is phantom — no act window")
 
-	// The blocked doctor's attempt to save the consort is rejected.
+	// The blocked doctor has no act window; a bypassing submit is rejected.
 	_, err := g.Apply(game.NightAction{Actor: "doc", Target: "consort"})
-	require.ErrorIs(t, err, game.ErrBlocked,
-		"a blocked doctor cannot save anyone — not even the consort who blocked them")
+	require.ErrorIs(t, err, game.ErrNotYourTurn,
+		"a blocked doctor has no act window — not even to save the consort who blocked them")
 
 	// Walk to resolve: the consort dies (no save was ever recorded).
-	var evts []game.Event
-	for g.State().Phase() == game.PhaseNight {
-		evts = append(evts, walkRestOfTurn(t, g)...)
-	}
+	evts := finishNight(t, g)
 	killed, ok := findEvent[game.PlayerKilled](evts)
 	require.True(t, ok, "the consort's kill lands because she blocked her own savior")
 	require.Equal(t, game.PlayerID("consort"), killed.PlayerID)
@@ -363,11 +262,11 @@ func TestConsort_UnblockedDoctorSaveStillWorks(t *testing.T) {
 	require.False(t, killed, "the save cancels the kill")
 }
 
-func TestConsort_BlockNoticeArrivesAtTurnStart(t *testing.T) {
-	// The blocked town role learns they're blocked at the START of their
-	// own act window (not at submit or resolve), via a private Blocked
-	// event. Here the consort blocks the doctor: the Blocked event must
-	// ride the batch that opens the doctor's act window.
+func TestConsort_BlockNoticeArrivesAfterNarrate(t *testing.T) {
+	// The blocked town role learns they're blocked just AFTER their own
+	// narrate cue, via a private Blocked event. A blocked actor's turn is
+	// phantom (narrate -> ponder, no act window), and the notice rides the
+	// batch that opens the doctor's cannot-act ponder.
 	g := fixedRosterWithConsort(t)
 
 	// Mafia acts; consort blocks the doctor.
@@ -377,19 +276,26 @@ func TestConsort_BlockNoticeArrivesAtTurnStart(t *testing.T) {
 	nightAction(t, g, "consort", "doc")
 
 	// Walk consort -> detective. The detective is NOT blocked, so no
-	// Blocked event should appear when their window opens.
+	// Blocked event and a real act window opens.
 	detBatch := walkRestOfTurn(t, g)
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 	_, detBlocked := findEvent[game.Blocked](detBatch)
 	require.False(t, detBlocked, "the detective wasn't blocked — no notice")
 
-	// Walk detective -> doctor. NOW the Blocked event fires, at the
-	// doctor's act-window open, private to the doctor.
+	// Walk detective -> doctor. The doctor's turn is phantom (blocked):
+	// it narrates as phantom, then enters the cannot-act ponder with NO
+	// act window. The Blocked notice rides that batch, private to the
+	// doctor, AFTER the narrate cue.
 	docBatch := walkRestOfTurn(t, g)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a blocked doctor's turn is phantom — ponder substitutes for act")
+	narrate, ok := findNightSub(docBatch, game.NightSubNarrate)
+	require.True(t, ok)
+	require.True(t, narrate.Phantom, "the blocked doctor's turn narrates as phantom")
 	blk, ok := findEvent[game.Blocked](docBatch)
-	require.True(t, ok, "the blocked doctor is notified at the start of their turn")
+	require.True(t, ok, "the blocked doctor is notified after their narrate")
 	require.Equal(t, game.PlayerID("doc"), blk.PlayerID)
 	require.Equal(t, "player", blk.Visibility().Audience)
 	require.Equal(t, game.PlayerID("doc"), blk.Visibility().Player,
@@ -397,9 +303,10 @@ func TestConsort_BlockNoticeArrivesAtTurnStart(t *testing.T) {
 }
 
 func TestConsort_BlockedDetectiveCannotAct(t *testing.T) {
-	// A blocked detective is notified at turn start and, if a client
-	// bypasses the hidden picker and submits, the action is REJECTED with
-	// ErrBlocked (so they never receive a DetectiveResult).
+	// A blocked detective's turn is phantom (no act window): he's notified
+	// after his narrate, and a client that bypasses the hidden picker and
+	// submits is rejected with ErrNotYourTurn (there's no act window), so
+	// he never receives a DetectiveResult.
 	g := fixedRosterWithConsort(t)
 
 	nightAction(t, g, "mafia1", "town1")
@@ -407,16 +314,18 @@ func TestConsort_BlockedDetectiveCannotAct(t *testing.T) {
 	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole())
 	nightAction(t, g, "consort", "det")
 
-	// consort -> detective: the Blocked notice opens the detective's turn.
+	// consort -> detective: phantom turn, Blocked notice rides the batch.
 	detBatch := walkRestOfTurn(t, g)
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a blocked detective's turn is phantom — no act window")
 	blk, ok := findEvent[game.Blocked](detBatch)
-	require.True(t, ok, "blocked detective notified at turn start")
+	require.True(t, ok, "blocked detective notified after narrate")
 	require.Equal(t, game.PlayerID("det"), blk.PlayerID)
 
-	// Submit anyway: rejected, and no investigation result is produced.
+	// Submit anyway: rejected (no act window), and no result is produced.
 	evts, err := g.Apply(game.NightAction{Actor: "det", Target: "mafia1"})
-	require.ErrorIs(t, err, game.ErrBlocked, "a blocked detective cannot act")
+	require.ErrorIs(t, err, game.ErrNotYourTurn, "a blocked detective has no act window")
 	_, hasResult := findEvent[game.DetectiveResult](evts)
 	require.False(t, hasResult, "a blocked detective learns nothing")
 }
@@ -442,31 +351,34 @@ func TestConsort_BlockOnMafiaHasNoEffect(t *testing.T) {
 	}
 }
 
-func TestConsort_CurrentActorBlockedReflectsBlock(t *testing.T) {
-	// CurrentActorBlocked drives the room's shortened act window. It must
-	// report false for the mafia and the consort herself, false for an
-	// un-targeted town role, and true only once the blocked role's turn
-	// is in flight.
+func TestConsort_BlockedActorTurnIsPhantom(t *testing.T) {
+	// A blocked non-mafia actor's turn runs as a phantom (narrate ->
+	// ponder, no act window), which is what makes it timing- and
+	// audio-indistinguishable from a dead role. Unblocked roles (mafia,
+	// the consort herself, an un-targeted town role) still get a real act
+	// window.
 	g := fixedRosterWithConsort(t)
 
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-	require.False(t, g.State().CurrentActorBlocked(), "mafia is never reported blocked")
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"mafia is never blocked — real act window")
 
 	nightAction(t, g, "mafia1", "town1")
 	walkRestOfTurn(t, g) // -> consort act
 	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole())
-	require.False(t, g.State().CurrentActorBlocked(), "the consort herself is not blocked")
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"the consort herself is never blocked")
 
 	nightAction(t, g, "consort", "doc") // block the doctor
 	walkRestOfTurn(t, g)                // -> detective act
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	require.False(t, g.State().CurrentActorBlocked(), "detective wasn't the block target")
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"the detective wasn't the block target — real act window")
 
-	walkRestOfTurn(t, g) // -> doctor act
+	walkRestOfTurn(t, g) // -> doctor (blocked => phantom)
 	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
-	require.True(t, g.State().CurrentActorBlocked(),
-		"the blocked doctor's turn reports blocked (drives the short act window)")
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"the blocked doctor's turn is phantom — ponder substitutes for act")
 }
 
 // --- detective reads consort ----------------------------------------------
@@ -507,8 +419,8 @@ func TestConsort_DetectiveReadsConsortAsMafiaOnlyAfterPromotion(t *testing.T) {
 		"before promotion the consort is FactionConsort — reads as NOT mafia")
 
 	// Day 1 — lynch the only mafia, which promotes the consort.
-	lynchEvts := lynch(t, g, "mafia1")
-	promo, ok := findEvent[game.ConsortPromoted](lynchEvts)
+	promoEvts := finalizeLynch(t, g, "mafia1")
+	promo, ok := findEvent[game.ConsortPromoted](promoEvts)
 	require.True(t, ok, "lynching the last mafia promotes the living consort")
 	require.Equal(t, game.PlayerID("consort"), promo.PlayerID)
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
@@ -520,7 +432,7 @@ func TestConsort_DetectiveReadsConsortAsMafiaOnlyAfterPromotion(t *testing.T) {
 	// stays hidden. Order is Mafia -> Consort(phantom) -> Detective ->
 	// Doctor. Walk from the mafia act window through the phantom consort
 	// turn to the detective's and re-investigate her.
-	consortBeginNight(t, g) // BeginNight -> ... -> mafia act window
+	beginNightToMafiaAct(t, g) // BeginNight -> ... -> mafia act window
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 	walkRestOfTurn(t, g) // mafia idles -> consort phantom ponder
 	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole(),
@@ -554,13 +466,13 @@ func TestConsort_PromotedConsortKeepsPhantomTurn(t *testing.T) {
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
 	// Lynch the only original mafia -> promotes the living consort.
-	lynchEvts := lynch(t, g, "mafia1")
+	lynchEvts := finalizeLynch(t, g, "mafia1")
 	_, promoted := findEvent[game.ConsortPromoted](lynchEvts)
 	require.True(t, promoted, "lynching the last mafia promotes the consort")
 
 	// Night 2: from the mafia act window, walking the rest of the turn
 	// must land on the consort's PHANTOM turn (ponder, not act).
-	consortBeginNight(t, g)
+	beginNightToMafiaAct(t, g)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
 	evts := walkRestOfTurn(t, g) // mafia act -> consort phantom ponder
@@ -599,7 +511,7 @@ func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
 	runConsortNightToDay(t, g, nil) // everyone idle
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	evts := lynch(t, g, "mafia1")
+	evts := finalizeLynch(t, g, "mafia1")
 
 	l, ok := findEvent[game.PlayerLynched](evts)
 	require.True(t, ok)
@@ -635,7 +547,7 @@ func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
 	runConsortNightToDay(t, g, nil)
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	evts := lynch(t, g, "town1")
+	evts := finalizeLynch(t, g, "town1")
 	_, promoted := findEvent[game.ConsortPromoted](evts)
 	require.False(t, promoted, "no promotion while the cabal still lives")
 	for _, p := range g.State().Players() {
@@ -661,12 +573,9 @@ func TestConsort_CountsTowardMafiaParityWin(t *testing.T) {
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
 	// Skip the day with no lynch, then start the next night.
-	_, err := g.Apply(game.OpenVoting{})
-	require.NoError(t, err)
-	_, err = g.Apply(game.FinalizeVotes{}) // empty tally -> NoLynch
-	require.NoError(t, err)
+	noLynchDay(t, g) // empty tally -> NoLynch
 	require.True(t, g.State().DayLynchResolved())
-	consortBeginNight(t, g)
+	beginNightToMafiaAct(t, g)
 
 	// Night 2: mafia kills town2. Living after: mafia1, consort, det,
 	// doc (mafia-aligned 2 == town 2 -> mafia wins, consort counted in).

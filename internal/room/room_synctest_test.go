@@ -103,9 +103,11 @@ func TestRoomSynctest_NightAutoAdvancesWithRealDurations(t *testing.T) {
 // TestRoomSynctest_ConsortBlocksDoctor drives the full consort-blocks-
 // doctor night on the REAL durations. Because the fake clock never
 // advances while the test goroutine is active, it asserts on EXACT
-// act-window deadlines (rather than the tolerances a wall-clock test
-// would need) and reads final game state directly after synctest.Wait()
-// instead of inferring it from events.
+// deadlines (rather than the tolerances a wall-clock test would need)
+// and reads final game state directly after synctest.Wait() instead of
+// inferring it from events. The blocked doctor gets NO act window: his
+// turn is phantom (narrate -> ponder), timing-indistinguishable from a
+// dead role, with the private Blocked notice arriving after his narrate.
 func TestRoomSynctest_ConsortBlocksDoctor(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r, err := newRoom(context.Background(), "SYNC", Config{
@@ -167,20 +169,27 @@ func TestRoomSynctest_ConsortBlocksDoctor(t *testing.T) {
 		require.Equal(t, game.RoleDetective, detAct.Role)
 		submitNightAction(t, r, detSub, mafiaID)
 
-		// Doctor turn: blocked => exact SHORTENED act window.
-		docAct, _ := awaitActWindow(t, watcher)
-		require.Equal(t, game.RoleDoctor, docAct.Role)
-		require.Equal(t, DefaultBlockedActionDuration.Milliseconds(),
-			docAct.Deadline-time.Now().UnixMilli(),
-			"blocked actor gets the exact shortened act window")
+		// Doctor turn: blocked => NO act window. The turn is a phantom
+		// cannot-act ponder, sized by the randomized phantom range — never
+		// the 60s act window.
+		docNarrate, _ := awaitNightSub(t, watcher, game.RoleDoctor, game.NightSubNarrate)
+		require.True(t, docNarrate.Phantom, "a blocked doctor's turn is phantom (no act window)")
+		docPonder, obs := awaitNightSub(t, watcher, game.RoleDoctor, game.NightSubPonder)
+		remaining := docPonder.Deadline - obs.UnixMilli()
+		require.GreaterOrEqual(t, remaining, DefaultPhantomPonderMin.Milliseconds(),
+			"a blocked doctor's ponder uses the randomized phantom beat")
+		require.LessOrEqual(t, remaining, DefaultPhantomPonderMax.Milliseconds(),
+			"a blocked doctor's ponder uses the randomized phantom beat")
 
-		// Private Blocked notice at the doctor's turn start.
+		// Private Blocked notice arrives after the doctor's narrate (at
+		// the cannot-act ponder).
 		blk := awaitEvent[game.Blocked](t, doctorSub, time.Minute)
 		require.Equal(t, doctorID, blk.PlayerID)
 
-		// Blocked save is rejected with the blocked error code.
+		// A client that bypasses the hidden picker is rejected: there's no
+		// act window to submit into.
 		submitNightAction(t, r, doctorSub, victimID)
-		require.Equal(t, wire.ErrCodeBlocked, awaitError(t, doctorSub, time.Minute).Code)
+		require.Equal(t, wire.ErrCodeNotYourTurn, awaitError(t, doctorSub, time.Minute).Code)
 
 		// The shortened window times out and the night resolves: kill lands.
 		killed := awaitEvent[game.PlayerKilled](t, watcher, time.Minute)

@@ -87,6 +87,17 @@ type ConsortChanged struct {
 func (ConsortChanged) isEvent()               {}
 func (ConsortChanged) Visibility() Visibility { return Public() }
 
+// VigilanteChanged records a host-driven toggle of the optional
+// Vigilante role during PhaseLobby. Public so every observer sees the
+// configured composition update in real time (it does NOT reveal who, if
+// anyone, will be dealt the role — that stays secret until GameEnded).
+type VigilanteChanged struct {
+	Enabled bool
+}
+
+func (VigilanteChanged) isEvent()               {}
+func (VigilanteChanged) Visibility() Visibility { return Public() }
+
 // PlayerJoined records a successful lobby join.
 type PlayerJoined struct {
 	PlayerID PlayerID

@@ -271,10 +271,7 @@ func TestAddPlayer(t *testing.T) {
 		// would require re-dealing the whole roster and leaking
 		// information to existing players (see applyAddPlayer doc).
 		g := newWithCreated(t)
-		for _, n := range []string{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		// Game is still in PhaseLobby here — verify the precondition
@@ -338,10 +335,7 @@ func TestSetMafiaCount(t *testing.T) {
 		// to prevent silent no-ops. Same predicate that blocks
 		// AddPlayer after StartGame.
 		g := newGame(t)
-		for _, n := range []string{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		// Game is still in PhaseLobby here — verify the
@@ -362,10 +356,7 @@ func TestSetMafiaCount(t *testing.T) {
 		// reject SetMafiaCount once the game has actually
 		// progressed past lobby.
 		g := newGame(t)
-		for _, n := range []string{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
@@ -377,21 +368,8 @@ func TestSetMafiaCount(t *testing.T) {
 }
 
 func TestStartGame(t *testing.T) {
-	fillLobby := func(t *testing.T, seed int64, n int) *game.Game {
-		t.Helper()
-		g := game.New()
-		_, err := g.Apply(standardCreate("g1", seed))
-		require.NoError(t, err)
-		for i := range n {
-			pid := game.PlayerID(string(rune('a' + i)))
-			_, err := g.Apply(game.AddPlayer{PlayerID: pid, Name: string(pid)})
-			require.NoError(t, err)
-		}
-		return g
-	}
-
 	t.Run("happy path: roles dealt, phase stays in lobby", func(t *testing.T) {
-		g := fillLobby(t, 42, 5)
+		g := fillLobbyN(t, 42, 5)
 		evts, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 
@@ -432,7 +410,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("BeginNight after StartGame transitions to PhaseNight", func(t *testing.T) {
-		g := fillLobby(t, 42, 5)
+		g := fillLobbyN(t, 42, 5)
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 
@@ -456,7 +434,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("BeginNight before StartGame is rejected", func(t *testing.T) {
-		g := fillLobby(t, 42, 5)
+		g := fillLobbyN(t, 42, 5)
 		_, err := g.Apply(game.BeginNight{})
 		require.ErrorIs(t, err, game.ErrWrongPhase,
 			"BeginNight in lobby requires roles to be dealt first")
@@ -487,7 +465,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("RoleAssigned events are private to each player", func(t *testing.T) {
-		g := fillLobby(t, 1, 5)
+		g := fillLobbyN(t, 1, 5)
 		evts, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		for _, e := range evts {
@@ -504,11 +482,11 @@ func TestStartGame(t *testing.T) {
 
 	t.Run("deterministic given seed", func(t *testing.T) {
 		const seed int64 = 12345
-		first := fillLobby(t, seed, 5)
+		first := fillLobbyN(t, seed, 5)
 		_, err := first.Apply(game.StartGame{})
 		require.NoError(t, err)
 
-		second := fillLobby(t, seed, 5)
+		second := fillLobbyN(t, seed, 5)
 		_, err = second.Apply(game.StartGame{})
 		require.NoError(t, err)
 
@@ -526,8 +504,8 @@ func TestStartGame(t *testing.T) {
 	t.Run("different seeds usually differ", func(t *testing.T) {
 		// Not a hard guarantee for any one pair, but extremely unlikely
 		// to coincide across 5! permutations for the seeds we pick.
-		a := fillLobby(t, 1, 5)
-		b := fillLobby(t, 999, 5)
+		a := fillLobbyN(t, 1, 5)
+		b := fillLobbyN(t, 999, 5)
 		_, _ = a.Apply(game.StartGame{})
 		_, _ = b.Apply(game.StartGame{})
 
@@ -543,7 +521,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("rejects when player count below MinPlayers", func(t *testing.T) {
-		g := fillLobby(t, 0, 4) // need 5
+		g := fillLobbyN(t, 0, 4) // need 5
 		_, err := g.Apply(game.StartGame{})
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
@@ -555,16 +533,13 @@ func TestStartGame(t *testing.T) {
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 3,
 		})
 		require.NoError(t, err)
-		for _, n := range []string{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: game.PlayerID(n), Name: n})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
 	t.Run("rejects StartGame after roles dealt (idempotency guard)", func(t *testing.T) {
-		g := fillLobby(t, 1, 5)
+		g := fillLobbyN(t, 1, 5)
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 
@@ -575,7 +550,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("rejects StartGame in PhaseNight", func(t *testing.T) {
-		g := fillLobby(t, 1, 5)
+		g := fillLobbyN(t, 1, 5)
 		_, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})

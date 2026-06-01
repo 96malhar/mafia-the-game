@@ -30,55 +30,18 @@ import (
 // of "real" mafia action.
 func fixedRoster(t *testing.T) *game.Game {
 	t.Helper()
-	ids := []game.PlayerID{"mafia1", "det", "doc", "town1", "town2"}
-	wanted := map[game.PlayerID]game.Role{
-		"mafia1": game.RoleMafia,
-		"det":    game.RoleDetective,
-		"doc":    game.RoleDoctor,
-		"town1":  game.RoleVillager,
-		"town2":  game.RoleVillager,
-	}
-
-	for seed := range int64(1000) {
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: seed,
-		})
-		require.NoError(t, err)
-		for _, id := range ids {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-
-		match := true
-		for _, p := range g.State().Players() {
-			if wanted[p.ID()] != p.Role() {
-				match = false
-				break
-			}
-		}
-		if !match {
-			continue
-		}
-		_, err = g.Apply(game.BeginNight{})
-		require.NoError(t, err)
-		// BeginNight emits NightOpeningStarted; advance through opening
-		// and the first role's narrate so callers land on mafia's act.
-		require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
-		_, err = g.Apply(game.AdvancePhase{}) // opening → mafia narrate
-		require.NoError(t, err)
-		require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-		require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
-		_, err = g.Apply(game.AdvancePhase{}) // mafia narrate → act
-		require.NoError(t, err)
-		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
-			"fixedRoster must leave the game in mafia's act window")
-		return g
-	}
-	t.Fatalf("could not find a seed yielding the fixed role assignment in 1000 attempts")
-	return nil
+	return fixedRosterMatching(t, rosterDeal{
+		ids: []game.PlayerID{"mafia1", "det", "doc", "town1", "town2"},
+		wanted: map[game.PlayerID]game.Role{
+			"mafia1": game.RoleMafia,
+			"det":    game.RoleDetective,
+			"doc":    game.RoleDoctor,
+			"town1":  game.RoleVillager,
+			"town2":  game.RoleVillager,
+		},
+		mafiaCount: 1,
+		maxSeeds:   1000,
+	})
 }
 
 // nightAction submits one night action for the role that is currently
@@ -247,36 +210,18 @@ func toDayVote(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) 
 // caller can keep using nightAction / playNight directly.
 func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID) {
 	t.Helper()
-	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
-	_, err := g.Apply(game.OpenVoting{})
-	require.NoError(t, err)
-	for _, p := range g.State().Players() {
-		if !p.Alive() || p.ID() == lynchTarget {
-			continue
-		}
-		_, err := g.Apply(game.DayVote{Voter: p.ID(), Target: lynchTarget})
-		require.NoError(t, err)
-	}
-	_, err = g.Apply(game.FinalizeVotes{})
-	require.NoError(t, err)
-	// FinalizeVotes either ends the game or returns to DayDiscussion
+	// finalizeLynch either ends the game or returns to DayDiscussion
 	// with lynchResolved=true.
+	finalizeLynch(t, g, lynchTarget)
 	if g.State().Phase() == game.PhaseEnded {
 		return
 	}
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 	require.True(t, g.State().DayLynchResolved())
-	_, err = g.Apply(game.BeginNight{})
-	require.NoError(t, err)
-	require.Equal(t, game.PhaseNight, g.State().Phase())
-	// BeginNight → opening; walk through opening + mafia narrate so
+	// BeginNight → opening; walk through opening + mafia narrate so the
 	// caller lands on mafia act, matching fixedRoster's postcondition.
-	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
-	advancePhase(t, g) // opening → mafia narrate
-	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
-	advancePhase(t, g) // mafia narrate → mafia act (or ponder if phantom — never)
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
-		"toNextNight: expected mafia's act window (mafia phantom is unreachable by win conditions)")
+	// (Mafia phantom is unreachable: win conditions end the game first.)
+	beginNightToMafiaAct(t, g)
 }
 
 // --- Night opening + turn-order plumbing ---------------------------------
@@ -545,12 +490,6 @@ func TestNightAction_Validation(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrWrongPhase)
 	})
 
-	t.Run("villager has no night action", func(t *testing.T) {
-		g := fixedRoster(t)
-		_, err := g.Apply(game.NightAction{Actor: "town1", Target: "town2"})
-		require.ErrorIs(t, err, game.ErrNotYourAction)
-	})
-
 	t.Run("unknown actor rejected", func(t *testing.T) {
 		g := fixedRoster(t)
 		_, err := g.Apply(game.NightAction{Actor: "ghost", Target: "town1"})
@@ -573,10 +512,7 @@ func TestNightAction_Validation(t *testing.T) {
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
 		})
 		require.NoError(t, err)
-		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
@@ -607,101 +543,6 @@ func TestNightAction_Validation(t *testing.T) {
 		g := fixedRoster(t)
 		_, err := g.Apply(game.NightAction{Actor: "mafia1", Target: "ghost"})
 		require.ErrorIs(t, err, game.ErrUnknownPlayer)
-	})
-
-	t.Run("mafia cannot target mafia", func(t *testing.T) {
-		// Two-mafia game so we have two mafia players to test.
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 7,
-		})
-		require.NoError(t, err)
-		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-		_, err = g.Apply(game.BeginNight{})
-		require.NoError(t, err)
-		advanceToMafiaAct(t, g)
-
-		var mafias []game.PlayerID
-		for _, p := range g.State().Players() {
-			if p.Role() == game.RoleMafia {
-				mafias = append(mafias, p.ID())
-			}
-		}
-		require.Len(t, mafias, 2)
-		_, err = g.Apply(game.NightAction{Actor: mafias[0], Target: mafias[1]})
-		require.ErrorIs(t, err, game.ErrNotYourAction)
-	})
-
-	t.Run("mafia faction-collective: second mafia rejected as wrong turn", func(t *testing.T) {
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 7,
-		})
-		require.NoError(t, err)
-		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-		_, err = g.Apply(game.BeginNight{})
-		require.NoError(t, err)
-		advanceToMafiaAct(t, g)
-
-		var mafias []game.PlayerID
-		var townTarget game.PlayerID
-		for _, p := range g.State().Players() {
-			switch p.Role() {
-			case game.RoleMafia:
-				mafias = append(mafias, p.ID())
-			case game.RoleVillager:
-				if townTarget == "" {
-					townTarget = p.ID()
-				}
-			}
-		}
-		require.Len(t, mafias, 2)
-		require.NotEmpty(t, townTarget)
-
-		_, err = g.Apply(game.NightAction{Actor: mafias[0], Target: townTarget})
-		require.NoError(t, err)
-		// First mafia submission took us to ponder; second mafia
-		// submission must now fail with ErrNotYourTurn (the sub-phase
-		// is no longer act).
-		_, err = g.Apply(game.NightAction{Actor: mafias[1], Target: townTarget})
-		require.ErrorIs(t, err, game.ErrNotYourTurn)
-	})
-
-	t.Run("detective cannot self-investigate", func(t *testing.T) {
-		g := fixedRoster(t)
-		// Walk to detective's act window.
-		nightAction(t, g, "mafia1", "town1")
-		walkRestOfTurn(t, g)
-		require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
-
-		_, err := g.Apply(game.NightAction{Actor: "det", Target: "det"})
-		require.ErrorIs(t, err, game.ErrSelfTarget)
-	})
-
-	t.Run("doctor can self-save on any night including the first", func(t *testing.T) {
-		g := fixedRoster(t)
-		// Walk to doctor's act window: submit mafia, walk; submit
-		// det, walk.
-		nightAction(t, g, "mafia1", "town1")
-		walkRestOfTurn(t, g)
-		nightAction(t, g, "det", "mafia1")
-		walkRestOfTurn(t, g)
-		require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
-		require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
-
-		_, err := g.Apply(game.NightAction{Actor: "doc", Target: "doc"})
-		require.NoError(t, err, "doctor self-save should be legal on night 1")
 	})
 
 	t.Run("re-submission by same actor is rejected as wrong turn", func(t *testing.T) {
@@ -760,94 +601,9 @@ func TestNightAction_Validation(t *testing.T) {
 	})
 }
 
-// advanceToMafiaAct walks the engine from "just entered PhaseNight"
-// (i.e. just after BeginNight; sub-phase = opening) to the mafia's
-// act window. Used by tests that build their own roster instead of
-// going through fixedRoster.
-func advanceToMafiaAct(t *testing.T, g *game.Game) {
-	t.Helper()
-	require.Equal(t, game.NightSubOpening, g.State().CurrentNightSubPhase())
-	advancePhase(t, g) // opening → mafia narrate
-	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
-	advancePhase(t, g) // mafia narrate → mafia act
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
-}
-
-// --- Night resolution -----------------------------------------------------
-
-func TestNightResolution(t *testing.T) {
-	t.Run("mafia kill takes effect when not saved", func(t *testing.T) {
-		g := fixedRoster(t)
-		evts := playNight(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:     "town1",
-			game.RoleDetective: "mafia1",
-			game.RoleDoctor:    "town2", // saves the wrong person
-		})
-
-		killed, ok := findEvent[game.PlayerKilled](evts)
-		require.True(t, ok)
-		require.Equal(t, game.PlayerID("town1"), killed.PlayerID)
-
-		for _, p := range g.State().Players() {
-			if p.ID() == "town1" {
-				require.False(t, p.Alive())
-			}
-		}
-	})
-
-	t.Run("doctor save cancels kill and emits private PlayerSaved", func(t *testing.T) {
-		g := fixedRoster(t)
-		evts := playNight(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:  "town1",
-			game.RoleDoctor: "town1",
-		})
-
-		_, killed := findEvent[game.PlayerKilled](evts)
-		require.False(t, killed, "no PlayerKilled when saved")
-
-		saved, ok := findEvent[game.PlayerSaved](evts)
-		require.True(t, ok)
-		require.Equal(t, game.PlayerID("town1"), saved.PlayerID)
-		require.Equal(t, game.PlayerID("doc"), saved.Doctor)
-		require.Equal(t, "player", saved.Visibility().Audience)
-		require.Equal(t, game.PlayerID("doc"), saved.Visibility().Player)
-
-		for _, p := range g.State().Players() {
-			if p.ID() == "town1" {
-				require.True(t, p.Alive(), "saved player should still be alive")
-			}
-		}
-	})
-
-	t.Run("detective result is private and correct", func(t *testing.T) {
-		g := fixedRoster(t)
-		evts := playNight(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:     "town2",
-			game.RoleDetective: "mafia1",
-		})
-		res, ok := findEvent[game.DetectiveResult](evts)
-		require.True(t, ok)
-		require.Equal(t, game.PlayerID("det"), res.Detective)
-		require.Equal(t, game.PlayerID("mafia1"), res.Target)
-		require.True(t, res.IsMafia)
-		require.Equal(t, "player", res.Visibility().Audience)
-		require.Equal(t, game.PlayerID("det"), res.Visibility().Player)
-	})
-}
-
 // --- DayVote state table -------------------------------------------------
 
 func TestDayVote_Validation(t *testing.T) {
-	intoDayVote := func(t *testing.T) *game.Game {
-		t.Helper()
-		g := fixedRoster(t)
-		toDayVote(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:  "town1",
-			game.RoleDoctor: "town1", // save
-		})
-		return g
-	}
-
 	t.Run("voter unknown", func(t *testing.T) {
 		g := intoDayVote(t)
 		_, err := g.Apply(game.DayVote{Voter: "ghost", Target: "mafia1"})
@@ -886,16 +642,6 @@ func TestDayVote_Validation(t *testing.T) {
 }
 
 func TestDayVote_StateTable(t *testing.T) {
-	intoDayVote := func(t *testing.T) *game.Game {
-		t.Helper()
-		g := fixedRoster(t)
-		toDayVote(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:  "town1",
-			game.RoleDoctor: "town1", // save -> nobody dies
-		})
-		return g
-	}
-
 	t.Run("first vote emits VoteCast", func(t *testing.T) {
 		g := intoDayVote(t)
 		evts, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
@@ -987,16 +733,6 @@ func TestDayVote_StateTable(t *testing.T) {
 // --- Vote resolution (host-driven) ---------------------------------------
 
 func TestVoteResolution(t *testing.T) {
-	intoDayVote := func(t *testing.T) *game.Game {
-		t.Helper()
-		g := fixedRoster(t)
-		toDayVote(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:  "town1",
-			game.RoleDoctor: "town1", // save -> nobody dies
-		})
-		return g
-	}
-
 	// Roster has 5 living players entering the vote (doctor saved the
 	// mafia's target), so a strict majority is 3 votes (3*2 > 5).
 
@@ -1127,16 +863,6 @@ func TestVoteResolution(t *testing.T) {
 // --- Reveal-then-finalize vote flow --------------------------------------
 
 func TestRevealVotes(t *testing.T) {
-	intoDayVote := func(t *testing.T) *game.Game {
-		t.Helper()
-		g := fixedRoster(t)
-		toDayVote(t, g, map[game.Role]game.PlayerID{
-			game.RoleMafia:  "town1",
-			game.RoleDoctor: "town1", // save -> nobody dies
-		})
-		return g
-	}
-
 	castDecisive := func(t *testing.T, g *game.Game) {
 		t.Helper()
 		_, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
@@ -1303,10 +1029,7 @@ func TestAdvancePhase_Guards(t *testing.T) {
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
 		})
 		require.NoError(t, err)
-		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
@@ -1360,10 +1083,7 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
 		})
 		require.NoError(t, err)
-		for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-			_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-			require.NoError(t, err)
-		}
+		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
 		require.NoError(t, err)
 		_, err = g.Apply(game.BeginNight{})
@@ -1447,44 +1167,4 @@ func TestWinConditions(t *testing.T) {
 		_, ended := findEvent[game.GameEnded](evts)
 		require.False(t, ended, "with mafia=1 town=3 alive, no win yet")
 	})
-}
-
-// TestNight_MafiaTurnNeverPhantom pins the invariant documented on
-// beginNextNightTurn: the mafia's night turn is never phantom. The
-// reasoning is that checkWin ends the game the instant living mafia
-// reaches zero, so the engine never begins a night with no living
-// mafia. This guards that reasoning against a future change to the win
-// conditions that would silently let a phantom mafia turn slip through
-// (narrating "Mafia, wake up" to a room with no mafia to act).
-func TestNight_MafiaTurnNeverPhantom(t *testing.T) {
-	g := game.New()
-	_, err := g.Apply(game.CreateGame{
-		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 7,
-	})
-	require.NoError(t, err)
-	for _, id := range []game.PlayerID{"a", "b", "c", "d", "e"} {
-		_, err := g.Apply(game.AddPlayer{PlayerID: id, Name: string(id)})
-		require.NoError(t, err)
-	}
-	_, err = g.Apply(game.StartGame{})
-	require.NoError(t, err)
-	_, err = g.Apply(game.BeginNight{})
-	require.NoError(t, err)
-
-	// Opening → first role's narrate. Mafia is always first in the
-	// canonical queue, and the game just started, so a mafia is alive.
-	evts := advancePhase(t, g)
-	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
-
-	nn, ok := findNightSub(evts, game.NightSubNarrate)
-	require.True(t, ok, "opening should advance into the mafia's narrate")
-	require.Equal(t, game.RoleMafia, nn.Role)
-	require.False(t, nn.Phantom,
-		"mafia narrate must never be phantom: a live game always has a living mafia")
-	require.True(t, g.State().HasLivingRole(game.RoleMafia))
-
-	// And the act window opens (not the phantom-substitute ponder).
-	advancePhase(t, g) // narrate → act
-	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
-		"living mafia gets a real act window, not a phantom ponder")
 }

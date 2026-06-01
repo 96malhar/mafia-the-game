@@ -1012,3 +1012,37 @@ func TestRoom_HostSetConsortBroadcastsConsortChanged(t *testing.T) {
 		require.True(t, sawEnabled, "every subscriber should see ConsortChanged{Enabled:true}")
 	}
 }
+
+// --- SetVigilante host gating --------------------------------------------
+
+func TestRoom_SetVigilanteIsClassifiedHostOnly(t *testing.T) {
+	// Unit guard: the vigilante toggle must be on the host-only list so a
+	// non-host can't reconfigure the roster.
+	require.True(t, isHostOnly(game.SetVigilante{Enabled: true}),
+		"SetVigilante must be host-only")
+}
+
+func TestRoom_HostSetVigilanteBroadcastsVigilanteChanged(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")
+	other, _ := connect(t, r, "Player2")
+	_ = drain(host, 50*time.Millisecond)
+	_ = drain(other, 50*time.Millisecond)
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: host, Cmd: game.SetVigilante{Enabled: true},
+	}))
+
+	// Both the host and the other player receive the public toggle.
+	for _, sub := range []*Subscriber{host, other} {
+		var sawEnabled bool
+		for _, msg := range drain(sub, 200*time.Millisecond) {
+			if ev, ok := msg.(OutEvent); ok {
+				if vc, isVC := ev.Event.(game.VigilanteChanged); isVC {
+					sawEnabled = vc.Enabled
+				}
+			}
+		}
+		require.True(t, sawEnabled, "every subscriber should see VigilanteChanged{Enabled:true}")
+	}
+}

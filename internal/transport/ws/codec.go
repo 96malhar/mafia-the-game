@@ -37,6 +37,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.ConsortChanged:
 		tag = wire.EventConsortChanged
 		data = kv{"enabled": v.Enabled}
+	case game.VigilanteChanged:
+		tag = wire.EventVigilanteChanged
+		data = kv{"enabled": v.Enabled}
 	case game.PlayerJoined:
 		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
@@ -66,25 +69,36 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 		// tag and data shape so existing clients are unaffected by the
 		// engine-side collapse: opening carries no role; narrate and
 		// ponder carry the phantom flag; the rest carry role/day/deadline.
+		//
+		// roleSub builds the common role/day/deadline block; withPhantom
+		// adds the phantom flag for the two sub-phases (narrate, ponder)
+		// that vary by whether the role's holder is alive.
+		roleSub := func(withPhantom bool) kv {
+			d := kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+			if withPhantom {
+				d["phantom"] = v.Phantom
+			}
+			return d
+		}
 		switch v.Sub {
 		case game.NightSubOpening:
 			tag = wire.EventNightOpeningStarted
 			data = kv{"day": v.Day, "deadline": v.Deadline}
 		case game.NightSubNarrate:
 			tag = wire.EventNightNarrationStarted
-			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+			data = roleSub(true)
 		case game.NightSubAct:
 			tag = wire.EventNightActionStarted
-			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+			data = roleSub(false)
 		case game.NightSubPonder:
 			tag = wire.EventNightPonderStarted
-			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline, "phantom": v.Phantom}
+			data = roleSub(true)
 		case game.NightSubSleep:
 			tag = wire.EventNightSleepStarted
-			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+			data = roleSub(false)
 		case game.NightSubSettle:
 			tag = wire.EventNightSettleStarted
-			data = kv{"role": string(v.Role), "day": v.Day, "deadline": v.Deadline}
+			data = roleSub(false)
 		default:
 			return eventEnvelope{}, fmt.Errorf("ws: unknown night sub-phase %q", v.Sub)
 		}
@@ -111,7 +125,7 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
 	case game.VotesRevealed:
 		tag = wire.EventVotesRevealed
-		data = kv{"day": v.Day, "tally": voteMapToStrings(v.Tally)}
+		data = kv{"day": v.Day, "tally": stringKeyValMap(v.Tally)}
 	case game.VoteCleared:
 		tag = wire.EventVoteCleared
 		data = kv{"day": v.Day}
@@ -123,7 +137,7 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 		data = kv{"day": v.Day}
 	case game.GameEnded:
 		tag = wire.EventGameEnded
-		data = kv{"winner": string(v.Winner), "finalRoles": rolesMapToStrings(v.FinalRoles)}
+		data = kv{"winner": string(v.Winner), "finalRoles": stringKeyValMap(v.FinalRoles)}
 	default:
 		return eventEnvelope{}, fmt.Errorf("ws: unknown event type %T", e)
 	}
@@ -221,63 +235,47 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		return "", nil, badEnvelopef("missing type")
 	}
 
-	switch clientMsgType(env.Type) {
+	switch tag := clientMsgType(env.Type); tag {
 	case clientMsgJoin:
-		var d clientJoinData
-		if err := unmarshalData(env.Data, &d); err != nil {
-			return "", nil, err
-		}
-		return clientMsgJoin, d, nil
-
+		return decodePayload[clientJoinData](tag, env.Data)
 	case clientMsgNightAction:
-		var d clientNightActionData
-		if err := unmarshalData(env.Data, &d); err != nil {
-			return "", nil, err
-		}
-		return clientMsgNightAction, d, nil
-
+		return decodePayload[clientNightActionData](tag, env.Data)
 	case clientMsgVote:
-		var d clientVoteData
-		if err := unmarshalData(env.Data, &d); err != nil {
-			return "", nil, err
-		}
-		return clientMsgVote, d, nil
-
+		return decodePayload[clientVoteData](tag, env.Data)
 	case clientMsgSetMafia:
-		var d clientSetMafiaData
-		if err := unmarshalData(env.Data, &d); err != nil {
-			return "", nil, err
-		}
-		return clientMsgSetMafia, d, nil
-
+		return decodePayload[clientSetMafiaData](tag, env.Data)
 	case clientMsgSetConsort:
-		var d clientSetConsortData
-		if err := unmarshalData(env.Data, &d); err != nil {
-			return "", nil, err
-		}
-		return clientMsgSetConsort, d, nil
+		return decodePayload[clientSetConsortData](tag, env.Data)
+	case clientMsgSetVigilante:
+		return decodePayload[clientSetVigilanteData](tag, env.Data)
 
-	case clientMsgStartGame:
-		return clientMsgStartGame, struct{}{}, nil
-
-	case clientMsgBeginNight:
-		return clientMsgBeginNight, struct{}{}, nil
-
-	case clientMsgOpenVoting:
-		return clientMsgOpenVoting, struct{}{}, nil
-
-	case clientMsgRevealVotes:
-		return clientMsgRevealVotes, struct{}{}, nil
-
-	case clientMsgClearVotes:
-		return clientMsgClearVotes, struct{}{}, nil
-
-	case clientMsgFinalizeVotes:
-		return clientMsgFinalizeVotes, struct{}{}, nil
+	// Payload-less commands: identity/timing fields are filled in
+	// server-side, so the data block (if any) is ignored. NightPass
+	// carries no target (it's "decline to act"), so it joins this group
+	// — Actor is rewritten server-side like every other player command.
+	case clientMsgStartGame,
+		clientMsgBeginNight,
+		clientMsgOpenVoting,
+		clientMsgRevealVotes,
+		clientMsgClearVotes,
+		clientMsgFinalizeVotes,
+		clientMsgNightPass:
+		return tag, struct{}{}, nil
 
 	default:
 		return "", nil, badEnvelopef("unknown type %q", env.Type)
 	}
+}
+
+// decodePayload unmarshals a client frame's data block into T and returns
+// it alongside the tag. It collapses the per-message decode boilerplate
+// (declare T, unmarshalData, return) into one generic call.
+func decodePayload[T any](tag clientMsgType, raw json.RawMessage) (clientMsgType, any, error) {
+	var d T
+	if err := unmarshalData(raw, &d); err != nil {
+		return "", nil, err
+	}
+	return tag, d, nil
 }
 
 // unmarshalData is a small helper that treats a missing/null `data`
@@ -304,6 +302,8 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgNightAction:
 		d := data.(clientNightActionData)
 		return game.NightAction{Target: game.PlayerID(d.Target)}, true
+	case clientMsgNightPass:
+		return game.NightPass{}, true
 	case clientMsgVote:
 		d := data.(clientVoteData)
 		return game.DayVote{Target: game.PlayerID(d.Target)}, true
@@ -313,6 +313,9 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgSetConsort:
 		d := data.(clientSetConsortData)
 		return game.SetConsort{Enabled: d.Enabled}, true
+	case clientMsgSetVigilante:
+		d := data.(clientSetVigilanteData)
+		return game.SetVigilante{Enabled: d.Enabled}, true
 	case clientMsgStartGame:
 		return game.StartGame{}, true
 	case clientMsgBeginNight:
@@ -344,18 +347,11 @@ func playerIDsToStrings(ids []game.PlayerID) []string {
 	return out
 }
 
-func rolesMapToStrings(m map[game.PlayerID]game.Role) map[string]string {
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[string(k)] = string(v)
-	}
-	return out
-}
-
-// voteMapToStrings flattens a voter→target PlayerID map into a
-// string→string map for the wire (used by the VotesRevealed event). A
-// nil map encodes as an empty object so the client always gets a {}.
-func voteMapToStrings(m map[game.PlayerID]game.PlayerID) map[string]string {
+// stringKeyValMap flattens a map with string-backed keys and values into
+// a plain string→string map for the wire (used by the RoleAssigned final
+// roles and the VotesRevealed tally). A nil map encodes as an empty
+// object so the client always gets a {} rather than null.
+func stringKeyValMap[K ~string, V ~string](m map[K]V) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		out[string(k)] = string(v)

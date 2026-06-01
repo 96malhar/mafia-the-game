@@ -16,14 +16,8 @@ package game
 //   - When target != "": target must exist and be alive, and must not
 //     equal the voter (self-vote forbidden, ErrSelfTarget).
 func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseDayVote {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseDayVote); err != nil {
+		return nil, err
 	}
 	// Once the host reveals the tally, voting is locked: the revealed
 	// map is the record the room is acting on, so late edits (which
@@ -33,12 +27,8 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 		return nil, ErrWrongPhase
 	}
 
-	voter, ok := g.state.findPlayer(c.Voter)
-	if !ok {
-		return nil, ErrUnknownPlayer
-	}
-	if !voter.alive {
-		return nil, ErrPlayerDead
+	if _, err := g.state.requireLivingPlayer(c.Voter); err != nil {
+		return nil, err
 	}
 
 	prior, hadPrior := g.state.votes[c.Voter]
@@ -56,12 +46,8 @@ func (g *Game) applyDayVote(c DayVote) ([]Event, error) {
 	if c.Voter == c.Target {
 		return nil, ErrSelfTarget
 	}
-	target, ok := g.state.findPlayer(c.Target)
-	if !ok {
-		return nil, ErrUnknownPlayer
-	}
-	if !target.alive {
-		return nil, ErrPlayerDead
+	if _, err := g.state.requireLivingPlayer(c.Target); err != nil {
+		return nil, err
 	}
 
 	if hadPrior && prior == c.Target {

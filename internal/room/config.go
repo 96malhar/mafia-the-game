@@ -71,18 +71,6 @@ const DefaultOpeningDuration = 7 * time.Second
 // NightActionStarted, so this number is single-source-of-truth here.
 const DefaultActionDuration = 60 * time.Second
 
-// DefaultBlockedActionDuration is the (much shorter) act window a
-// roleblocked NON-mafia actor gets. A blocked player can't do anything
-// this night — their client shows the "you're blocked" notice instead
-// of a target picker — so there's no reason to make them (and the rest
-// of the table) wait out the full action window. The trade-off: the
-// shorter act-window deadline is broadcast publicly, so an observer can
-// in principle infer that the acting role was blocked this night. We
-// accept that minor leak in exchange for keeping the game's pace up.
-// See the night sub-phase state machine (game.NightSubPhase) for where
-// this slots into the act→ponder edge.
-const DefaultBlockedActionDuration = 7 * time.Second
-
 // DefaultSettleDuration is the universal post-sleep beat. Lets the
 // "Mafia, go to sleep." cue land cleanly before the next role's
 // "wake up" begins.
@@ -163,11 +151,12 @@ const DefaultHostGracePeriod = 45 * time.Second
 // a night sub-phase. These values are the single source of timing
 // truth (the engine is timeless).
 //
-// The `blocked` signal isn't on the event: it shortens a roleblocked
-// actor's act window — see DefaultBlockedActionDuration. Submit vs
-// timeout deliberately gets NO duration distinction (same audio cadence,
-// so observers can't tell them apart), so the engine doesn't even track
-// it and it isn't a parameter here.
+// Everything the sizing needs rides on the event itself (Sub, Role, Day,
+// Phantom). In particular there is no `blocked` input: a blocked actor's
+// turn is phantom (no act window — see roleTurnIsPhantom), so it sizes
+// through the phantom ponder branch like any other cannot-act turn.
+// Submit vs timeout deliberately gets NO duration distinction (same audio
+// cadence, so observers can't tell them apart).
 //
 // Narrate is the one sub-phase with per-role variation today: mafia's
 // Day-0 "look around and recognize each other" beat runs longer than
@@ -177,7 +166,7 @@ const DefaultHostGracePeriod = 45 * time.Second
 // This switch MUST cover every NightSubPhase value. A missing case
 // returns 0, which the caller treats as "no timer to arm" — that would
 // silently deadlock the night, so subPhaseDuration logs loudly on 0.
-func defaultSubPhaseDuration(e game.NightSubPhaseStarted, blocked bool) time.Duration {
+func defaultSubPhaseDuration(e game.NightSubPhaseStarted) time.Duration {
 	switch e.Sub {
 	case game.NightSubOpening:
 		return DefaultOpeningDuration
@@ -190,11 +179,6 @@ func defaultSubPhaseDuration(e game.NightSubPhaseStarted, blocked bool) time.Dur
 		}
 		return DefaultNarrateDuration
 	case game.NightSubAct:
-		if blocked {
-			// A blocked actor can't act — give them a brief window to
-			// read the "you're blocked" notice, then advance.
-			return DefaultBlockedActionDuration
-		}
 		return DefaultActionDuration
 	case game.NightSubPonder:
 		return defaultPonderDuration(e.Role, e.Phantom)
@@ -208,9 +192,9 @@ func defaultSubPhaseDuration(e game.NightSubPhaseStarted, blocked bool) time.Dur
 
 // defaultPonderDuration sizes the post-act / phantom-substitute pause
 // in three modes:
-//   - phantom (no living holder): uniformly random in
-//     [DefaultPhantomPonderMin, DefaultPhantomPonderMax] so the cadence
-//     can't be used to deduce that a role is dead.
+//   - phantom (no actionable holder — dead, spent, or blocked): uniformly
+//     random in [DefaultPhantomPonderMin, DefaultPhantomPonderMax] so the
+//     cadence can't be used to deduce WHY the turn was inert.
 //   - detective (real): DefaultPonderDetectiveSubmit, so its result
 //     modal lands cleanly.
 //   - any other real role (submit OR timeout): DefaultPonderRealSubmit.
@@ -262,24 +246,19 @@ func (c *Config) applyDefaults() {
 // armSubPhaseTimer to size the deadline / timer for a freshly emitted
 // NightSubPhaseStarted event.
 //
-// `blocked` (whether the acting role was roleblocked by the Consort this
-// night) isn't on the event — it's engine state, threaded in separately
-// — and shortens a blocked actor's act window; see
-// DefaultBlockedActionDuration.
-//
 // Non-sub-phase events return 0 SILENTLY: the sole caller
 // (stampNightDeadlines) probes every event in a batch and skips those
 // with no duration, so a PlayerJoined / VoteCast / PhaseChanged landing
 // here is the normal, expected case — not an error. The loud log is
 // reserved for a NightSubPhaseStarted carrying a Sub we don't size,
 // which would silently deadlock the night (the caller arms no timer).
-func (c *Config) subPhaseDuration(evt game.Event, blocked bool) time.Duration {
+func (c *Config) subPhaseDuration(evt game.Event) time.Duration {
 	e, ok := evt.(game.NightSubPhaseStarted)
 	if !ok {
 		return 0
 	}
 
-	dur := defaultSubPhaseDuration(e, blocked)
+	dur := defaultSubPhaseDuration(e)
 	if dur <= 0 {
 		c.logger().Error("room: no duration for night sub-phase",
 			"sub", string(e.Sub))

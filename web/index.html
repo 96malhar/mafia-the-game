@@ -449,6 +449,26 @@
       // join), defaulting to false until the first event lands.
       let consortEnabled = false;
 
+      // vigilanteEnabled mirrors the engine's optional-Vigilante toggle
+      // for the upcoming game. Event-sourced from vigilanteChanged
+      // (replayed on join), defaulting to false until the first event.
+      let vigilanteEnabled = false;
+
+      // vigilanteFired tracks whether the LOCAL vigilante has already
+      // spent his single bullet (set when our own nightActionRecorded
+      // arrives). Used to hide the target picker on subsequent nights —
+      // the engine rejects a second shot with ErrAlreadyActed.
+      let vigilanteFired = false;
+
+      // heldFireThisTurn tracks whether the LOCAL vigilante pressed "Hold
+      // fire" during the CURRENT turn (an explicit NightPass that ends the
+      // act window early without spending the bullet). It's a per-turn
+      // optimistic flag — set on click, reset at the start of each role
+      // turn (nightNarrationStarted) and on entering night — used to hide
+      // the picker/button and show a confirmation the instant we pass,
+      // before the server's ponder event lands.
+      let heldFireThisTurn = false;
+
       // --- Night turn state (mirrors the engine's per-role sub-phase) ---
       //
       // During PhaseNight each role flows through a five-step sub-phase
@@ -519,27 +539,46 @@
       // narration trigger; events not in this set fire normally.
       const narrationsSeen = new Set();
 
-      // dayDiscussionPendingDeath holds the playerId killed last night
+      // dayDiscussionPendingDeaths holds the playerIds killed last night
       // (if any), captured from PlayerKilled in the same event batch
       // as the phaseChanged → day_discussion. The narrator reads it on
-      // the dawn cue, then clears it. Null = "nobody died."
-      let dayDiscussionPendingDeath = null;
+      // the dawn cue, then clears it. Empty = "nobody died." It's a LIST
+      // because a single night can produce more than one death (e.g. the
+      // mafia and the vigilante shoot two different players), and the
+      // dawn announcement must name them all.
+      let dayDiscussionPendingDeaths = [];
 
-      // lastNightVictim is the same fact as dayDiscussionPendingDeath,
+      // lastNightVictims is the same fact as dayDiscussionPendingDeaths,
       // but tracked DURABLY: it stays set across renders and survives
       // page refreshes (rebuilt by the event replay), and is only
       // cleared when the next night begins. The day-discussion banner
       // uses it to surface "Last night: X was killed" as a UI chip,
-      // not just a one-shot audio cue. Null = no death last night
+      // not just a one-shot audio cue. Empty = no death last night
       // (or we haven't seen a night yet).
       //
-      // We keep dayDiscussionPendingDeath separate because the
+      // We keep dayDiscussionPendingDeaths separate because the
       // narrator wants single-shot semantics (don't re-narrate a
       // death after a refresh into day_discussion); the banner
       // wants persistent semantics (DO re-display after refresh).
       // Trying to share one variable would mean one of those rules
       // has to give.
-      let lastNightVictim = null;
+      let lastNightVictims = [];
+
+      // formatVictimList renders a list of victim ids into a grammatical
+      // name string: "Alice", "Alice and Bob", or "Alice, Bob, and Cara"
+      // (resolving each id to its current player name). Used by both the
+      // dawn narration and the day-discussion banner so a multi-death
+      // night names every victim, not just the last one seen.
+      function formatVictimList(ids) {
+        const names = ids.map((id) => {
+          const p = players.get(id);
+          return p ? p.name : id;
+        });
+        if (names.length === 0) return "";
+        if (names.length === 1) return names[0];
+        if (names.length === 2) return `${names[0]} and ${names[1]}`;
+        return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+      }
 
       // --- TTS (narrator) ----------------------------------------------
       //
@@ -1106,14 +1145,17 @@
         lobbyMaxPlayers = null;
         mafiaCount = null;
         consortEnabled = false;
+        vigilanteEnabled = false;
+        vigilanteFired = false;
+        heldFireThisTurn = false;
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
         currentNightSubPhase = "";
         currentNightTurnPhantom = false;
         iAmBlocked = false;
-        dayDiscussionPendingDeath = null;
-        lastNightVictim = null;
+        dayDiscussionPendingDeaths = [];
+        lastNightVictims = [];
         narrationsSeen.clear();
         stopNightCountdown();
         // Clear any open notice modal so a refresh doesn't carry
@@ -1380,7 +1422,8 @@
           myRole === "mafia" ||
           myRole === "doctor" ||
           myRole === "detective" ||
-          myRole === "consort"
+          myRole === "consort" ||
+          myRole === "vigilante"
         );
       }
 
@@ -1432,6 +1475,13 @@
           currentNightSubPhase === "act" &&
           !currentNightTurnPhantom &&
           !iAmBlocked &&
+          // The vigilante has a single bullet for the whole game. Once
+          // we've fired it (tracked locally from our own
+          // nightActionRecorded), hide the picker — the engine rejects
+          // any further shot with ErrAlreadyActed. Likewise once we've
+          // held fire this turn (an optimistic local flag), hide the
+          // picker immediately rather than waiting for the ponder event.
+          !(myRole === "vigilante" && (vigilanteFired || heldFireThisTurn)) &&
           p.alive &&
           canTargetThisRow
         ) {
@@ -1441,9 +1491,12 @@
             ? `${rowBtnBase} bg-amber-600 text-white`
             : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
           // The Consort "blocks" rather than "targets"; the doctor
-          // "saves" (and may pick their own row). Everyone else "targets".
+          // "saves" (and may pick their own row); the vigilante
+          // "eliminates". Everyone else "targets".
           if (myRole === "consort") {
             b.textContent = submitted ? "Blocked" : "Block";
+          } else if (myRole === "vigilante") {
+            b.textContent = submitted ? "Eliminating" : "Eliminate";
           } else {
             b.textContent = submitted
               ? (isSelfRow ? "Saving self" : "Targeted")
@@ -1548,10 +1601,31 @@
             const pickPhrase =
               myRole === "consort"
                 ? "Pick someone to block"
-                : "Pick a target";
-            if (currentNightSubPhase === "act" && iAmBlocked) {
+                : myRole === "vigilante"
+                  ? "Pick someone to eliminate"
+                  : "Pick a target";
+            if (iAmBlocked) {
+              // Roleblocked tonight: the server runs this as a phantom
+              // turn (no act window), so the notice stands for the whole
+              // turn. Checked before the spent-vigilante branch so a
+              // blocked vigilante (bullet preserved) isn't mislabeled
+              // "spent".
               bannerText.textContent =
                 `Your turn — ${display}. You were blocked tonight — your action won't land.`;
+            } else if (myRole === "vigilante" && currentNightTurnPhantom) {
+              // Bullet already spent on an earlier night. The server runs
+              // a spent vigilante's turn as a phantom (no act window), so
+              // tell him outright rather than the generic "Listen to the
+              // moderator…". We key off the server's phantom flag (not the
+              // local vigilanteFired) so the notice is correct even after a
+              // mid-game refresh clears local state.
+              bannerText.textContent =
+                `Your turn — ${display}. Your bullet is spent — nothing to do tonight.`;
+            } else if (myRole === "vigilante" && heldFireThisTurn) {
+              // We chose to hold fire this turn (an explicit NightPass).
+              // The bullet is preserved; the turn ends early.
+              bannerText.textContent =
+                `Your turn — ${display}. You held your fire — bullet saved.`;
             } else {
               bannerText.textContent =
                 currentNightSubPhase === "act"
@@ -1588,7 +1662,15 @@
               lobbyMinPlayers !== null && lobbyMaxPlayers !== null && mafiaCount !== null;
 
             const minMafia = 1;
-            const maxMafiaNow = Math.max(0, total - 3);
+            // Each enabled optional role (Consort, Vigilante) takes a
+            // villager slot, so it tightens the mafia cap once more than
+            // one is on. The engine enforces both bounds:
+            //   mafia <= total - 3                       (Det + Doc + ≥1 villager)
+            //   mafia <= total - 2 - (#optional roles)   (room for the optionals)
+            // which combine to total - 2 - max(1, #optional).
+            const optionalRoles =
+              (consortEnabled ? 1 : 0) + (vigilanteEnabled ? 1 : 0);
+            const maxMafiaNow = Math.max(0, total - 2 - Math.max(1, optionalRoles));
             const tooFew = configReady && total < lobbyMinPlayers;
             const tooMany = configReady && total > lobbyMaxPlayers;
             const mafiaOK = configReady && mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;
@@ -1624,6 +1706,7 @@
               const mafiaPicker = renderMafiaPicker();
               if (mafiaPicker) extras.appendChild(mafiaPicker);
               extras.appendChild(renderConsortToggle());
+              extras.appendChild(renderVigilanteToggle());
             }
 
             if (myIsHost) {
@@ -1672,8 +1755,33 @@
               if (myAction) {
                 hint.textContent = "Submitted. The next role will be summoned shortly.";
                 const t = players.get(myAction);
-                const verb = myRole === "consort" ? "Blocked" : "Targeted";
+                const verb =
+                  myRole === "consort"
+                    ? "Blocked"
+                    : myRole === "vigilante"
+                      ? "Eliminated"
+                      : "Targeted";
                 extras.appendChild(noteChip(`${verb}: ${t ? t.name : myAction}`, "bg-amber-700/60"));
+              } else if (iAmBlocked) {
+                // Roleblocked tonight: the turn is phantom (no act
+                // window), so we show this regardless of sub-phase.
+                // Checked before the spent-vigilante branch so a blocked
+                // vigilante (bullet preserved) isn't mislabeled "spent".
+                hint.textContent =
+                  "You were blocked tonight — your action won't land. Sit tight.";
+              } else if (
+                myRole === "vigilante" &&
+                (vigilanteFired || currentNightTurnPhantom)
+              ) {
+                // Bullet already spent on an earlier night — the server
+                // runs this as a phantom turn (no act window), so explain
+                // why there's nothing to do. We honor the server's phantom
+                // flag in addition to the local vigilanteFired so the
+                // notice survives a mid-game refresh (which clears the
+                // local flag). The earlier myAction guard prevents this
+                // from firing on the night the shot was actually taken.
+                hint.textContent =
+                  "Your bullet is spent. Stay still until the moderator moves on.";
               } else if (myRole === "mafia" && mafiaKillTarget) {
                 // A co-mafioso locked the kill before us (the first
                 // submission ends the act window for the whole faction).
@@ -1682,19 +1790,46 @@
                 hint.textContent = "A teammate locked in the kill for the family.";
                 const t = players.get(mafiaKillTarget);
                 extras.appendChild(noteChip(`Team target: ${t ? t.name : mafiaKillTarget}`, "bg-rose-800/70"));
+              } else if (myRole === "vigilante" && heldFireThisTurn) {
+                // We pressed "Hold fire" — an explicit NightPass that ends
+                // the turn early WITHOUT spending the bullet. Confirm it
+                // and keep the picker hidden until the moderator moves on.
+                // Set optimistically on click and held until the next
+                // turn's narration, so it spans the brief act moment after
+                // the click AND the ponder the server advances us into.
+                hint.textContent =
+                  "You held your fire — your bullet is saved for a later night.";
               } else if (currentNightSubPhase !== "act") {
                 // We're in narrate / ponder / sleep / settle (or it's
                 // the global opening). The action window hasn't opened
                 // yet (or has already closed). Keep the actor listening.
                 hint.textContent = "Listen to the moderator…";
-              } else if (iAmBlocked) {
-                hint.textContent =
-                  "You were blocked tonight — your action won't land. Sit tight.";
               } else {
                 hint.textContent =
                   myRole === "consort"
                     ? "Pick someone to block on the Players panel below."
-                    : "Pick your target on the Players panel below.";
+                    : myRole === "vigilante"
+                      ? "Pick a target below — or hold your fire to save your bullet."
+                      : "Pick your target on the Players panel below.";
+                if (myRole === "vigilante") {
+                  // Explicit "decline to act" affordance. Holding fire
+                  // keeps the one bullet AND ends the 60s act window early
+                  // (the server treats NightPass like a fast timeout).
+                  extras.appendChild(
+                    actionButton(
+                      "Hold fire (save bullet)",
+                      "bg-slate-700 hover:bg-slate-600",
+                      () => {
+                        // Optimistic local flag → the picker and this
+                        // button vanish and the confirmation shows at
+                        // once, before the server's ponder event lands.
+                        heldFireThisTurn = true;
+                        send("nightPass");
+                        renderAll();
+                      },
+                    ),
+                  );
+                }
               }
             } else if (canActAtNight()) {
               hint.textContent =
@@ -1733,22 +1868,22 @@
               }
               // Surface last night's outcome as a chip alongside
               // the discussion controls. The chip persists across
-              // renders + refreshes (lastNightVictim is rebuilt
+              // renders + refreshes (lastNightVictims is rebuilt
               // from the event log), unlike the dawn narration
               // which fires once. This daybreak branch
               // (dayLynchResolved === false) is only ever reached
-              // coming from night, so a null victim here means the
+              // coming from night, so an empty list here means the
               // night was genuinely quiet — show a neutral
               // "nobody died" chip to mirror the dawn narration.
               // A doctor save also lands here as "nobody died",
               // which is intentional: the save is private to the
               // doctor, so the town must not be able to tell a save
               // apart from a night with no attack at all.
-              if (lastNightVictim) {
-                const v = players.get(lastNightVictim);
-                const name = v ? v.name : lastNightVictim;
+              if (lastNightVictims.length > 0) {
+                const names = formatVictimList(lastNightVictims);
+                const verb = lastNightVictims.length === 1 ? "was" : "were";
                 extras.appendChild(noteChip(
-                  `Last night: ${name} was killed`,
+                  `Last night: ${names} ${verb} killed`,
                   "bg-rose-700/60",
                 ));
               } else {
@@ -1928,39 +2063,48 @@
         return wrapper;
       }
 
-      // renderConsortToggle builds the lobby control for the optional
-      // Consort role. Host sees an on/off toggle (setConsort); everyone
-      // else sees a read-only Yes/No so the whole room knows whether the
-      // role is in play. Like the mafia picker, it's only shown before
-      // roles are dealt (the engine rejects setConsort afterward).
-      function renderConsortToggle() {
+      // renderOptionalRoleToggle builds a lobby control for an optional
+      // role. Host sees an on/off toggle (sends `msgType` with
+      // {enabled}); everyone else sees a read-only Yes/No so the whole
+      // room knows whether the role is in play. Like the mafia picker,
+      // it's only shown before roles are dealt (the engine rejects the
+      // toggle afterward).
+      function renderOptionalRoleToggle(labelText, enabled, msgType) {
         const wrapper = document.createElement("div");
         wrapper.className =
           "flex items-center gap-2 rounded bg-slate-700/60 px-3 py-1.5 text-xs";
 
         const label = document.createElement("span");
         label.className = "uppercase tracking-wide opacity-70";
-        label.textContent = "Consort";
+        label.textContent = labelText;
         wrapper.appendChild(label);
 
         if (!myIsHost) {
           const val = document.createElement("span");
           val.className = "font-mono text-sm";
-          val.textContent = consortEnabled ? "Yes" : "No";
+          val.textContent = enabled ? "Yes" : "No";
           wrapper.appendChild(val);
           return wrapper;
         }
 
         const btn = document.createElement("button");
-        btn.className = consortEnabled
+        btn.className = enabled
           ? "inline-flex h-9 items-center justify-center rounded bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-600"
           : "inline-flex h-9 items-center justify-center rounded bg-slate-600 px-3 text-sm font-semibold hover:bg-slate-500";
-        btn.textContent = consortEnabled ? "On" : "Off";
+        btn.textContent = enabled ? "On" : "Off";
         btn.addEventListener("click", () =>
-          send("setConsort", { enabled: !consortEnabled })
+          send(msgType, { enabled: !enabled })
         );
         wrapper.appendChild(btn);
         return wrapper;
+      }
+
+      function renderConsortToggle() {
+        return renderOptionalRoleToggle("Consort", consortEnabled, "setConsort");
+      }
+
+      function renderVigilanteToggle() {
+        return renderOptionalRoleToggle("Vigilante", vigilanteEnabled, "setVigilante");
       }
 
       function disabledNote(text) {
@@ -2147,6 +2291,11 @@
             renderActionPanel();
             break;
 
+          case "vigilanteChanged":
+            vigilanteEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
           case "playerJoined":
             upsertPlayer(env.data.playerId, {
               name: env.data.name,
@@ -2170,14 +2319,17 @@
               alive: false,
               deathCause: "killed",
             });
-            // Stash the death twice: dayDiscussionPendingDeath
+            // Stash the death twice: dayDiscussionPendingDeaths
             // drives the (single-shot) dawn narration and is
-            // consumed by narratePhaseChange; lastNightVictim
+            // consumed by narratePhaseChange; lastNightVictims
             // drives the (persistent) day-discussion banner chip
             // and is only cleared when the next night begins
             // (see the to === "night" branch in phaseChanged).
-            dayDiscussionPendingDeath = env.data.playerId;
-            lastNightVictim = env.data.playerId;
+            // Both are lists: a night can land multiple kills (mafia
+            // + vigilante on different targets), so we APPEND rather
+            // than overwrite to keep every victim.
+            dayDiscussionPendingDeaths.push(env.data.playerId);
+            lastNightVictims.push(env.data.playerId);
             break;
 
           case "playerLynched":
@@ -2231,15 +2383,16 @@
               currentNightSubPhase = "";
               currentNightTurnPhantom = false;
               iAmBlocked = false;
+              heldFireThisTurn = false;
               stopNightCountdown();
               dayLynchResolved = false;
               // A new night invalidates the previous night's
-              // victim — the banner chip ("Last night: X was
+              // victims — the banner chip ("Last night: X was
               // killed") should not survive into the next day's
               // discussion. If this night produces no death,
-              // lastNightVictim stays null and the chip stays
+              // lastNightVictims stays empty and the chip stays
               // hidden, which is correct.
-              lastNightVictim = null;
+              lastNightVictims = [];
             }
             renderAll();
 
@@ -2279,6 +2432,10 @@
             currentNightSubPhase = "narrate";
             currentNightTurnPhantom = !!env.data.phantom;
             nightTurnDeadlineMs = env.data.deadline || 0;
+            // A fresh role turn begins: clear the per-turn "held fire"
+            // flag so a pass on an earlier turn doesn't suppress the
+            // vigilante's controls when his next live turn opens.
+            heldFireThisTurn = false;
             if (!replaying) {
               startNightCountdown(nightTurnDeadlineMs);
               narrateRoleWake(currentNightRole, day);
@@ -2399,6 +2556,13 @@
             }
             if (env.data.actor === myId) {
               myAction = env.data.target;
+              // The vigilante's bullet is one-shot for the whole game.
+              // Recording our own action spends it; latch the flag so the
+              // picker stays hidden on later nights even after myAction
+              // resets at the start of the next night.
+              if (myRole === "vigilante") {
+                vigilanteFired = true;
+              }
             }
             if (env.data.actor === myId || env.data.faction === "mafia") {
               renderActionPanel();
@@ -2553,15 +2717,15 @@
           //      after a lynch). So we narrate ONLY when arriving
           //      from night.
           if (from === "night") {
-            const dead = dayDiscussionPendingDeath;
-            dayDiscussionPendingDeath = null;
+            const dead = dayDiscussionPendingDeaths;
+            dayDiscussionPendingDeaths = [];
             // Slight pause before the wake-up cue so any "doctor,
             // go to sleep" queued before this one finishes first.
             narrate("Everybody, wake up.", { pauseBefore: 200 });
-            if (dead) {
-              const p = players.get(dead);
-              const name = p ? p.name : dead;
-              narrate(`Last night, ${name} was killed.`, { pauseBefore: 1800 });
+            if (dead.length > 0) {
+              const names = formatVictimList(dead);
+              const verb = dead.length === 1 ? "was" : "were";
+              narrate(`Last night, ${names} ${verb} killed.`, { pauseBefore: 1800 });
             } else {
               narrate("Last night, nobody died.", { pauseBefore: 1800 });
             }
@@ -2619,6 +2783,9 @@
         doctor: {
           default: "Doctor, wake up. Choose someone to save.",
         },
+        vigilante: {
+          default: "Vigilante, wake up. Choose someone to eliminate.",
+        },
       };
 
       const ROLE_SLEEP = {
@@ -2626,6 +2793,7 @@
         consort:   "Consort, go to sleep.",
         detective: "Detective, go to sleep.",
         doctor:    "Doctor, go to sleep.",
+        vigilante: "Vigilante, go to sleep.",
       };
 
       function lookupRoleNarration(role, dayNum) {

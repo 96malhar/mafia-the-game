@@ -119,31 +119,16 @@ func (g *Game) applyCreateGame(c CreateGame) ([]Event, error) {
 //     means " Alice " becomes "Alice" on the roster.
 //   - The lobby must not already be at MaxPlayers.
 func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	// PhaseEnded must be checked BEFORE the generic phase mismatch
-	// so the wire layer can map it to wire.ErrCodeGameEnded ("This
-	// game has already ended.") instead of the generic "already
-	// in progress" message that wrong_phase carries during the join
-	// handshake. Same pattern in every other apply* handler below.
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseLobby {
-		return nil, ErrWrongPhase
-	}
 	// Closing the lobby at StartGame (rather than BeginNight) is a
 	// deliberate UX choice: once roles have been dealt, adding a new
 	// player would require re-dealing the whole roster, which leaks
 	// information (existing players would see new RoleAssigned events
 	// and could infer their previous role was unstable). Bouncing the
-	// joiner is the only sane option. The wrong_phase error code
-	// flows out to the client, which surfaces "This game is already
-	// in progress" in the join lobby; PhaseEnded above gets the
-	// distinct "game has already ended" message.
-	if g.state.rolesDealt {
-		return nil, ErrWrongPhase
+	// joiner is the only sane option. requireLobbyOpen surfaces
+	// ErrWrongPhase ("already in progress") for a dealt/started lobby
+	// and ErrGameEnded ("game has already ended") for a finished game.
+	if err := g.requireLobbyOpen(); err != nil {
+		return nil, err
 	}
 	name := strings.TrimSpace(c.Name)
 	if c.PlayerID == "" || name == "" {
@@ -181,23 +166,14 @@ func (g *Game) applyAddPlayer(c AddPlayer) ([]Event, error) {
 // applySetMafiaCount adjusts the planned mafia count during PhaseLobby.
 // See SetMafiaCount in command.go for the validity envelope.
 func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseLobby {
-		return nil, ErrWrongPhase
-	}
 	// Locking the picker at StartGame (rather than at BeginNight) is
 	// a deliberate UX choice: once roles have been dealt, tweaking
 	// the planned mafia count would do nothing — composeRoster has
 	// already run and the per-player role assignments are committed.
-	// We reject so the host can't be fooled into thinking a late
-	// adjustment took effect.
-	if g.state.rolesDealt {
-		return nil, ErrWrongPhase
+	// requireLobbyOpen rejects so the host can't be fooled into
+	// thinking a late adjustment took effect.
+	if err := g.requireLobbyOpen(); err != nil {
+		return nil, err
 	}
 	maxMafia := g.state.maxPlayers - (reservedTownRoles + 1)
 	if c.Count < 1 || c.Count > maxMafia {
@@ -222,28 +198,19 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 // See SetConsort in command.go for the validity envelope. Like the mafia
 // count, the toggle is locked once roles are dealt (composeRoster has
 // already run), so a late flip is rejected rather than silently ignored.
+//
+// SetConsort and ConsortChanged are structurally identical (a single
+// Enabled bool), so a direct conversion is clean; if either ever gains a
+// field, this stops compiling and forces a re-check.
 func (g *Game) applySetConsort(c SetConsort) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseLobby {
-		return nil, ErrWrongPhase
-	}
-	if g.state.rolesDealt {
-		return nil, ErrWrongPhase
-	}
-	if c.Enabled == g.state.consortEnabled {
-		return nil, ErrNoChange
-	}
+	return g.applyLobbyToggle(c.Enabled, &g.state.consortEnabled, ConsortChanged(c))
+}
 
-	g.state.consortEnabled = c.Enabled
-	// SetConsort and ConsortChanged are structurally identical (a single
-	// Enabled bool), so a direct conversion is clean; if either ever
-	// gains a field, this stops compiling and forces a re-check.
-	return []Event{ConsortChanged(c)}, nil
+// applySetVigilante toggles the optional Vigilante role during
+// PhaseLobby. See SetVigilante in command.go for the validity envelope.
+// Locked once roles are dealt, like every other lobby toggle.
+func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
+	return g.applyLobbyToggle(c.Enabled, &g.state.vigilanteEnabled, VigilanteChanged(c))
 }
 
 // applyStartGame deals roles and locks the lobby; the game stays in
@@ -266,19 +233,10 @@ func (g *Game) applySetConsort(c SetConsort) ([]Event, error) {
 // Emits GameStarted + one RoleAssigned per player. No PhaseChanged —
 // the transition to PhaseNight is the host's BeginNight job.
 func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseLobby {
-		return nil, ErrWrongPhase
-	}
-	// rolesDealt is set the first time StartGame succeeds; a second
-	// call is a no-op error rather than a re-deal.
-	if g.state.rolesDealt {
-		return nil, ErrWrongPhase
+	// requireLobbyOpen also rejects a second StartGame (rolesDealt is set
+	// the first time it succeeds) as a no-op error rather than a re-deal.
+	if err := g.requireLobbyOpen(); err != nil {
+		return nil, err
 	}
 	n := len(g.state.players)
 	if n < g.state.minPlayers || n > g.state.maxPlayers {
@@ -288,8 +246,19 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	if g.state.mafiaCount < 1 || g.state.mafiaCount > maxMafia {
 		return nil, ErrRosterMismatch
 	}
+	// Each optional role (Consort, Vigilante, …) takes the slot of a
+	// villager. With several toggled on AND the mafia count near its
+	// cap, the requested composition could exceed the player count,
+	// which would leave composeRoster short of n roles (and panic the
+	// per-player assignment loop). Reject that here: the villager slots
+	// left after the mafia, the reserved town core, and every enabled
+	// optional role must be ≥ 0.
+	optionals := g.state.enabledOptionalRoles()
+	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 0 {
+		return nil, ErrRosterMismatch
+	}
 
-	dealt := composeRoster(n, g.state.mafiaCount, g.state.consortEnabled)
+	dealt := composeRoster(n, g.state.mafiaCount, optionals)
 
 	// Use rand/v2 PCG with a derived seed. We split the user-supplied
 	// int64 into two uint64 halves of fresh entropy so two games that
@@ -324,27 +293,51 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	return events, nil
 }
 
+// optionalRole describes a host-toggleable role that takes a villager
+// slot at StartGame. The table is the single source of truth for the
+// optional roster: enabledOptionalRoles and composeRoster both read it,
+// so adding a new optional role is one entry plus its GameState flag.
+type optionalRole struct {
+	role    Role
+	enabled func(*GameState) bool
+}
+
+var optionalRoles = []optionalRole{
+	{role: RoleConsort, enabled: func(s *GameState) bool { return s.consortEnabled }},
+	{role: RoleVigilante, enabled: func(s *GameState) bool { return s.vigilanteEnabled }},
+}
+
+// enabledOptionalRoles returns the optional roles toggled on for the
+// upcoming game, in table order. Each one takes the slot of a villager;
+// the result drives both the StartGame roster-fit check and composeRoster.
+func (s *GameState) enabledOptionalRoles() []Role {
+	var out []Role
+	for _, o := range optionalRoles {
+		if o.enabled(s) {
+			out = append(out, o.role)
+		}
+	}
+	return out
+}
+
 // composeRoster builds the role multiset for a game with `n` players,
-// `mafia` mafia, and an optional Consort. Composition is fixed:
+// `mafia` mafia, and the given enabled optional roles. Composition is
+// fixed:
 //
 //	mafia × Mafia + 1 × Detective + 1 × Doctor +
-//	  (consort ? 1 × Consort : 0) + (n - mafia - 2 - consort) × Villager
+//	  optionals… + (n - mafia - 2 - len(optionals)) × Villager
 //
-// The Consort takes the slot of a villager, so the mafia-count envelope
-// is unchanged: 1 ≤ mafia ≤ n - reservedTownRoles - 1 still leaves the
-// villager count ≥ 0 whether or not a consort is dealt. Caller must
-// have validated that bound.
-func composeRoster(n, mafia int, consort bool) []Role {
+// Each optional role takes the slot of a villager. The caller (StartGame)
+// must have validated that the mafia count plus the reserved town core
+// plus the enabled optional roles leaves villager count ≥ 0.
+func composeRoster(n, mafia int, optionals []Role) []Role {
 	out := make([]Role, 0, n)
 	for range mafia {
 		out = append(out, RoleMafia)
 	}
 	out = append(out, RoleDetective, RoleDoctor)
-	reserved := reservedTownRoles
-	if consort {
-		out = append(out, RoleConsort)
-		reserved++
-	}
+	out = append(out, optionals...)
+	reserved := reservedTownRoles + len(optionals)
 	for range n - mafia - reserved {
 		out = append(out, RoleVillager)
 	}

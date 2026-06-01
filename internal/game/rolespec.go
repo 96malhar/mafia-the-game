@@ -59,11 +59,24 @@ const (
 type nightContext struct {
 	state *GameState
 
-	// killTarget, if set, is the player the mafia (or a future
-	// vigilante) is trying to kill. Last-write wins among multiple
-	// killers (V1 simplification).
+	// killTarget, if set, is the player the mafia is trying to kill.
+	// Last-write wins among multiple mafia killers (V1 simplification).
+	// The vigilante's kill is tracked separately (vigKillTarget) so the
+	// two killers don't clobber each other and so resolvePhase can apply
+	// them in order (mafia first; see the vigilante rules there).
 	killTarget PlayerID
 	hasKill    bool
+
+	// vigKillTarget, if set, is the player the vigilante is shooting
+	// tonight. vigilanteActor is the shooter's own id — resolvePhase
+	// reads it to check the shooter is still alive after the mafia kill
+	// resolves (the mafia kill takes precedence). vigilanteFired records
+	// that a vigilante shot was recorded this night, so resolveNight can
+	// mark the one-shot bullet spent.
+	vigKillTarget  PlayerID
+	vigilanteActor PlayerID
+	hasVigKill     bool
+	vigilanteFired bool
 
 	// saveTarget, if set, is the player the doctor is protecting.
 	saveTarget PlayerID
@@ -100,6 +113,15 @@ type nightActionSpec struct {
 	// nightPhase constants for semantics.
 	Phase nightPhase
 
+	// AllowPass lets a holder of this role explicitly DECLINE to act via
+	// the NightPass command, ending their act window early without
+	// recording anything. Only roles for whom "not acting" is a
+	// meaningful, resource-preserving choice should set this — today just
+	// the Vigilante (holding fire keeps his one bullet). When false (the
+	// default) NightPass is rejected with ErrNotYourAction, so a role
+	// that simply lets its timer run never grows a skip affordance.
+	AllowPass bool
+
 	// Validate is called by applyNightAction after generic checks
 	// (actor/target exist and are alive, target is not empty) pass. It
 	// returns a sentinel error to reject the action, or nil to record
@@ -135,6 +157,16 @@ type nightActionSpec struct {
 type roleSpec struct {
 	Faction     Faction
 	NightAction *nightActionSpec
+}
+
+// rejectSelfTarget returns ErrSelfTarget when a role is trying to act on
+// itself. Several roles (consort, detective, vigilante) forbid this; the
+// shared helper keeps the intent obvious as new roles are added.
+func rejectSelfTarget(actor, target *Player) error {
+	if actor.id == target.id {
+		return ErrSelfTarget
+	}
+	return nil
 }
 
 // roleSpecs is the registry. Every value in the Role enum MUST have an
@@ -204,15 +236,11 @@ var roleSpecs = map[Role]roleSpec{
 		NightAction: &nightActionSpec{
 			Phase: nightPhaseBlock,
 			Validate: func(_ *GameState, actor, target *Player) error {
-				if actor.id == target.id {
-					// A consort blocking herself is meaningless.
-					return ErrSelfTarget
-				}
-				// Any other living target is allowed — including a
-				// mafioso. Blocking a mafioso simply has no effect
-				// (resolveNight never skips a mafia kill); the consort
-				// just wastes her night.
-				return nil
+				// A consort blocking herself is meaningless. Any other
+				// living target is allowed — including a mafioso (which
+				// simply has no effect: resolveNight never skips a mafia
+				// kill, so she just wastes her night).
+				return rejectSelfTarget(actor, target)
 			},
 			Apply: func(ctx *nightContext, _, target *Player) {
 				ctx.blocked = target.id
@@ -235,13 +263,54 @@ var roleSpecs = map[Role]roleSpec{
 			// post-resolve logic slots in at the right point.
 			Phase: nightPhaseReveal,
 			Validate: func(_ *GameState, actor, target *Player) error {
-				if actor.id == target.id {
-					return ErrSelfTarget
-				}
-				return nil
+				return rejectSelfTarget(actor, target)
 			},
 			Apply: func(_ *nightContext, _, _ *Player) {
 				// no-op (see comment above)
+			},
+		},
+	},
+
+	RoleVigilante: {
+		// Town-aligned: wins with the town, reads as "not mafia" to the
+		// detective. Narrate/Sleep durations live in internal/room/config.go
+		// (universal defaults — the vigilante's cue length matches the
+		// generic "<role>, wake up. Choose someone to ..." template).
+		Faction: FactionTown,
+		NightAction: &nightActionSpec{
+			// The vigilante records a kill intent during Schedule (like
+			// the mafia and doctor); resolvePhase reconciles it AFTER the
+			// mafia kill so the mafia takes precedence. The bullet is a
+			// one-shot for the whole game (state.vigilanteShotUsed).
+			Phase: nightPhaseSchedule,
+			// The vigilante may hold fire: declining to shoot keeps his
+			// single bullet for a later night, so he gets an explicit
+			// NightPass (the client's "Hold fire" button) that ends his
+			// turn early instead of burning the full act window.
+			AllowPass: true,
+			Validate: func(s *GameState, actor, target *Player) error {
+				// Shooting yourself makes no sense.
+				if err := rejectSelfTarget(actor, target); err != nil {
+					return err
+				}
+				if s.vigilanteShotUsed {
+					// The single bullet has already been fired on an
+					// earlier night. A spent vigilante's turn is routed to
+					// a phantom ponder (no act window — see
+					// roleTurnIsPhantom), so a correct flow never reaches
+					// here; this is the defense-in-depth backstop that
+					// rejects a client submitting anyway. Reuse
+					// ErrAlreadyActed so the wire/UI treat it the same as
+					// a double-submit.
+					return ErrAlreadyActed
+				}
+				return nil
+			},
+			Apply: func(ctx *nightContext, actor, target *Player) {
+				ctx.vigKillTarget = target.id
+				ctx.vigilanteActor = actor.id
+				ctx.hasVigKill = true
+				ctx.vigilanteFired = true
 			},
 		},
 	},
@@ -254,22 +323,51 @@ var roleSpecs = map[Role]roleSpec{
 //
 // Doctor saves cancel a kill iff they target the same player. The
 // private PlayerSaved is visible only to the doctor (see event.go).
+//
+// Resolution is ORDER-DEPENDENT because of the vigilante:
+//
+//  1. The mafia kill resolves FIRST. A doctor save on the same target
+//     cancels it.
+//  2. The vigilante shot resolves SECOND, and only if the vigilante is
+//     still alive (the mafia kill above may have killed him — rule 2,
+//     mafia precedence). A doctor save on the vigilante's target cancels
+//     the shot (rule 4) but the bullet is still spent (recorded in
+//     resolveNight via ctx.vigilanteFired).
+//
+// A single doctor save protects exactly one player, so the mafia and
+// vigilante branches never both fire a save on the same target.
 func resolvePhase(ctx *nightContext) {
-	if !ctx.hasKill {
-		return
+	// 1. Mafia kill takes precedence and resolves first.
+	if ctx.hasKill {
+		ctx.resolveHit(ctx.killTarget)
 	}
-	if ctx.hasSave && ctx.saveTarget == ctx.killTarget {
+
+	// 2. Vigilante shot — only if the shooter survived step 1.
+	if ctx.hasVigKill {
+		if shooter, ok := ctx.state.findPlayer(ctx.vigilanteActor); ok && shooter.alive {
+			ctx.resolveHit(ctx.vigKillTarget)
+		}
+	}
+}
+
+// resolveHit applies a single attempted kill on target: a matching doctor
+// save cancels it (emitting the private PlayerSaved), otherwise the target
+// dies (emitting the public PlayerKilled). The alive guard also de-dups
+// the case where two killers (mafia + vigilante) hit the same player —
+// only one death lands.
+func (ctx *nightContext) resolveHit(target PlayerID) {
+	if ctx.hasSave && ctx.saveTarget == target {
 		ctx.events = append(ctx.events, PlayerSaved{
-			PlayerID: ctx.killTarget,
+			PlayerID: target,
 			Doctor:   ctx.savingDoctor,
 		})
 		return
 	}
-	if tp, ok := ctx.state.findPlayer(ctx.killTarget); ok {
+	if tp, ok := ctx.state.findPlayer(target); ok && tp.alive {
 		tp.alive = false
-		ctx.died = ctx.killTarget
+		ctx.died = target
+		ctx.events = append(ctx.events, PlayerKilled{PlayerID: target})
 	}
-	ctx.events = append(ctx.events, PlayerKilled{PlayerID: ctx.killTarget})
 }
 
 // allRoles returns every role known to the registry, in stable

@@ -102,6 +102,31 @@ func awaitActWindow(t *testing.T, watcher *Subscriber) (game.NightSubPhaseStarte
 	}
 }
 
+// awaitNightSub reads watcher's stream until a NightSubPhaseStarted with
+// the given role and sub arrives, returning that event and the wall-clock
+// instant it was observed (for deadline math). Used to assert on phantom
+// turns, which (unlike awaitActWindow) never open an act window. The
+// watcher MUST be a player that receives no private night events.
+func awaitNightSub(t *testing.T, watcher *Subscriber, role game.Role, sub game.NightSubPhase) (game.NightSubPhaseStarted, time.Time) {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case msg, ok := <-watcher.Outbound():
+			require.Truef(t, ok, "watcher channel closed before %s %s", role, sub)
+			ev, isEv := msg.(OutEvent)
+			if !isEv {
+				continue
+			}
+			if ns, ok := ev.Event.(game.NightSubPhaseStarted); ok && ns.Role == role && ns.Sub == sub {
+				return ns, time.Now()
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s %s", role, sub)
+		}
+	}
+}
+
 // awaitEvent reads s until an event of concrete type T arrives, returning
 // it. Other messages (events and errors) are discarded.
 func awaitEvent[T game.Event](t *testing.T, s *Subscriber, within time.Duration) T {

@@ -39,18 +39,14 @@ import "maps"
 // ponder (exactly like a submit) so the submit/timeout cadence stays
 // uniform — observers can't tell them apart.
 func (g *Game) applyAdvancePhase(_ AdvancePhase) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
+	if err := g.requireActiveGame(); err != nil {
+		return nil, err
 	}
-	switch g.state.phase {
-	case PhaseEnded:
-		return nil, ErrGameEnded
-	case PhaseNight:
-		return g.advanceNightSubPhase(), nil
-	default:
+	if g.state.phase != PhaseNight {
 		// Day phases are host-driven; AdvancePhase is invalid here.
 		return nil, ErrWrongPhase
 	}
+	return g.advanceNightSubPhase(), nil
 }
 
 // advanceNightSubPhase implements one tick of the per-role state
@@ -86,13 +82,18 @@ func (g *Game) advanceNightSubPhase() []Event {
 
 	case NightSubNarrate:
 		// narrate → act (real) OR narrate → ponder (phantom).
-		// hasLivingRole determines which branch; real turns wait
+		// roleTurnIsPhantom determines which branch; real turns wait
 		// for either the actor's submission or this AdvancePhase
-		// firing again at the end of NightSubAct.
-		if g.state.HasLivingRole(role) {
-			return g.enterNightSubPhase(NightSubAct)
+		// firing again at the end of NightSubAct. A turn is phantom
+		// when the role has no living holder, its one-shot action is
+		// spent (an out-of-bullets vigilante), or its holder was
+		// roleblocked this night — in every case the actor can't do
+		// anything, so the turn skips the act window rather than
+		// stalling the night on it.
+		if g.state.roleTurnIsPhantom(role) {
+			return g.enterNightSubPhase(NightSubPonder)
 		}
-		return g.enterNightSubPhase(NightSubPonder)
+		return g.enterNightSubPhase(NightSubAct)
 
 	case NightSubAct:
 		// Reaching here means AdvancePhase fired during the act
@@ -149,17 +150,19 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 		Role:     role,
 		Day:      g.state.day,
 		Deadline: 0,
-		Phantom:  role != "" && !g.state.HasLivingRole(role),
+		Phantom:  g.state.roleTurnIsPhantom(role),
 	}}
 
-	// At the START of a real act window, a roleblocked NON-mafia actor
-	// is privately told they're blocked — during their own turn — so
-	// their client can show the notice and suppress the target picker
-	// (the consort distracted them; their action can't land). Mafia are
-	// immune (the block is a no-op against the faction kill). The block
-	// is also enforced server-side at resolveNight as a backstop, in
-	// case a client submits an action anyway.
-	if sub == NightSubAct && role != RoleMafia {
+	// A Consort-blocked actor's turn is phantom (no act window — see
+	// roleTurnIsPhantom), so we deliver the private Blocked notice when
+	// the cannot-act ponder begins, i.e. right AFTER the role's narrate
+	// cue plays. This mirrors the old "told at the start of your action
+	// beat" timing and lets the client show the notice + suppress the
+	// picker. A real (unblocked) role reaches ponder only after acting
+	// and is never blocked, so this never double-fires on a normal turn.
+	// Mafia are immune (the block is a no-op against the faction kill).
+	// resolveNight nullifies a blocked action as a further backstop.
+	if sub == NightSubPonder && role != RoleMafia {
 		if holder, ok := g.state.livingHolderOf(role); ok && g.state.isNightBlocked(holder) {
 			events = append(events, Blocked{PlayerID: holder})
 		}
@@ -181,11 +184,7 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 func (g *Game) resolveAndExitNight() []Event {
 	events := g.resolveNight()
 
-	if endEvt, ended := g.checkWin(); ended {
-		events = append(events, endEvt)
-		from := g.state.phase
-		g.state.phase = PhaseEnded
-		events = append(events, PhaseChanged{From: from, To: PhaseEnded, Day: g.state.day})
+	if events, ended := g.endGameIfWon(events); ended {
 		return events
 	}
 
@@ -213,12 +212,10 @@ func (g *Game) resolveAndExitNight() []Event {
 // transition to the first role's NightSubNarrate; see NightSubPhase
 // for the per-role state machine that follows.
 func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
+	if err := g.requireActiveGame(); err != nil {
+		return nil, err
 	}
 	switch g.state.phase {
-	case PhaseEnded:
-		return nil, ErrGameEnded
 	case PhaseLobby:
 		// Roles must have been dealt by StartGame first.
 		if !g.state.rolesDealt {
@@ -248,14 +245,8 @@ func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
 // finalized vote, the day is effectively over and the only legal
 // action is BeginNight).
 func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseDayDiscussion {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseDayDiscussion); err != nil {
+		return nil, err
 	}
 	if g.state.dayLynchResolved {
 		return nil, ErrWrongPhase
@@ -275,14 +266,8 @@ func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
 // event carrying a snapshot of the full voter→target map, so every
 // viewer (alive or dead) can render who voted for whom.
 func (g *Game) applyRevealVotes(_ RevealVotes) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseDayVote {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseDayVote); err != nil {
+		return nil, err
 	}
 	if g.state.votesRevealed {
 		return nil, ErrNoChange
@@ -310,14 +295,8 @@ func (g *Game) snapshotVotes() map[PlayerID]PlayerID {
 // is always meaningful (it reopens hidden voting), even if the revealed
 // tally was empty.
 func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseDayVote {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseDayVote); err != nil {
+		return nil, err
 	}
 	// Nothing to clear AND nothing revealed → no-op, reject to avoid
 	// spamming the log with redundant VoteCleared events. But once the
@@ -342,14 +321,8 @@ func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 // is the host's explicit "close the day" action, and a town that can't
 // muster a majority simply gets no lynch this round.
 func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
-	if g.state.id == "" {
-		return nil, ErrWrongPhase
-	}
-	if g.state.phase == PhaseEnded {
-		return nil, ErrGameEnded
-	}
-	if g.state.phase != PhaseDayVote {
-		return nil, ErrWrongPhase
+	if err := g.requirePhase(PhaseDayVote); err != nil {
+		return nil, err
 	}
 
 	target, decisive := g.resolveDayVote()
@@ -365,14 +338,7 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	// advance out of PhaseDayVote so the host can proceed to the next
 	// night. No win check is needed — the living roster is unchanged.
 	if !decisive {
-		from := g.state.phase
-		g.state.phase = PhaseDayDiscussion
-		g.state.votes = nil
-		g.state.dayLynchResolved = true
-		events = append(events,
-			NoLynch{Day: g.state.day},
-			PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day},
-		)
+		events = append(events, NoLynch{Day: g.state.day}, g.endDayToDiscussion())
 		return events, nil
 	}
 
@@ -386,21 +352,13 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	// would be handed a premature victory.
 	events = append(events, g.promoteConsortIfNeeded()...)
 
-	if endEvt, ended := g.checkWin(); ended {
-		events = append(events, endEvt)
-		from := g.state.phase
-		g.state.phase = PhaseEnded
-		events = append(events, PhaseChanged{From: from, To: PhaseEnded, Day: g.state.day})
+	if events, ended := g.endGameIfWon(events); ended {
 		return events, nil
 	}
 
 	// Lynch but no win: return to DayDiscussion with the resolved flag
 	// set so the only legal host command is BeginNight.
-	from := g.state.phase
-	g.state.phase = PhaseDayDiscussion
-	g.state.votes = nil
-	g.state.dayLynchResolved = true
-	events = append(events, PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day})
+	events = append(events, g.endDayToDiscussion())
 	return events, nil
 }
 
@@ -438,14 +396,27 @@ func (g *Game) beginNightTurns() []Event {
 	// RoleConsort, but her turn must keep running as a PHANTOM: dropping
 	// it would shorten the night cadence the moment a promotion happens,
 	// leaking the secret takeover to anyone counting the moderator's
-	// beats. The phantom substitution (no act window) falls out of the
-	// usual HasLivingRole(RoleConsort)==false check in enterNightSubPhase.
+	// beats. The phantom substitution (no act window) falls out of
+	// roleTurnIsPhantom (no living RoleConsort) in enterNightSubPhase.
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleMafia)
 	if g.state.consortEnabled {
 		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleConsort)
 	}
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue,
 		RoleDetective, RoleDoctor)
+	// The optional Vigilante wakes last, after the doctor. Like the
+	// consort we key off the dealt-time toggle (vigilanteEnabled) rather
+	// than the live roster so a dead vigilante's turn keeps running as a
+	// phantom — dropping it would shorten the night cadence and leak his
+	// death. A vigilante who is alive but has spent his one bullet is
+	// likewise treated as phantom (roleTurnIsPhantom): he still wakes for
+	// cadence/secrecy but skips the act window instead of stalling the
+	// night on a 60s window he can't use. Resolution order (mafia kill
+	// before vigilante shot) is enforced in resolvePhase, independent of
+	// this wake order.
+	if g.state.vigilanteEnabled {
+		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleVigilante)
+	}
 	// Enter the night-scoped opening sub-phase. currentNightRole
 	// stays empty until the opening elapses and advanceNightSubPhase
 	// pops the first role.

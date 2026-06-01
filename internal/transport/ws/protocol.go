@@ -51,6 +51,7 @@ type clientMsgType string
 const (
 	clientMsgJoin          clientMsgType = wire.ClientMsgJoin
 	clientMsgNightAction   clientMsgType = wire.ClientMsgNightAction
+	clientMsgNightPass     clientMsgType = wire.ClientMsgNightPass
 	clientMsgVote          clientMsgType = wire.ClientMsgVote
 	clientMsgStartGame     clientMsgType = wire.ClientMsgStartGame
 	clientMsgBeginNight    clientMsgType = wire.ClientMsgBeginNight
@@ -60,6 +61,7 @@ const (
 	clientMsgFinalizeVotes clientMsgType = wire.ClientMsgFinalizeVotes
 	clientMsgSetMafia      clientMsgType = wire.ClientMsgSetMafia
 	clientMsgSetConsort    clientMsgType = wire.ClientMsgSetConsort
+	clientMsgSetVigilante  clientMsgType = wire.ClientMsgSetVigilante
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled
@@ -92,6 +94,13 @@ type clientSetMafiaData struct {
 // Consort role during PhaseLobby. The engine validates phase/no-op; the
 // transport just forwards the flag.
 type clientSetConsortData struct {
+	Enabled bool `json:"enabled"`
+}
+
+// clientSetVigilanteData carries a host-driven toggle of the optional
+// Vigilante role during PhaseLobby. The engine validates phase/no-op;
+// the transport just forwards the flag.
+type clientSetVigilanteData struct {
 	Enabled bool `json:"enabled"`
 }
 

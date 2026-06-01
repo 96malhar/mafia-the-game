@@ -25,15 +25,15 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 	t.Run("defaults route to package-level constants", func(t *testing.T) {
 		// Opening: universal, day-independent.
 		require.Equal(t, DefaultOpeningDuration,
-			c.subPhaseDuration(sub(game.NightSubOpening, "", 0, false), false),
+			c.subPhaseDuration(sub(game.NightSubOpening, "", 0, false)),
 			"opening default")
 		require.Equal(t, DefaultOpeningDuration,
-			c.subPhaseDuration(sub(game.NightSubOpening, "", 3, false), false),
+			c.subPhaseDuration(sub(game.NightSubOpening, "", 3, false)),
 			"opening default is day-independent today")
 
 		// Narrate: mafia has a Day-0 variant; everyone else is universal.
-		mafiaNarrateDay0 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 0, false), false)
-		mafiaNarrateDay1 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 1, false), false)
+		mafiaNarrateDay0 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 0, false))
+		mafiaNarrateDay1 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 1, false))
 		require.Equal(t, DefaultMafiaNarrateDay0, mafiaNarrateDay0,
 			"mafia Day 0 narrate uses the day-0 constant")
 		require.Equal(t, DefaultMafiaNarrateDayN, mafiaNarrateDay1,
@@ -45,61 +45,52 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 		for _, r := range []game.Role{game.RoleDetective, game.RoleDoctor} {
 			for _, day := range []int{0, 1, 5} {
 				require.Equal(t, DefaultNarrateDuration,
-					c.subPhaseDuration(sub(game.NightSubNarrate, r, day, false), false),
+					c.subPhaseDuration(sub(game.NightSubNarrate, r, day, false)),
 					"role %q day %d should use DefaultNarrateDuration", r, day)
 			}
 		}
 
-		// Action: universal.
+		// Action: universal. A role that can't act doesn't reach the act
+		// sub-phase at all (its turn is phantom — narrate -> ponder), so
+		// there's no blocked/shortened act variant to size here.
 		require.Equal(t, DefaultActionDuration,
-			c.subPhaseDuration(sub(game.NightSubAct, game.RoleMafia, 0, false), false))
+			c.subPhaseDuration(sub(game.NightSubAct, game.RoleMafia, 0, false)))
 
 		// Settle: universal.
 		require.Equal(t, DefaultSettleDuration,
-			c.subPhaseDuration(sub(game.NightSubSettle, game.RoleMafia, 0, false), false))
+			c.subPhaseDuration(sub(game.NightSubSettle, game.RoleMafia, 0, false)))
 
 		// Sleep: every shipped role uses the universal default.
 		for _, r := range []game.Role{game.RoleMafia, game.RoleDetective, game.RoleDoctor} {
 			require.Equal(t, DefaultSleepDuration,
-				c.subPhaseDuration(sub(game.NightSubSleep, r, 0, false), false),
+				c.subPhaseDuration(sub(game.NightSubSleep, r, 0, false)),
 				"role %q sleep should use DefaultSleepDuration", r)
 		}
-	})
-
-	t.Run("blocked actor gets the short act window", func(t *testing.T) {
-		require.Equal(t, DefaultBlockedActionDuration,
-			c.subPhaseDuration(sub(game.NightSubAct, game.RoleDoctor, 1, false), true),
-			"a blocked actor's act window is shortened")
-		require.Less(t, DefaultBlockedActionDuration, DefaultActionDuration,
-			"the blocked window must be shorter than the normal one")
-		// blocked only affects the act sub-phase; narrate/sleep ignore it.
-		require.Equal(t, DefaultNarrateDuration,
-			c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleDoctor, 1, false), true),
-			"blocked must not change non-act sub-phases")
 	})
 
 	t.Run("ponder default - non-detective real role is the short beat", func(t *testing.T) {
 		// Submit vs timeout is intentionally indistinguishable, so the
 		// ponder beat depends only on the role.
 		require.Equal(t, DefaultPonderRealSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false), false),
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false)),
 			"non-detective real ponder uses the short beat")
 		require.Equal(t, DefaultPonderRealSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false), false),
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false)),
 			"doctor too")
 	})
 
 	t.Run("ponder default - detective gets a longer beat", func(t *testing.T) {
 		require.Equal(t, DefaultPonderDetectiveSubmit,
-			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false), false),
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false)),
 			"detective ponder is sized for read-modal pause")
 	})
 
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {
-		// Repeat the draw so we exercise the randomness: every draw
+		// A phantom turn (dead / spent / blocked role) gets a randomized
+		// beat. Repeat the draw so we exercise the randomness: every draw
 		// must fall in [lo, hi].
 		for range 64 {
-			d := c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 1, true), false)
+			d := c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 1, true))
 			require.GreaterOrEqual(t, d, DefaultPhantomPonderMin,
 				"phantom ponder must be >= DefaultPhantomPonderMin")
 			require.LessOrEqual(t, d, DefaultPhantomPonderMax,

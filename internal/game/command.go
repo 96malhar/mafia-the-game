@@ -64,6 +64,20 @@ type SetConsort struct {
 
 func (SetConsort) isCommand() {}
 
+// SetVigilante toggles the optional Vigilante role for the upcoming
+// game. Valid only in PhaseLobby (before roles are dealt). Setting it to
+// its current value is a no-op (ErrNoChange). When enabled, StartGame
+// deals exactly one RoleVigilante, taking the slot of a villager — so
+// the same 1 ≤ mafia ≤ playerCount-3 envelope still applies, but
+// StartGame additionally rejects a composition where the enabled
+// optional roles leave no villager slots. Host-only at the transport
+// layer.
+type SetVigilante struct {
+	Enabled bool
+}
+
+func (SetVigilante) isCommand() {}
+
 // AddPlayer joins a player to the lobby. Only valid in PhaseLobby.
 type AddPlayer struct {
 	PlayerID PlayerID
@@ -138,6 +152,8 @@ func (FinalizeVotes) isCommand() {}
 //   - Mafia      -> Target is the player to kill.
 //   - Doctor     -> Target is the player to save.
 //   - Detective  -> Target is the player to investigate.
+//   - Consort    -> Target is the player to block.
+//   - Vigilante  -> Target is the player to shoot (one-shot for the game).
 //
 // Villagers have no night action. The engine resolves all submitted
 // actions when AdvancePhase moves Night -> Day.
@@ -147,6 +163,26 @@ type NightAction struct {
 }
 
 func (NightAction) isCommand() {}
+
+// NightPass is an explicit "I choose NOT to act this turn" submitted
+// during PhaseNight's act window. It ends the actor's act window early
+// (advancing straight to ponder) WITHOUT recording an action — and,
+// crucially, without spending any one-shot resource.
+//
+// Only roles whose nightActionSpec opts in (AllowPass) accept it; today
+// that's the Vigilante, for whom "hold fire" preserves his single bullet
+// for a later night and spares the table a full 60s wait. Every other
+// role rejects NightPass with ErrNotYourAction. Mafia in particular are
+// excluded: their turn is faction-collective, so one mafioso passing must
+// not end the kill window for the whole faction.
+//
+// Like NightAction, Actor is filled in server-side from the authenticated
+// connection; clients never set it.
+type NightPass struct {
+	Actor PlayerID
+}
+
+func (NightPass) isCommand() {}
 
 // DayVote is a public vote during PhaseDayVote. Votes are MUTABLE — a
 // player may change or retract their vote any number of times until the

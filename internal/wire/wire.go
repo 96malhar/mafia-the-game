@@ -31,6 +31,7 @@ package wire
 const (
 	ClientMsgJoin          = "join"
 	ClientMsgNightAction   = "nightAction"
+	ClientMsgNightPass     = "nightPass"
 	ClientMsgVote          = "vote"
 	ClientMsgStartGame     = "startGame"
 	ClientMsgBeginNight    = "beginNight"
@@ -40,6 +41,7 @@ const (
 	ClientMsgFinalizeVotes = "finalizeVotes"
 	ClientMsgSetMafia      = "setMafia"
 	ClientMsgSetConsort    = "setConsort"
+	ClientMsgSetVigilante  = "setVigilante"
 )
 
 // --- Server → client message types ---------------------------------------
@@ -67,6 +69,7 @@ const (
 	EventRoleAssigned          = "roleAssigned"
 	EventMafiaRoster           = "mafiaRoster"
 	EventConsortChanged        = "consortChanged"
+	EventVigilanteChanged      = "vigilanteChanged"
 	EventBlocked               = "blocked"
 	EventConsortPromoted       = "consortPromoted"
 	EventPhaseChanged          = "phaseChanged"

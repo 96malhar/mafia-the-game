@@ -62,15 +62,11 @@ func (r *Room) appendAndBroadcast(events []game.Event) {
 func (r *Room) stampNightDeadlines(events []game.Event) {
 	now := time.Now()
 	// All sizing context (role, day, phantom-vs-real) rides on the event
-	// itself. The one extra signal is `blocked`: a roleblocked actor's
-	// act window is shortened (the consort acts earlier in the night, so
-	// her block is already recorded by the time any town role's act
-	// window is stamped here). Only the act sub-phase consults this flag,
-	// so computing it once for the batch is safe.
-	blocked := r.g.State().CurrentActorBlocked()
-
+	// itself — including the blocked case, which the engine routes through
+	// a phantom ponder (no act window), so no extra engine-state signal is
+	// needed here.
 	for i := range events {
-		dur := r.cfg.subPhaseDuration(events[i], blocked)
+		dur := r.cfg.subPhaseDuration(events[i])
 		if dur <= 0 {
 			continue
 		}

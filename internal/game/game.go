@@ -41,6 +41,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applySetMafiaCount(c)
 	case SetConsort:
 		return g.applySetConsort(c)
+	case SetVigilante:
+		return g.applySetVigilante(c)
 	case StartGame:
 		return g.applyStartGame(c)
 	case BeginNight:
@@ -55,6 +57,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyFinalizeVotes(c)
 	case NightAction:
 		return g.applyNightAction(c)
+	case NightPass:
+		return g.applyNightPass(c)
 	case DayVote:
 		return g.applyDayVote(c)
 	case AdvancePhase:

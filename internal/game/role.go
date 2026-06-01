@@ -26,6 +26,18 @@ const (
 	// out while she still lives she is PROMOTED to full RoleMafia (see
 	// promoteConsortIfNeeded) — the sleeper who takes over the kill.
 	RoleConsort Role = "consort"
+
+	// RoleVigilante is an OPTIONAL town-aligned role (the host toggles
+	// it on before StartGame, like the Consort). He gets ONE kill for
+	// the entire game: on any single night he may shoot a player, after
+	// which his bullet is spent. He is FactionTown — he wins with the
+	// town and reads as "not mafia" to the detective. Night-interaction
+	// rules (see resolvePhase): the mafia kill takes precedence, so if
+	// the mafia kills the vigilante his shot never lands; the doctor can
+	// save the vigilante (his shot then lands) or save the vigilante's
+	// target (the shot is wasted but the bullet is still spent); and a
+	// consort block nullifies the shot WITHOUT spending the bullet.
+	RoleVigilante Role = "vigilante"
 )
 
 // Faction is the win-condition + knowledge group a role belongs to.

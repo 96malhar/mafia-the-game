@@ -184,6 +184,15 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 func (g *Game) resolveAndExitNight() []Event {
 	events := g.resolveNight()
 
+	// If the night's kills wiped out the last mafia but a consort still
+	// lives, promote her to mafia BEFORE the win check — same "sleeper
+	// takes over" rule as the lynch path (applyFinalizeVotes). This path
+	// matters because the Vigilante can kill a mafioso at night, so the
+	// cabal can now reach zero during night resolution, not only via a
+	// lynch. Without this the consort would never inherit the kill and
+	// the takeover would silently fail. No-op unless the cabal is wiped.
+	events = append(events, g.promoteConsortIfNeeded()...)
+
 	if events, ended := g.endGameIfWon(events); ended {
 		return events
 	}
@@ -499,10 +508,10 @@ func (g *Game) checkWin() (GameEnded, bool) {
 // Returns the events to append (private to the promoted player, so the
 // town never learns a takeover happened), or nil if no promotion
 // applies. Callers MUST invoke this AFTER applying a death and BEFORE
-// checkWin, so a cabal-ending lynch promotes the consort rather than
-// handing the town a win. The only way the mafia count reaches zero is a
-// lynch (mafia can't be killed at night), so applyFinalizeVotes is the
-// sole caller today.
+// checkWin, so a cabal-ending death promotes the consort rather than
+// handing the town a win. Two callers wipe the cabal today:
+// applyFinalizeVotes (a lynch) and resolveAndExitNight (the Vigilante's
+// night kill — the only way a mafioso dies at night).
 func (g *Game) promoteConsortIfNeeded() []Event {
 	if g.state.factionLivingCount(FactionMafia) > 0 {
 		return nil // cabal still alive; nothing to take over

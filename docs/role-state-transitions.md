@@ -252,4 +252,4 @@ After the last role's `settle`, `resolveNight` reconciles every scheduled intent
 
 > `NightActionRecorded` is scoped to `FactionMafia` only for the mafia (co-mafia must see the locked kill to coordinate). Solo town/consort roles share a faction with non-actors, so scoping their ack to the faction would leak the hidden role — they get a private self-ack instead.
 >
-> **`ConsortPromoted` / `MafiaRosterRevealed`** are *not* night events: the cabal can only be wiped by a **lynch** (mafia are unkillable at night), so they're emitted privately to the consort during day-vote finalization (`applyFinalizeVotes` → `promoteConsortIfNeeded`), not during night resolution.
+> **`ConsortPromoted` / `MafiaRosterRevealed`** are emitted privately to the consort whenever a cabal wipe leaves her the last mafia-aligned player standing. Both callers run `promoteConsortIfNeeded` before the win check: a **lynch** (`applyFinalizeVotes`), and **night resolution** (`resolveAndExitNight`) — the latter because the Vigilante's shot is the one way a mafioso can die at night. Without the night-path promotion the takeover would silently fail and the `RoleMafia` turn would phantom forever.

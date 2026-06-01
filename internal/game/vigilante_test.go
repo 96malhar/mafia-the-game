@@ -475,6 +475,59 @@ func TestVigilante_BlockedByConsortDoesNotSpendBullet(t *testing.T) {
 	require.Equal(t, game.PlayerID("town1"), rec.Target)
 }
 
+func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
+	// Regression: the vigilante can kill a mafioso at night, so the cabal
+	// can reach zero during NIGHT resolution — not only via a lynch. When
+	// that happens with a living consort she must be promoted on the night
+	// path, exactly like the lynch path, or the takeover silently fails
+	// (the RoleMafia turn would go phantom forever and no one inherits the
+	// kill). The town must NOT be handed a premature win either.
+	g := fixedRosterWithConsortAndVigilante(t)
+
+	// Quiet night except the vigilante shoots the lone mafioso.
+	evts := runNightToDay(t, g,
+		[]game.Role{game.RoleMafia, game.RoleConsort, game.RoleDetective, game.RoleDoctor, game.RoleVigilante},
+		map[game.Role]game.PlayerID{game.RoleVigilante: "mafia1"})
+
+	killed, ok := findEvent[game.PlayerKilled](evts)
+	require.True(t, ok, "the vigilante's shot kills the mafioso")
+	require.Equal(t, game.PlayerID("mafia1"), killed.PlayerID)
+	require.False(t, livingByID(g, "mafia1"), "the mafioso is dead")
+
+	// The night-time cabal wipe promotes the living consort (private).
+	promo, ok := findEvent[game.ConsortPromoted](evts)
+	require.True(t, ok, "killing the last mafia at night promotes the living consort")
+	require.Equal(t, game.PlayerID("consort"), promo.PlayerID)
+	require.Equal(t, game.PlayerID("consort"), promo.Visibility().Player,
+		"promotion stays private — the town must not learn a sleeper took over")
+
+	roster, ok := findEvent[game.MafiaRosterRevealed](evts)
+	require.True(t, ok, "promotion re-issues the mafia roster (now just her)")
+	require.Equal(t, []game.PlayerID{"consort"}, roster.Members)
+
+	// No premature town win, and the consort now holds RoleMafia.
+	_, ended := findEvent[game.GameEnded](evts)
+	require.False(t, ended, "a surviving consort keeps the mafia side alive")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	for _, p := range g.State().Players() {
+		if p.ID() == "consort" {
+			require.Equal(t, game.RoleMafia, p.Role(), "the consort inherits RoleMafia")
+		}
+	}
+
+	// And the takeover is real: next night the promoted consort carries
+	// the faction kill from the RoleMafia act window.
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+		"the promoted consort gets a live RoleMafia act window")
+	evts2 := nightAction(t, g, "consort", "town1")
+	rec, ok := findEvent[game.NightActionRecorded](evts2)
+	require.True(t, ok, "the promoted consort can now kill")
+	require.Equal(t, game.PlayerID("town1"), rec.Target)
+}
+
 // --- hold fire (NightPass) ------------------------------------------------
 
 func TestVigilante_HoldFireEndsTurnWithoutSpendingBullet(t *testing.T) {

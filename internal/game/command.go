@@ -69,9 +69,9 @@ func (SetConsort) isCommand() {}
 // its current value is a no-op (ErrNoChange). When enabled, StartGame
 // deals exactly one RoleVigilante, taking the slot of a villager — so
 // the same 1 ≤ mafia ≤ playerCount-3 envelope still applies, but
-// StartGame additionally rejects a composition where the enabled
-// optional roles leave no villager slots. Host-only at the transport
-// layer.
+// StartGame additionally rejects a composition where the mafia plus the
+// enabled optional roles would leave fewer than one plain villager.
+// Host-only at the transport layer.
 type SetVigilante struct {
 	Enabled bool
 }

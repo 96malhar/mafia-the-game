@@ -1666,8 +1666,9 @@
             // villager slot, so it tightens the mafia cap once more than
             // one is on. The engine enforces these bounds (see
             // applyStartGame in internal/game/rules.go — keep them in sync):
-            //   mafia <= total - 3                       (Det + Doc + ≥1 villager)
-            //   mafia <= total - 2 - (#optional roles)   (room for the optionals)
+            //   mafia <= total - 3 - (#optional roles)   (Det + Doc +
+            //       every optional + ≥1 plain villager; each optional takes
+            //       a villager slot and the roster must keep one villager)
             //   2*mafia + (#mafia-aligned optionals) < total
             //       (don't OPEN at the mafia parity win — checkWin ends the
             //        game for the mafia at strictMafia >= town, where town ==
@@ -1680,7 +1681,8 @@
             // Vigilante is town), so she's the only one that shrinks the town
             // count in the parity test.
             const mafiaAlignedOptionals = consortEnabled ? 1 : 0;
-            const slotCap = total - 2 - Math.max(1, optionalRoles);
+            // Det + Doc + every optional + at least one plain villager.
+            const slotCap = total - 3 - optionalRoles;
             // 2*mafia + mafiaAlignedOptionals < total
             //   ⇒ mafia <= floor((total - mafiaAlignedOptionals - 1) / 2)
             const parityCap = Math.floor((total - mafiaAlignedOptionals - 1) / 2);
@@ -1701,10 +1703,17 @@
                 `(min ${lobbyMinPlayers}, currently ${total}).`;
             } else if (tooMany) {
               hint.textContent = `Too many players (${total} > ${lobbyMaxPlayers}).`;
+            } else if (maxMafiaNow < minMafia) {
+              // The valid mafia range is empty: the enabled roles already
+              // claim every seat (no mafia count works). Don't blame the
+              // mafia picker — point at the real lever.
+              hint.textContent =
+                `Too many special roles for ${total} players. ` +
+                `Turn off an optional role or add more players.`;
             } else if (!mafiaOK) {
               hint.textContent =
                 `Mafia count ${mafiaCount} is invalid for ${total} players ` +
-                `— must be between 1 and ${maxMafiaNow}.`;
+                `— must be between ${minMafia} and ${maxMafiaNow}.`;
             } else {
               hint.textContent = "Ready to start.";
             }

@@ -221,6 +221,9 @@ func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
 //   - PlayerCount must be in [MinPlayers, MaxPlayers].
 //   - MafiaCount must leave room for the reserved town core, i.e.
 //     mafiaCount ≤ playerCount - reservedTownRoles - 1.
+//   - At least one plain Villager must remain after the mafia, the
+//     reserved town core, and every enabled optional role, i.e.
+//     playerCount - mafiaCount - reservedTownRoles - #optionals ≥ 1.
 //   - The dealt roster must not already satisfy the mafia's parity win.
 //     checkWin ends the game for the mafia at strictMafia >= town, and the
 //     town faction is playerCount - mafiaCount - mafiaAlignedOptionals (a
@@ -253,14 +256,15 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 		return nil, ErrRosterMismatch
 	}
 	// Each optional role (Consort, Vigilante, …) takes the slot of a
-	// villager. With several toggled on AND the mafia count near its
-	// cap, the requested composition could exceed the player count,
-	// which would leave composeRoster short of n roles (and panic the
-	// per-player assignment loop). Reject that here: the villager slots
-	// left after the mafia, the reserved town core, and every enabled
-	// optional role must be ≥ 0.
+	// villager. Require at least ONE plain villager to remain after the
+	// mafia, the reserved town core, and every enabled optional role. A
+	// zero-villager roster is degenerate (every town player has a special
+	// power, removing the "vanilla" majority the social game leans on),
+	// and when the optionals are over-stacked it would also leave
+	// composeRoster short of n roles and panic the per-player assignment
+	// loop. So the villager slots left must be >= 1.
 	optionals := g.state.enabledOptionalRoles()
-	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 0 {
+	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 1 {
 		return nil, ErrRosterMismatch
 	}
 

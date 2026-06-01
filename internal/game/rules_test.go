@@ -538,6 +538,43 @@ func TestStartGame(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
+	t.Run("rejects when optional roles would leave no villagers", func(t *testing.T) {
+		// 5 players, 1 mafia, consort + vigilante → 5 - 1 - 2 - 2 = 0
+		// villager slots. Every roster must keep at least one plain
+		// villager, so StartGame rejects it. The mafia, parity, and
+		// player-count bounds all pass here — only the ≥1-villager rule
+		// fails, isolating it.
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1,
+		})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetConsort{Enabled: true})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetVigilante{Enabled: true})
+		require.NoError(t, err)
+		addPlayers(t, g, "a", "b", "c", "d", "e")
+		_, err = g.Apply(game.StartGame{})
+		require.ErrorIs(t, err, game.ErrRosterMismatch)
+	})
+
+	t.Run("allows a stacked-optional roster that keeps one villager", func(t *testing.T) {
+		// 6 players, 1 mafia, consort + vigilante → 6 - 1 - 2 - 2 = 1
+		// villager. Exactly at the floor, so it's a legal game.
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1,
+		})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetConsort{Enabled: true})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetVigilante{Enabled: true})
+		require.NoError(t, err)
+		addPlayers(t, g, "a", "b", "c", "d", "e", "f")
+		_, err = g.Apply(game.StartGame{})
+		require.NoError(t, err)
+	})
+
 	t.Run("rejects a roster that opens at the mafia parity win", func(t *testing.T) {
 		// 5 players, 2 mafia, consort enabled → strict mafia = 2 vs
 		// town = 2 (det + doc; the consort takes the last villager slot).

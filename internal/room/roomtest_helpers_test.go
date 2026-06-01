@@ -127,26 +127,6 @@ func awaitNightSub(t *testing.T, watcher *Subscriber, role game.Role, sub game.N
 	}
 }
 
-// awaitEvent reads s until an event of concrete type T arrives, returning
-// it. Other messages (events and errors) are discarded.
-func awaitEvent[T game.Event](t *testing.T, s *Subscriber, within time.Duration) T {
-	t.Helper()
-	deadline := time.After(within)
-	for {
-		select {
-		case msg, ok := <-s.Outbound():
-			require.Truef(t, ok, "channel closed while awaiting %T", *new(T))
-			if ev, isEv := msg.(OutEvent); isEv {
-				if got, isT := ev.Event.(T); isT {
-					return got
-				}
-			}
-		case <-deadline:
-			t.Fatalf("timed out awaiting %T", *new(T))
-		}
-	}
-}
-
 // awaitError reads s until an OutError arrives, returning it. Buffered
 // OutEvents are discarded (the caller has already sequenced past them
 // via the watcher).
@@ -164,18 +144,4 @@ func awaitError(t *testing.T, s *Subscriber, within time.Duration) OutError {
 			t.Fatal("timed out awaiting OutError")
 		}
 	}
-}
-
-// batchHasEvent reports whether a drained batch contains an event of
-// type T (and returns the first match).
-func batchHasEvent[T game.Event](msgs []Outbound) (T, bool) {
-	for _, m := range msgs {
-		if ev, ok := m.(OutEvent); ok {
-			if got, isT := ev.Event.(T); isT {
-				return got, true
-			}
-		}
-	}
-	var zero T
-	return zero, false
 }

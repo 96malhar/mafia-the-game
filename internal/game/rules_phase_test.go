@@ -133,8 +133,8 @@ func walkRestOfTurn(t *testing.T, g *game.Game) []game.Event {
 //
 // Returns every event emitted across all sub-phase transitions and
 // the resolve batch, so callers can findEvent for any event type
-// (DetectiveResult fires at act time, PlayerKilled / PlayerSaved /
-// GameEnded fire at resolve).
+// (DetectiveResult fires at act time, PlayerKilled / GameEnded fire at
+// resolve).
 //
 // The helper assumes the caller is positioned at the mafia's act
 // window (i.e. the postcondition of fixedRoster / toNextNight).

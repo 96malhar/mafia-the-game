@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -195,4 +196,95 @@ func TestRoom_DisconnectSlowSubscriber(t *testing.T) {
 	slot, ok := r.players["slow"]
 	require.True(t, ok, "slow player slot must remain")
 	require.Nil(t, slot.sub, "slow's subscriber field must be cleared")
+}
+
+// timerTestRoom builds a Room with only what the timer/deadline helpers
+// touch: a defaulted Config (the source of sub-phase durations) and a
+// nil phaseTimer. No run loop, engine, or logger is needed — these
+// helpers never reach for them.
+func timerTestRoom() *Room {
+	cfg := Config{}
+	cfg.applyDefaults()
+	return &Room{cfg: cfg}
+}
+
+// TestRoom_StampNightDeadlines pins the deadline-stamping side of the
+// timer machinery in isolation (the integration tests only observe it
+// end-to-end). It asserts that night sub-phase events get a wall-clock
+// deadline of now+subPhaseDuration, that the randomized phantom-ponder
+// window lands inside its [min,max] band, and that non-sub-phase events
+// pass through untouched.
+func TestRoom_StampNightDeadlines(t *testing.T) {
+	r := timerTestRoom()
+
+	act := game.NightSubPhaseStarted{Sub: game.NightSubAct, Role: game.RoleMafia, Day: 0}
+	phantomPonder := game.NightSubPhaseStarted{Sub: game.NightSubPonder, Role: game.RoleDoctor, Day: 1, Phantom: true}
+	other := game.PlayerKilled{PlayerID: "x"}
+	batch := []game.Event{act, other, phantomPonder}
+
+	// stampNightDeadlines reads time.Now() once for the whole batch;
+	// bracket it so the asserted bounds account for that single read.
+	before := time.Now()
+	r.stampNightDeadlines(batch)
+	after := time.Now()
+
+	// Non-sub-phase events are never stamped.
+	require.Equal(t, other, batch[1], "non-sub-phase events must pass through unchanged")
+
+	// Fixed sub-phase: deadline == now + DefaultActionDuration.
+	gotAct, ok := batch[0].(game.NightSubPhaseStarted)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, gotAct.Deadline, before.Add(DefaultActionDuration).UnixMilli())
+	require.LessOrEqual(t, gotAct.Deadline, after.Add(DefaultActionDuration).UnixMilli())
+
+	// Randomized phantom-ponder window: deadline lands in [min,max].
+	gotPonder, ok := batch[2].(game.NightSubPhaseStarted)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, gotPonder.Deadline, before.Add(DefaultPhantomPonderMin).UnixMilli())
+	require.LessOrEqual(t, gotPonder.Deadline, after.Add(DefaultPhantomPonderMax).UnixMilli())
+}
+
+// TestRoom_ScheduleTimers pins the arming side of the timer machinery:
+// night sub-phases arm the single phaseTimer, transitions into a
+// host-driven day phase clear any inherited timer, and day phases never
+// arm one. These are exercised end-to-end by the synctest integration
+// tests; here we assert the wiring directly without a fake clock.
+func TestRoom_ScheduleTimers(t *testing.T) {
+	t.Run("night sub-phase arms the phase timer", func(t *testing.T) {
+		r := timerTestRoom()
+		t.Cleanup(r.stopPhaseTimer)
+		r.scheduleTimers([]game.Event{
+			game.NightSubPhaseStarted{Sub: game.NightSubAct, Role: game.RoleMafia, Day: 0},
+		})
+		require.NotNil(t, r.phaseTimer, "a night sub-phase must arm the auto-advance timer")
+	})
+
+	t.Run("entering night arms the opening timer", func(t *testing.T) {
+		r := timerTestRoom()
+		t.Cleanup(r.stopPhaseTimer)
+		r.scheduleTimers([]game.Event{
+			game.PhaseChanged{From: game.PhaseLobby, To: game.PhaseNight},
+			game.NightSubPhaseStarted{Sub: game.NightSubOpening, Day: 0},
+		})
+		require.NotNil(t, r.phaseTimer, "the opening sub-phase must arm a timer even alongside PhaseChanged")
+	})
+
+	t.Run("transition to a day phase clears an inherited timer", func(t *testing.T) {
+		r := timerTestRoom()
+		// Pretend a night sub-phase timer is still armed when we cross
+		// into the day; scheduleTimers must stop it so it can't leak.
+		r.phaseTimer = time.NewTimer(time.Hour)
+		r.scheduleTimers([]game.Event{
+			game.PhaseChanged{From: game.PhaseNight, To: game.PhaseDayDiscussion},
+		})
+		require.Nil(t, r.phaseTimer, "day phases are host-driven — the night timer must be cleared")
+	})
+
+	t.Run("a day phase arms no timer", func(t *testing.T) {
+		r := timerTestRoom()
+		r.scheduleTimers([]game.Event{
+			game.PhaseChanged{From: game.PhaseDayDiscussion, To: game.PhaseDayVote},
+		})
+		require.Nil(t, r.phaseTimer, "day vote is host-driven — no timer should be armed")
+	})
 }

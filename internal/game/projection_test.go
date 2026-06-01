@@ -31,7 +31,6 @@ func newProjectionFixture(t *testing.T) projectionFixture {
 		game.DetectiveResult{
 			Detective: "det", Target: "mafia1", IsMafia: true,
 		},
-		game.PlayerSaved{PlayerID: "town1", Doctor: "doc"},
 		game.PlayerKilled{PlayerID: "town2"}, // public
 	}
 	return projectionFixture{g: g, events: events}
@@ -86,25 +85,6 @@ func TestProjection_PrivateEventsOnlyForOwner(t *testing.T) {
 			for _, e := range out {
 				_, leaked := e.(game.DetectiveResult)
 				require.False(t, leaked, "viewer %q must not see DetectiveResult", viewer)
-			}
-		}
-	})
-
-	t.Run("doctor sees own PlayerSaved; nobody else does", func(t *testing.T) {
-		out := game.Project("doc", f.events, f.g.State())
-		var found bool
-		for _, e := range out {
-			if _, ok := e.(game.PlayerSaved); ok {
-				found = true
-			}
-		}
-		require.True(t, found, "doctor must see PlayerSaved")
-
-		for _, viewer := range []game.PlayerID{"mafia1", "det", "town1", "town2"} {
-			out := game.Project(viewer, f.events, f.g.State())
-			for _, e := range out {
-				_, leaked := e.(game.PlayerSaved)
-				require.False(t, leaked, "viewer %q must not see PlayerSaved", viewer)
 			}
 		}
 	})

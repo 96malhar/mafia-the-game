@@ -219,7 +219,6 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.NightSubPhaseStarted{Sub: game.NightSubSettle, Role: game.RoleMafia, Day: 0, Deadline: 1700000000000},
 		game.NightActionRecorded{Actor: "p1", Target: "p2", Faction: game.FactionMafia},
 		game.PlayerKilled{PlayerID: "p2"},
-		game.PlayerSaved{PlayerID: "p2", Doctor: "p3"},
 		game.DetectiveResult{Detective: "p4", Target: "p1", IsMafia: true},
 		game.VoteCast{Voter: "p1", Target: "p2"},
 		game.VoteChanged{Voter: "p1", From: "p2", To: "p3"},

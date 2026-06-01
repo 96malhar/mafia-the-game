@@ -91,23 +91,39 @@ func TestRoomSynctest_NightAutoAdvancesWithRealDurations(t *testing.T) {
 
 		// Block until the room goroutine is durably blocked. If a day
 		// timer were (incorrectly) armed, the fake clock would advance
-		// while we're parked here, fire it, and move the phase past
-		// DayDiscussion — so this also proves the day phase does NOT
-		// auto-advance. The direct engine-state read is race-free.
+		// while we're parked here, fire it, and emit a PhaseChanged out
+		// of DayDiscussion. We already consumed the Night->DayDiscussion
+		// transition above, so ANY further PhaseChanged now means the day
+		// wrongly auto-advanced. Asserting on the broadcast stream keeps
+		// the test on the room's public surface (no engine-state peek).
 		synctest.Wait()
-		require.Equal(t, game.PhaseDayDiscussion, r.g.State().Phase(),
-			"the night resolved to the host-driven day phase and sits there")
+		for _, msg := range drain(subs[0], time.Second) {
+			ev, ok := msg.(OutEvent)
+			if !ok {
+				continue
+			}
+			if pc, ok := ev.Event.(game.PhaseChanged); ok {
+				t.Fatalf("day phase auto-advanced past DayDiscussion: %v -> %v", pc.From, pc.To)
+			}
+		}
 	})
 }
 
-// TestRoomSynctest_ConsortBlocksDoctor drives the full consort-blocks-
-// doctor night on the REAL durations. Because the fake clock never
-// advances while the test goroutine is active, it asserts on EXACT
-// deadlines (rather than the tolerances a wall-clock test would need)
-// and reads final game state directly after synctest.Wait() instead of
-// inferring it from events. The blocked doctor gets NO act window: his
-// turn is phantom (narrate -> ponder), timing-indistinguishable from a
-// dead role, with the private Blocked notice arriving after his narrate.
+// TestRoomSynctest_ConsortBlocksDoctor is an INTEGRATION test for the
+// room's timer wiring on a consort-block night. The block SEMANTICS — the
+// turn goes phantom, a private Blocked notice is sent, the save is
+// suppressed and the victim dies — are unit-tested at the engine level in
+// internal/game/consort_test.go; this test asserts only what the LIVE
+// room adds on top, on the REAL production durations (synctest's fake
+// clock fires them instantly, so the deadlines are exact, not toleranced):
+//
+//   - an unblocked actor's act window is stamped with the EXACT
+//     DefaultActionDuration deadline;
+//   - a blocked actor's turn is broadcast as phantom and its ponder
+//     deadline lands in the randomized [min, max] phantom range — never
+//     the 60s act window; and
+//   - a client that bypasses the hidden picker is rejected at the wire
+//     boundary with ErrCodeNotYourTurn.
 func TestRoomSynctest_ConsortBlocksDoctor(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r, err := newRoom(context.Background(), "SYNC", Config{
@@ -181,33 +197,12 @@ func TestRoomSynctest_ConsortBlocksDoctor(t *testing.T) {
 		require.LessOrEqual(t, remaining, DefaultPhantomPonderMax.Milliseconds(),
 			"a blocked doctor's ponder uses the randomized phantom beat")
 
-		// Private Blocked notice arrives after the doctor's narrate (at
-		// the cannot-act ponder).
-		blk := awaitEvent[game.Blocked](t, doctorSub, time.Minute)
-		require.Equal(t, doctorID, blk.PlayerID)
-
-		// A client that bypasses the hidden picker is rejected: there's no
-		// act window to submit into.
+		// Room-unique: a client that bypasses the hidden picker is rejected
+		// at the WIRE boundary (the engine's ErrNotYourTurn mapped to its
+		// wire code). There's no act window to submit into. (That the block
+		// itself produces no save / kills the victim is covered by
+		// consort_test.go; we don't re-assert resolution here.)
 		submitNightAction(t, r, doctorSub, victimID)
 		require.Equal(t, wire.ErrCodeNotYourTurn, awaitError(t, doctorSub, time.Minute).Code)
-
-		// The shortened window times out and the night resolves: kill lands.
-		killed := awaitEvent[game.PlayerKilled](t, watcher, time.Minute)
-		require.Equal(t, victimID, killed.PlayerID)
-
-		// With the room parked in the day phase, read final state directly.
-		synctest.Wait()
-		_, saved := batchHasEvent[game.PlayerSaved](drain(doctorSub, time.Second))
-		require.False(t, saved, "a blocked doctor produces no save")
-		st := r.g.State()
-		require.Equal(t, game.PhaseDayDiscussion, st.Phase())
-		for _, p := range st.Players() {
-			switch p.ID() {
-			case victimID:
-				require.False(t, p.Alive(), "the mafia's victim is dead (save was blocked)")
-			case doctorID, cast.idByRole[game.RoleConsort]:
-				require.True(t, p.Alive())
-			}
-		}
 	})
 }

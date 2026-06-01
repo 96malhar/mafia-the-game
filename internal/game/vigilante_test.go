@@ -23,8 +23,8 @@ import (
 //
 // The vigilante consumes one villager slot. On return the game is in
 // PhaseNight sitting on the MAFIA's act window. The night turn order with
-// a vigilante present is Mafia -> Detective -> Doctor -> Vigilante (the
-// vigilante wakes last).
+// a vigilante present is Mafia -> Detective -> Vigilante -> Doctor (the
+// doctor wakes last, after both night-killers).
 func fixedRosterWithVigilante(t *testing.T) *game.Game {
 	t.Helper()
 	return fixedRosterMatching(t, rosterDeal{
@@ -44,11 +44,11 @@ func fixedRosterWithVigilante(t *testing.T) *game.Game {
 }
 
 // runVigilanteNightToDay walks the night with a vigilante in the queue
-// (Mafia -> Detective -> Doctor -> Vigilante). See runNightToDay.
+// (Mafia -> Detective -> Vigilante -> Doctor). See runNightToDay.
 func runVigilanteNightToDay(t *testing.T, g *game.Game, actions map[game.Role]game.PlayerID) []game.Event {
 	t.Helper()
 	return runNightToDay(t, g,
-		[]game.Role{game.RoleMafia, game.RoleDetective, game.RoleDoctor, game.RoleVigilante},
+		[]game.Role{game.RoleMafia, game.RoleDetective, game.RoleVigilante, game.RoleDoctor},
 		actions)
 }
 
@@ -164,17 +164,19 @@ func TestVigilante_StackedOptionalRolesRejectedWhenNoVillagerSlot(t *testing.T) 
 
 // --- night turn order -----------------------------------------------------
 
-func TestVigilante_WakesLastAfterDoctor(t *testing.T) {
+func TestVigilante_WakesBeforeDoctor(t *testing.T) {
 	g := fixedRosterWithVigilante(t)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
 	walkRestOfTurn(t, g) // mafia -> detective
 	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	walkRestOfTurn(t, g) // detective -> doctor
-	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
-	walkRestOfTurn(t, g) // doctor -> vigilante
+	walkRestOfTurn(t, g) // detective -> vigilante
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole(),
-		"the vigilante wakes last, after the doctor")
+		"the vigilante wakes after the detective")
+	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
+	walkRestOfTurn(t, g) // vigilante -> doctor
+	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole(),
+		"the doctor wakes last, after both night-killers")
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 }
 
@@ -222,8 +224,7 @@ func TestVigilante_OneShotSecondNightRejected(t *testing.T) {
 	noLynchDay(t, g)
 	beginNightToMafiaAct(t, g)   // -> mafia act window
 	walkRestOfTurn(t, g)         // mafia -> detective
-	walkRestOfTurn(t, g)         // detective -> doctor
-	evts := walkRestOfTurn(t, g) // doctor -> vigilante (now phantom)
+	evts := walkRestOfTurn(t, g) // detective -> vigilante (now phantom)
 
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
@@ -245,8 +246,7 @@ func TestVigilante_OneShotSecondNightRejected(t *testing.T) {
 func TestVigilante_CannotSelfTarget(t *testing.T) {
 	g := fixedRosterWithVigilante(t)
 	walkRestOfTurn(t, g) // mafia -> detective
-	walkRestOfTurn(t, g) // detective -> doctor
-	walkRestOfTurn(t, g) // doctor -> vigilante
+	walkRestOfTurn(t, g) // detective -> vigilante
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 
 	_, err := g.Apply(game.NightAction{Actor: "vig", Target: "vig"})
@@ -289,16 +289,17 @@ func TestVigilante_DoctorSavesVigilanteSoShotLands(t *testing.T) {
 		game.RoleVigilante: "mafia1",
 	})
 
-	saved, ok := findEvent[game.PlayerSaved](evts)
-	require.True(t, ok, "the doctor's save of the vigilante is recorded")
-	require.Equal(t, game.PlayerID("vig"), saved.PlayerID)
-
 	killed, ok := findEvent[game.PlayerKilled](evts)
 	require.True(t, ok, "the saved vigilante's shot lands on the mafia")
 	require.Equal(t, game.PlayerID("mafia1"), killed.PlayerID)
 
 	require.True(t, livingByID(g, "vig"), "the saved vigilante survives")
 	require.False(t, livingByID(g, "mafia1"), "the mafia dies to the vigilante shot")
+
+	// The shot landed, so the one bullet is spent. (This night ends the
+	// game as a town win, so there is no later night to walk to — assert
+	// the bullet state directly.)
+	require.True(t, g.State().VigilanteShotUsed(), "a landed shot spends the bullet")
 }
 
 // --- rule 4: vigilante's target saved -> wasted bullet --------------------
@@ -313,9 +314,6 @@ func TestVigilante_TargetSavedWastesBulletButSpendsIt(t *testing.T) {
 		game.RoleVigilante: "town1",
 	})
 
-	saved, ok := findEvent[game.PlayerSaved](evts)
-	require.True(t, ok, "the doctor's save of the vigilante's target is recorded")
-	require.Equal(t, game.PlayerID("town1"), saved.PlayerID)
 	_, killed := findEvent[game.PlayerKilled](evts)
 	require.False(t, killed, "the saved target does not die")
 	require.True(t, livingByID(g, "town1"), "town1 survives the wasted shot")
@@ -327,8 +325,7 @@ func TestVigilante_TargetSavedWastesBulletButSpendsIt(t *testing.T) {
 	noLynchDay(t, g)
 	beginNightToMafiaAct(t, g)
 	walkRestOfTurn(t, g)          // mafia -> detective
-	walkRestOfTurn(t, g)          // detective -> doctor
-	evts2 := walkRestOfTurn(t, g) // doctor -> vigilante (now phantom)
+	evts2 := walkRestOfTurn(t, g) // detective -> vigilante (now phantom)
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
 		"a wasted shot still spends the bullet — the next turn is phantom")
@@ -378,6 +375,38 @@ func TestVigilante_SameTargetAsMafiaYieldsOneDeath(t *testing.T) {
 	require.False(t, livingByID(g, "town1"))
 }
 
+func TestVigilante_SameTargetAsMafiaSavedByDoctorSpendsBullet(t *testing.T) {
+	// The mafia and the vigilante both shoot town1 and the doctor saves
+	// town1. The save cancels both shots silently, so nobody dies and no
+	// event is emitted — resolveHit runs twice on the saved target (once
+	// per killer) but each is a silent no-op. The vigilante's bullet is
+	// still spent.
+	g := fixedRosterWithVigilante(t)
+	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:     "town1",
+		game.RoleDoctor:    "town1",
+		game.RoleVigilante: "town1",
+	})
+
+	_, killed := findEvent[game.PlayerKilled](evts)
+	require.False(t, killed, "the doctor's save cancels both shots on town1")
+	require.True(t, livingByID(g, "town1"), "the saved target survives")
+
+	// The bullet is still spent even though the shot landed on the same
+	// target as the mafia (and was saved): next night the vigilante's turn
+	// is phantom (no act window) and a bypassing submit is rejected.
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+	walkRestOfTurn(t, g) // mafia -> detective
+	walkRestOfTurn(t, g) // detective -> vigilante (now phantom)
+	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a shot duplicating the mafia's saved target still spends the bullet")
+	_, err := g.Apply(game.NightAction{Actor: "vig", Target: "town2"})
+	require.ErrorIs(t, err, game.ErrNotYourTurn,
+		"the spent bullet leaves no act window on a later night")
+}
+
 // --- mafia + vigilante hit two different players --------------------------
 
 func TestVigilante_DifferentTargetsYieldTwoDeaths(t *testing.T) {
@@ -413,7 +442,7 @@ func TestVigilante_DifferentTargetsYieldTwoDeaths(t *testing.T) {
 //	vig    -> RoleVigilante
 //	town1  -> RoleVillager
 //
-// Night turn order is Mafia -> Consort -> Detective -> Doctor -> Vigilante.
+// Night turn order is Mafia -> Consort -> Detective -> Vigilante -> Doctor.
 func fixedRosterWithConsortAndVigilante(t *testing.T) *game.Game {
 	t.Helper()
 	return fixedRosterMatching(t, rosterDeal{
@@ -444,8 +473,7 @@ func TestVigilante_BlockedByConsortDoesNotSpendBullet(t *testing.T) {
 	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole())
 	nightAction(t, g, "consort", "vig")
 	walkRestOfTurn(t, g) // consort -> detective
-	walkRestOfTurn(t, g) // detective -> doctor
-	walkRestOfTurn(t, g) // doctor -> vigilante (blocked => phantom)
+	walkRestOfTurn(t, g) // detective -> vigilante (blocked => phantom)
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
 		"a blocked vigilante's turn is phantom — no act window")
@@ -465,8 +493,7 @@ func TestVigilante_BlockedByConsortDoesNotSpendBullet(t *testing.T) {
 	beginNightToMafiaAct(t, g)
 	walkRestOfTurn(t, g) // mafia -> consort
 	walkRestOfTurn(t, g) // consort -> detective
-	walkRestOfTurn(t, g) // detective -> doctor
-	walkRestOfTurn(t, g) // doctor -> vigilante
+	walkRestOfTurn(t, g) // detective -> vigilante
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 	evts2 := nightAction(t, g, "vig", "town1")
@@ -486,7 +513,7 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 
 	// Quiet night except the vigilante shoots the lone mafioso.
 	evts := runNightToDay(t, g,
-		[]game.Role{game.RoleMafia, game.RoleConsort, game.RoleDetective, game.RoleDoctor, game.RoleVigilante},
+		[]game.Role{game.RoleMafia, game.RoleConsort, game.RoleDetective, game.RoleVigilante, game.RoleDoctor},
 		map[game.Role]game.PlayerID{game.RoleVigilante: "mafia1"})
 
 	killed, ok := findEvent[game.PlayerKilled](evts)
@@ -537,8 +564,7 @@ func TestVigilante_HoldFireEndsTurnWithoutSpendingBullet(t *testing.T) {
 	// still fire on a later night.
 	g := fixedRosterWithVigilante(t)
 	walkRestOfTurn(t, g) // mafia -> detective
-	walkRestOfTurn(t, g) // detective -> doctor
-	walkRestOfTurn(t, g) // doctor -> vigilante
+	walkRestOfTurn(t, g) // detective -> vigilante
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
@@ -572,8 +598,7 @@ func TestVigilante_HoldFireEndsTurnWithoutSpendingBullet(t *testing.T) {
 	noLynchDay(t, g)
 	beginNightToMafiaAct(t, g)
 	walkRestOfTurn(t, g) // mafia -> detective
-	walkRestOfTurn(t, g) // detective -> doctor
-	walkRestOfTurn(t, g) // doctor -> vigilante
+	walkRestOfTurn(t, g) // detective -> vigilante
 	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
 		"a vigilante who held fire keeps a live act window on later nights")

@@ -196,8 +196,6 @@ func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
 	killed, ok := findEvent[game.PlayerKilled](evts)
 	require.True(t, ok, "with the save blocked, the kill lands")
 	require.Equal(t, game.PlayerID("town1"), killed.PlayerID)
-	_, saved := findEvent[game.PlayerSaved](evts)
-	require.False(t, saved, "a blocked doctor produces no save")
 
 	for _, p := range g.State().Players() {
 		if p.ID() == "town1" {
@@ -235,8 +233,6 @@ func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testin
 	killed, ok := findEvent[game.PlayerKilled](evts)
 	require.True(t, ok, "the consort's kill lands because she blocked her own savior")
 	require.Equal(t, game.PlayerID("consort"), killed.PlayerID)
-	_, saved := findEvent[game.PlayerSaved](evts)
-	require.False(t, saved, "a blocked doctor produces no save")
 
 	for _, p := range g.State().Players() {
 		if p.ID() == "consort" {
@@ -255,11 +251,9 @@ func TestConsort_UnblockedDoctorSaveStillWorks(t *testing.T) {
 		game.RoleDoctor:  "town1",
 	})
 
-	saved, ok := findEvent[game.PlayerSaved](evts)
-	require.True(t, ok, "an unblocked doctor save works normally")
-	require.Equal(t, game.PlayerID("town1"), saved.PlayerID)
 	_, killed := findEvent[game.PlayerKilled](evts)
-	require.False(t, killed, "the save cancels the kill")
+	require.False(t, killed, "an unblocked doctor save cancels the kill")
+	require.True(t, livingByID(g, "town1"), "the protected target survives")
 }
 
 func TestConsort_BlockNoticeArrivesAfterNarrate(t *testing.T) {

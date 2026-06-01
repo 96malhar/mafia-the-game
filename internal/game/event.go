@@ -271,17 +271,6 @@ type PlayerKilled struct {
 func (PlayerKilled) isEvent()               {}
 func (PlayerKilled) Visibility() Visibility { return Public() }
 
-// PlayerSaved is emitted when the doctor's save cancels the mafia kill.
-// Visible only to the doctor so the village can't deduce the role from
-// public info.
-type PlayerSaved struct {
-	PlayerID PlayerID
-	Doctor   PlayerID
-}
-
-func (e PlayerSaved) isEvent()               {}
-func (e PlayerSaved) Visibility() Visibility { return PrivateTo(e.Doctor) }
-
 // Blocked tells a player that the Consort nullified their night action.
 // Emitted only when a real action was actually cancelled (a blocked
 // doctor's save or detective's investigation) — never for a blocked

@@ -108,9 +108,6 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.PlayerKilled:
 		tag = wire.EventPlayerKilled
 		data = kv{"playerId": string(v.PlayerID)}
-	case game.PlayerSaved:
-		tag = wire.EventPlayerSaved
-		data = kv{"playerId": string(v.PlayerID), "doctor": string(v.Doctor)}
 	case game.DetectiveResult:
 		tag = wire.EventDetectiveResult
 		data = kv{"detective": string(v.Detective), "target": string(v.Target), "isMafia": v.IsMafia}

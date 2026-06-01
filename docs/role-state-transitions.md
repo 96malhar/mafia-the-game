@@ -26,7 +26,7 @@ The engine itself is **timeless** — it only knows sub-phase *order*. All wall-
 
 A night is a fixed **opening** beat followed by one turn per role in the wake queue, then resolution. The wake order is:
 
-> Mafia → [Consort] → Detective → Doctor → [Vigilante]
+> Mafia → [Consort] → Detective → [Vigilante] → Doctor
 
 `[Consort]` and `[Vigilante]` are **optional** roles (host toggles before the game starts); when enabled they each take a villager slot. The queue is built from the *dealt-time* toggles, not the live roster, so a dead (or spent, or promoted) role's turn still runs — as a **phantom** — to keep the moderator's audio cadence and to avoid leaking who is still alive.
 
@@ -123,7 +123,7 @@ During `act`:
 - Targeting a fellow mafioso is rejected with `ErrNotYourAction`.
 - Mafia are immune to the Consort block (there is no shortened window).
 
-**On resolution:** the mafia kill resolves **first**. A doctor save on the same target cancels it (`PlayerSaved`, private to the doctor); otherwise the target dies (`PlayerKilled`, public).
+**On resolution:** the mafia kill resolves **first**. A doctor save on the same target cancels it **silently** (no event is emitted); otherwise the target dies (`PlayerKilled`, public).
 
 ---
 
@@ -151,6 +151,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 ## Doctor
 
 - **Faction:** Town. Always-on reserved role.
+- Wakes **last of all**, after both night-killers (the mafia and, when enabled, the vigilante), so the save is the final beat of the night.
 - **Blockable** by the Consort.
 - **Self-save is allowed** on any night.
 
@@ -161,7 +162,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 - `act → ponder` — saves a target (possibly self), or the 60s timer expires with no save.
 - Then `ponder → sleep → settle`.
 
-When the doctor submits, the engine emits `NightActionRecorded`. The save is reconciled during resolution: if it matches a kill target, that kill is cancelled and a private `PlayerSaved` is emitted to the doctor.
+When the doctor submits, the engine emits `NightActionRecorded`. The save is reconciled during resolution: if it matches a kill target, that kill is cancelled **silently** — **no** confirmation event is emitted, not even to the doctor. The doctor gets no per-night signal at all and can only infer a successful save from who survives the night. This holds even when two killers (the mafia *and* the vigilante) both hit the saved player: `resolveHit` runs once per attacker, and each is a silent no-op.
 
 When the turn is phantom because of a **block**: there is no act window, and a private `Blocked` event arrives as the ponder begins (just after narrate); the client hides the picker. No save is ever recorded, so the kill on the doctor's intended target lands.
 
@@ -189,7 +190,7 @@ When the consort submits, the engine emits `NightActionRecorded`. Self-block is 
 
 ## Vigilante (optional)
 
-- **Faction:** Town. Wakes **last** (only if enabled).
+- **Faction:** Town. Wakes after the detective, **before the doctor** (only if enabled), so the doctor can still save the vigilante's target.
 - **One bullet for the whole game.**
 - **Blockable** by the Consort — and a block nullifies the shot **without spending the bullet**.
 - May **hold fire**: an explicit `NightPass` (the client's "Hold fire" button) ends the act window early without firing, keeping the bullet for a later night and sparing the table the full 60s wait.
@@ -212,7 +213,7 @@ The reason a turn is phantom changes what it means for the bullet:
 **On resolution (order matters):**
 
 1. The mafia kill resolves first. If the mafia targeted the Vigilante and he wasn't saved, **he dies and his shot never lands** (mafia precedence).
-2. The Vigilante's shot resolves second, **only if he is still alive**. A doctor save on the Vigilante's target cancels the shot (`PlayerSaved`) — but the **bullet is still spent**.
+2. The Vigilante's shot resolves second, **only if he is still alive**. A doctor save on the Vigilante's target cancels the shot **silently** (no event) — but the **bullet is still spent**.
 
 The one-shot flag (`vigilanteShotUsed`) is set during resolution **only if a shot was actually recorded**, so a *blocked* Vigilante keeps his bullet.
 
@@ -247,7 +248,6 @@ After the last role's `settle`, `resolveNight` reconciles every scheduled intent
 | `DetectiveResult` | private (detective) | at the detective's submit time |
 | `Blocked` | private (blocked actor) | as the blocked actor's cannot-act ponder begins (just after their narrate) |
 | `PlayerKilled` | public | a kill lands during resolution |
-| `PlayerSaved` | private (doctor) | a doctor save cancels a kill |
 | `PhaseChanged` | public | night resolves into Day Discussion |
 
 > `NightActionRecorded` is scoped to `FactionMafia` only for the mafia (co-mafia must see the locked kill to coordinate). Solo town/consort roles share a faction with non-actors, so scoping their ack to the faction would leak the hidden role — they get a private self-ack instead.

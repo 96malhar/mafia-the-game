@@ -393,8 +393,10 @@ func (g *Game) beginNightTurns() []Event {
 	// and crucially BEFORE the detective and doctor, so her block is
 	// already recorded when their act windows open — that's what lets us
 	// notify a blocked town role at the start of their own turn and
-	// suppress the detective's result. Mafia lead so the doctor (last)
-	// saves with the most information about who's been targeted. The
+	// suppress the detective's result. Mafia lead, and the Doctor wakes
+	// LAST of all — after both night-killers (the mafia and, when
+	// enabled, the vigilante) — so the save is the final beat of the
+	// night, the town's last line of defense against either kill. The
 	// consort turn is queued only when the role was actually dealt
 	// (alive OR dead, to keep a dead consort's turn phantom and hide her
 	// death); an optional role that was never dealt has no turn at all.
@@ -411,9 +413,9 @@ func (g *Game) beginNightTurns() []Event {
 	if g.state.consortEnabled {
 		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleConsort)
 	}
-	g.state.nightTurnQueue = append(g.state.nightTurnQueue,
-		RoleDetective, RoleDoctor)
-	// The optional Vigilante wakes last, after the doctor. Like the
+	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleDetective)
+	// The optional Vigilante wakes after the detective but BEFORE the
+	// doctor, so the doctor still closes the night (see above). Like the
 	// consort we key off the dealt-time toggle (vigilanteEnabled) rather
 	// than the live roster so a dead vigilante's turn keeps running as a
 	// phantom — dropping it would shorten the night cadence and leak his
@@ -426,6 +428,7 @@ func (g *Game) beginNightTurns() []Event {
 	if g.state.vigilanteEnabled {
 		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleVigilante)
 	}
+	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleDoctor)
 	// Enter the night-scoped opening sub-phase. currentNightRole
 	// stays empty until the opening elapses and advanceNightSubPhase
 	// pops the first role.

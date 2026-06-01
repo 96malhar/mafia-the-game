@@ -82,11 +82,6 @@ type nightContext struct {
 	saveTarget PlayerID
 	hasSave    bool
 
-	// savingDoctor is the PlayerID of the doctor who issued the save
-	// (used so PlayerSaved can carry the right Visibility). Empty if
-	// hasSave is false.
-	savingDoctor PlayerID
-
 	// died is set during nightPhaseResolve to the player who actually
 	// died this night (empty if nobody died). Reveal-phase roles
 	// (detective, etc.) can read this if they care.
@@ -219,7 +214,6 @@ var roleSpecs = map[Role]roleSpec{
 			Apply: func(ctx *nightContext, actor, target *Player) {
 				ctx.saveTarget = target.id
 				ctx.hasSave = true
-				ctx.savingDoctor = actor.id
 			},
 		},
 	},
@@ -319,10 +313,11 @@ var roleSpecs = map[Role]roleSpec{
 // resolvePhase is the implicit nightPhaseResolve handler. It is not a
 // role spec because no role "owns" the resolve step — it's the
 // engine's reconciliation of scheduled intents into actual player-state
-// changes and the public kill/save events.
+// changes and the public kill events.
 //
-// Doctor saves cancel a kill iff they target the same player. The
-// private PlayerSaved is visible only to the doctor (see event.go).
+// Doctor saves cancel a kill iff they target the same player. A save is
+// silent: it emits no event, so the doctor gets no confirmation and the
+// village can only infer protection from who survives the night.
 //
 // Resolution is ORDER-DEPENDENT because of the vigilante:
 //
@@ -351,16 +346,14 @@ func resolvePhase(ctx *nightContext) {
 }
 
 // resolveHit applies a single attempted kill on target: a matching doctor
-// save cancels it (emitting the private PlayerSaved), otherwise the target
-// dies (emitting the public PlayerKilled). The alive guard also de-dups
-// the case where two killers (mafia + vigilante) hit the same player —
-// only one death lands.
+// save cancels it silently (no event is emitted), otherwise the target
+// dies (emitting the public PlayerKilled). Two killers (mafia + vigilante)
+// can hit the same player, so resolveHit may run twice on one target; the
+// alive guard on the kill keeps that to a single PlayerKilled.
 func (ctx *nightContext) resolveHit(target PlayerID) {
 	if ctx.hasSave && ctx.saveTarget == target {
-		ctx.events = append(ctx.events, PlayerSaved{
-			PlayerID: target,
-			Doctor:   ctx.savingDoctor,
-		})
+		// Save lands: cancel the kill, but tell no one. The doctor
+		// learns nothing this night — survival is the only signal.
 		return
 	}
 	if tp, ok := ctx.state.findPlayer(target); ok && tp.alive {

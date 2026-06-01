@@ -11,17 +11,10 @@ type Player struct {
 }
 
 // ID returns the player's identifier.
+//
+// The other field reads (Name, Role, Alive) are test-only and live in
+// export_test.go so they don't ship in production builds.
 func (p Player) ID() PlayerID { return p.id }
-
-// Name returns the player's display name.
-func (p Player) Name() string { return p.name }
-
-// Role returns the player's dealt role. It is the zero value Role("") in
-// PhaseLobby (before StartGame).
-func (p Player) Role() Role { return p.role }
-
-// Alive reports whether the player is currently alive.
-func (p Player) Alive() bool { return p.alive }
 
 // GameState is the full, authoritative state of one game. It is mutated
 // only through Game.Apply; outside callers may only read via accessors.
@@ -206,80 +199,24 @@ func newState() *GameState {
 }
 
 // --- read-only accessors ---------------------------------------------------
-
-// ID returns the game identifier.
-func (s *GameState) ID() GameID { return s.id }
-
-// Phase returns the current phase.
-func (s *GameState) Phase() Phase { return s.phase }
-
-// Day returns the current day number (0 before the first day starts).
-func (s *GameState) Day() int { return s.day }
+//
+// Only accessors with a production caller (or a cross-package test that
+// can't reach an in-package export_test.go) live here. The remaining
+// inspection getters are test-only and defined in export_test.go, so they
+// stay out of production builds.
 
 // Players returns a copy of the player list in join order. The copy keeps
-// callers from accidentally mutating the engine's slice.
+// callers from accidentally mutating the engine's slice. Used by the room
+// layer (oldestConnectedPlayer) to promote a new host in join order.
 func (s *GameState) Players() []Player {
 	out := make([]Player, len(s.players))
 	copy(out, s.players)
 	return out
 }
 
-// PlayerCount returns the number of players in the game (alive or dead).
-func (s *GameState) PlayerCount() int { return len(s.players) }
-
-// MinPlayers returns the minimum player count required to start.
-func (s *GameState) MinPlayers() int { return s.minPlayers }
-
-// MaxPlayers returns the hard cap on AddPlayer.
-func (s *GameState) MaxPlayers() int { return s.maxPlayers }
-
-// MafiaCount returns the current configured number of mafia for the
-// upcoming game. May still be adjusted (via SetMafiaCount) while the
-// game is in PhaseLobby.
-func (s *GameState) MafiaCount() int { return s.mafiaCount }
-
-// ConsortEnabled reports whether the optional Consort role is toggled on
-// for the upcoming game. Adjustable via SetConsort while in PhaseLobby.
-func (s *GameState) ConsortEnabled() bool { return s.consortEnabled }
-
-// VigilanteEnabled reports whether the optional Vigilante role is toggled
-// on for the upcoming game. Adjustable via SetVigilante while in PhaseLobby.
-func (s *GameState) VigilanteEnabled() bool { return s.vigilanteEnabled }
-
-// DayLynchResolved reports whether the current day has already had a
-// vote finalized (i.e. a lynch has been resolved or the day was
-// otherwise concluded). Used by the UI to decide which host buttons
-// to surface — pre-finalize the host gets Open/Clear/Finalize voting,
-// post-finalize they only get Begin Night.
-func (s *GameState) DayLynchResolved() bool { return s.dayLynchResolved }
-
-// VotesRevealed reports whether the host has revealed the current
-// PhaseDayVote tally. The UI keys off this to swap the host's "Reveal
-// votes" button for "Finalize votes" / "Clear & re-vote", to stop
-// showing the per-row Vote buttons (voting is locked post-reveal), and
-// to switch the tally from hidden to visible. Always false outside an
-// in-progress, unrevealed vote.
-func (s *GameState) VotesRevealed() bool { return s.votesRevealed }
-
-// RolesDealt reports whether StartGame has dealt per-player roles. Once
-// true the lobby is closed to new players and config changes, even
-// while the game remains in PhaseLobby awaiting the host's BeginNight.
-func (s *GameState) RolesDealt() bool { return s.rolesDealt }
-
-// CurrentNightRole returns the role whose turn it currently is during
-// PhaseNight, or the empty Role between turns / outside of Night.
-func (s *GameState) CurrentNightRole() Role { return s.currentNightRole }
-
-// CurrentNightSubPhase returns the active sub-phase within the current
-// role's night turn (narrate / act / ponder / sleep / settle), or the
-// empty NightSubPhase outside of an active turn. See NightSubPhase
-// for the per-role state machine.
-func (s *GameState) CurrentNightSubPhase() NightSubPhase { return s.currentNightSubPhase }
-
 // HasLivingRole reports whether at least one living player holds the
-// given role. Exported so the room layer can size phantom-vs-real
-// ponder durations without re-walking the player list. Mirrors the
-// engine's internal hasLivingRole helper.
+// given role. Used internally by roleTurnIsPhantom to decide whether a
+// night turn has an actionable holder.
 func (s *GameState) HasLivingRole(r Role) bool {
 	return s.anyPlayer(func(p *Player) bool { return p.alive && p.role == r })
 }

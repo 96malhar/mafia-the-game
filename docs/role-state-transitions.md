@@ -71,7 +71,7 @@ Source of truth: `internal/room/config.go`. The engine emits `Deadline = 0`; the
 | `ponder` (real, most roles) | 2s | Post-submit breath. |
 | `ponder` (real, detective) | 3s | Sized to read the result modal. |
 | `ponder` (phantom) | 5–10s (random) | Hides *why* the turn was inert (dead/spent/blocked). |
-| `sleep` | 1.5s | "Go to sleep" cue. |
+| `sleep` | 2s | "Go to sleep" cue. |
 | `settle` | 3s | Post-sleep beat before the next role. |
 
 There is **no shortened "blocked" act window** — a blocked actor never reaches `act` at all; their turn is phantom. The phantom ponder is **randomized** specifically so an observer can't deduce from timing why the turn produced no action: a dead, spent, and blocked role are all indistinguishable.

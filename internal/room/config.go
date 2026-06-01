@@ -77,8 +77,8 @@ const DefaultActionDuration = 60 * time.Second
 const DefaultSettleDuration = 3 * time.Second
 
 // DefaultPonderRealSubmit is the post-submit pause for non-detective
-// real roles. A small breath between "action recorded" and the
-// "go to sleep" cue.
+// real roles. A breath between "action recorded" and the "go to
+// sleep" cue.
 const DefaultPonderRealSubmit = 2 * time.Second
 
 // DefaultPonderDetectiveSubmit is the post-submit pause for the
@@ -116,7 +116,7 @@ const DefaultNarrateDuration = 2500 * time.Millisecond
 //
 // COUPLED with ROLE_SLEEP in web/index.html (same rule as the narrate
 // constants above).
-const DefaultSleepDuration = 1500 * time.Millisecond
+const DefaultSleepDuration = 2 * time.Second
 
 // DefaultMafiaNarrateDay0 is the Day-0-only mafia narrate duration.
 // Day 1 mafia includes a "look around and recognize each other" beat

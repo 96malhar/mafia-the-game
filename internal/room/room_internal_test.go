@@ -68,21 +68,21 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 		}
 	})
 
-	t.Run("ponder default - non-detective real role is the short beat", func(t *testing.T) {
+	t.Run("ponder default - non-detective real role uses the real-submit beat", func(t *testing.T) {
 		// Submit vs timeout is intentionally indistinguishable, so the
 		// ponder beat depends only on the role.
 		require.Equal(t, DefaultPonderRealSubmit,
 			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleMafia, 0, false)),
-			"non-detective real ponder uses the short beat")
+			"non-detective real ponder uses the real-submit beat")
 		require.Equal(t, DefaultPonderRealSubmit,
 			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDoctor, 0, false)),
 			"doctor too")
 	})
 
-	t.Run("ponder default - detective gets a longer beat", func(t *testing.T) {
+	t.Run("ponder default - detective uses the detective-submit beat", func(t *testing.T) {
 		require.Equal(t, DefaultPonderDetectiveSubmit,
 			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false)),
-			"detective ponder is sized for read-modal pause")
+			"detective ponder is sized for the read-modal pause")
 	})
 
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {

@@ -110,7 +110,7 @@ internal/room/         in-memory room/hub: an engine plus its WS subscribers
 internal/transport/ws/ WebSocket upgrade, JSON codec, per-connection pumps
 internal/wire/         stable string tags shared by every client and the server
 internal/server/       HTTP server, routing, and middleware
-web/                   static frontend (single index.html, no build step)
+web/                   static frontend (index.html + ordered vanilla-JS files, no build step)
 ```
 
 ## Architecture
@@ -122,6 +122,6 @@ A short tour of each package's concern, from the core outward:
 - **`internal/transport/ws`** — upgrades HTTP to WebSocket, encodes/decodes the JSON message envelopes, and runs the read/write pumps for each connection. The bridge between raw sockets and the room's command/event channels.
 - **`internal/wire`** — the stable string contract (message-type tags and event tags) shared by the server and the browser, so all clients agree on the protocol. Domain-enum spellings (Role, Phase, Faction) are not duplicated here: they are the engine's own string-typed values, written to the wire directly.
 - **`internal/server`** — the chi HTTP server: routing, middleware (real client IP, security headers, body-size cap, per-IP rate limiting), static file serving, and the `/healthz` endpoint.
-- **`web`** — a single `index.html` (vanilla JS + Tailwind via CDN) that speaks the JSON-over-WebSocket protocol; no build step.
+- **`web`** — the frontend: `index.html` plus a set of ordered, classic (non-module) vanilla-JS files (`helpers.js` → `render.js` → `actions.js` → `events.js` → `lobby.js` → `url.js` → `main.js`) that share one global scope, and `styles.css`. Tailwind via CDN; speaks the JSON-over-WebSocket protocol. Still no build step — the files are embedded and served as-is.
 
 **Persistence**: none. All room state lives in memory in a single process, which is why the server runs as exactly one instance.

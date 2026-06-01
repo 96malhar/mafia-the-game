@@ -1,0 +1,760 @@
+      // ----- WebSocket plumbing ------------------------------------------
+
+      function send(type, data = {}) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type, data }));
+      }
+
+      function handleServerMessage(msg) {
+        switch (msg.type) {
+          case "joined": {
+            const d = msg.data;
+            myId = d.playerId;
+            myIsHost = !!d.isHost;
+            pendingRejoinCode = null;
+            pendingJoinCode = null;
+            // A clean join means any prior reconnect loop is done.
+            cancelReconnect();
+            reconnectAttempts = 0;
+            showReconnectingBanner(false);
+            // Fresh socket: start from a clean model. The server
+            // attaches its projected view of prior events so we can
+            // see who else is already in the room. Our own PlayerJoined
+            // arrives as a separate "event" frame immediately after.
+            resetGameState();
+            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
+            showGame(d.roomCode);
+            credStore.setItem(storageKey(d.roomCode), JSON.stringify({
+              playerId: d.playerId,
+              secret: d.secret,
+            }));
+            if (Array.isArray(d.events)) {
+              // Replay: feed prior events through the reducer so the
+              // UI reflects the room's current state. Mark them as
+              // replay so narration is suppressed (we don't want a
+              // late-joining host's phone re-announcing every event
+              // from earlier in the night).
+              for (const env of d.events) handleEvent(env, { replaying: true });
+            }
+            break;
+          }
+          case "rejoined": {
+            const d = msg.data;
+            myId = d.playerId;
+            myIsHost = !!d.isHost;
+            pendingRejoinCode = null;
+            // Reconnect (or page-load auto-rejoin) succeeded: stop the
+            // retry loop, reset backoff, clear the banner. Replayed
+            // events below pass {replaying:true} so we don't re-fire a
+            // burst of stale narration on catch-up.
+            cancelReconnect();
+            reconnectAttempts = 0;
+            showReconnectingBanner(false);
+            resetGameState();
+            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
+            showGame(d.roomCode);
+            for (const env of d.events) handleEvent(env, { replaying: true });
+            break;
+          }
+          case "event":
+            handleEvent(msg.data.event);
+            break;
+          case "error": {
+            const code = msg.data && msg.data.code;
+            const message =
+              (msg.data && (msg.data.message || msg.data.code)) || "error";
+
+            // First-time join error: the server has already shaped a
+            // player-facing message (see room.joinErrorFor); we just
+            // render it in the lobby status line and bounce back to
+            // a clean lobby. The URL is cleared so the "Start a
+            // game" / Create view is visible, since retrying against
+            // the same closed/full/ended room would just fail again.
+            if (pendingJoinCode) {
+              pendingJoinCode = null;
+              if (ws) {
+                ws.onclose = null;
+                ws.onerror = null;
+                try { ws.close(); } catch {}
+                ws = null;
+              }
+              recoverToLobby(null, message);
+              break;
+            }
+
+            showError(message);
+
+            // If we were (auto-)rejoining and the server can't
+            // authenticate us, the stored credentials are stale —
+            // typically because the server restarted, the room was
+            // closed, or the player slot was evicted. This covers both
+            // the page-load auto-rejoin (pendingRejoinCode) and the
+            // in-game reconnect loop (reconnecting); in the latter case
+            // auth_failed is the signal that breaks the retry loop
+            // instead of looping forever against dead creds. Clear them
+            // and drop the user on the join screen for this room so
+            // they can re-enter as a fresh player.
+            if ((pendingRejoinCode || reconnecting) && code === "auth_failed") {
+              const stale = pendingRejoinCode || currentRoomCode;
+              pendingRejoinCode = null;
+              cancelReconnect();
+              showReconnectingBanner(false);
+              credStore.removeItem(storageKey(stale));
+              // Detach handlers so the synthetic close from our own
+              // teardown doesn't overwrite the recovery status message.
+              if (ws) {
+                ws.onclose = null;
+                ws.onerror = null;
+                try { ws.close(); } catch {}
+                ws = null;
+              }
+              recoverToLobby(stale, "Previous session expired — rejoin as a new player.");
+            }
+            break;
+          }
+          default:
+            // Unknown top-level frame — should never happen in a
+            // version-matched client/server pair. Surface it so we
+            // notice during dev (and don't silently drop something
+            // important).
+            showError(`Unknown server message: ${msg.type}`);
+        }
+      }
+
+      function handleEvent(env, { replaying = false } = {}) {
+        switch (env.type) {
+          case "gameCreated":
+            // The server's GameCreated event is authoritative for
+            // these three fields and always populates them; we don't
+            // fall back to a previous value (or a hardcoded default)
+            // because that would just hide a wire-protocol regression.
+            lobbyMinPlayers = env.data.minPlayers;
+            lobbyMaxPlayers = env.data.maxPlayers;
+            mafiaCount = env.data.mafiaCount;
+            renderAll();
+            break;
+
+          case "mafiaCountChanged":
+            mafiaCount = env.data.to;
+            renderActionPanel();
+            break;
+
+          case "consortChanged":
+            consortEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
+          case "vigilanteChanged":
+            vigilanteEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
+          case "playerJoined":
+            upsertPlayer(env.data.playerId, {
+              name: env.data.name,
+              alive: true,
+            });
+            break;
+
+          case "hostChanged":
+            // The server is authoritative for who the host is.
+            // We keep myIsHost in sync (used to gate host-only
+            // controls) and re-render so the "Host" badge appears
+            // next to the right player for everyone in the room,
+            // not just the host themselves.
+            hostId = env.data.playerId;
+            myIsHost = hostId === myId;
+            renderAll();
+            break;
+
+          case "playerKilled":
+            upsertPlayer(env.data.playerId, {
+              alive: false,
+              deathCause: "killed",
+            });
+            // Stash the death twice: dayDiscussionPendingDeaths
+            // drives the (single-shot) dawn narration and is
+            // consumed by narratePhaseChange; lastNightVictims
+            // drives the (persistent) day-discussion banner chip
+            // and is only cleared when the next night begins
+            // (see the to === "night" branch in phaseChanged).
+            // Both are lists: a night can land multiple kills (mafia
+            // + vigilante on different targets), so we APPEND rather
+            // than overwrite to keep every victim.
+            dayDiscussionPendingDeaths.push(env.data.playerId);
+            lastNightVictims.push(env.data.playerId);
+            break;
+
+          case "playerLynched":
+            upsertPlayer(env.data.playerId, {
+              alive: false,
+              deathCause: "lynched",
+            });
+            // A lynch only fires after the host's FinalizeVotes, so we
+            // flip the resolved flag here. The PhaseChanged →
+            // day_discussion that follows in the same batch will read
+            // this when rendering the host buttons (Begin night
+            // instead of Open voting).
+            dayLynchResolved = true;
+            if (!replaying) {
+              const p = players.get(env.data.playerId);
+              const name = p ? p.name : env.data.playerId;
+              narrate(`${name} has been voted out.`);
+            }
+            break;
+
+          case "noLynch":
+            // The host finalized a day vote that didn't reach a
+            // majority (split, abstentions, or no votes): nobody is
+            // lynched, but the day still resolves. Mirror the same
+            // dayLynchResolved flag a real lynch sets so the host UI
+            // offers "Begin night" (not "Open voting") on the
+            // day_discussion that follows in this batch.
+            dayLynchResolved = true;
+            if (!replaying) {
+              narrate("No one was voted out.");
+            }
+            break;
+
+          case "phaseChanged": {
+            const from = env.data.from;
+            const to = env.data.to;
+            phase = to;
+            if (typeof env.data.day === "number") day = env.data.day;
+            myAction = null;
+            mafiaKillTarget = null;
+            votes = new Map();
+            // Each fresh phase (notably a new day_vote opened by the
+            // host) starts with the tally hidden again.
+            votesRevealed = false;
+            // Going INTO night clears any prior turn state; the
+            // accompanying nightOpeningStarted / nightNarrationStarted
+            // events in the same batch will set the new sub-phase.
+            if (to === "night") {
+              currentNightRole = "";
+              nightTurnDeadlineMs = 0;
+              currentNightSubPhase = "";
+              currentNightTurnPhantom = false;
+              iAmBlocked = false;
+              heldFireThisTurn = false;
+              stopNightCountdown();
+              dayLynchResolved = false;
+              // A new night invalidates the previous night's
+              // victims — the banner chip ("Last night: X was
+              // killed") should not survive into the next day's
+              // discussion. If this night produces no death,
+              // lastNightVictims stays empty and the chip stays
+              // hidden, which is correct.
+              lastNightVictims = [];
+            }
+            renderAll();
+
+            if (!replaying) {
+              narratePhaseChange(from, to, env.data.day);
+            }
+            break;
+          }
+
+          case "nightOpeningStarted": {
+            // One-shot global "City, go to sleep" sub-phase that fires
+            // exactly once per night, BEFORE any role's narrate. No
+            // role is associated with it (the event carries only day
+            // and deadline). The room arms a timer for the sub-phase
+            // duration; when it elapses the engine transitions to
+            // mafia's narrate.
+            currentNightRole = "";
+            currentNightSubPhase = "opening";
+            currentNightTurnPhantom = false;
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+              narrateNightOpening();
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightNarrationStarted": {
+            // Role's wake-up narration. No action is accepted yet —
+            // the host's phone speaks the cue while the room listens.
+            // The engine will transition us to "act" (or directly to
+            // "ponder" for phantom turns) when this sub-phase's
+            // server-side timer elapses.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "narrate";
+            currentNightTurnPhantom = !!env.data.phantom;
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            // A fresh role turn begins: clear the per-turn "held fire"
+            // flag so a pass on an earlier turn doesn't suppress the
+            // vigilante's controls when his next live turn opens.
+            heldFireThisTurn = false;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+              narrateRoleWake(currentNightRole, day);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightActionStarted": {
+            // The actor's submission window. Target buttons render
+            // for the matching role (gated in renderPlayerRow on
+            // currentNightSubPhase === "act"). Phantom turns never
+            // enter this sub-phase server-side, so we don't need to
+            // re-check the phantom flag here.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "act";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightPonderStarted": {
+            // Brief silent pause after a submission (or a timeout, or
+            // the phantom random delay). The Target buttons are
+            // gone — the actor either submitted or the window
+            // expired — and the room sits in silence waiting for
+            // the sleep cue. Detective's result modal also has time
+            // to be read during this sub-phase.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "ponder";
+            currentNightTurnPhantom = !!env.data.phantom;
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightSleepStarted": {
+            // Role's "go to sleep" narration. Speak the role-specific
+            // cue; the engine will transition to settle on this
+            // sub-phase's timer.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "sleep";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              // Sleep means our ponder just elapsed. If the auto-dismiss
+              // "Blocked" notice is still up, clear it now so the player
+              // isn't stuck behind it even if they never tapped "Got it".
+              if (modalAutoDismisses) hideModalCard();
+              startNightCountdown(nightTurnDeadlineMs);
+              narrateRoleSleep(currentNightRole);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "nightSettleStarted": {
+            // Brief silent pause between roles. No audio cue. The
+            // engine transitions to the next role's narrate (or to
+            // night resolution) when the timer elapses.
+            currentNightRole = env.data.role || "";
+            currentNightSubPhase = "settle";
+            nightTurnDeadlineMs = env.data.deadline || 0;
+            if (!replaying) {
+              startNightCountdown(nightTurnDeadlineMs);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+          }
+
+          case "roleAssigned":
+            // Each player only ever sees their own RoleAssigned, so
+            // receiving any RoleAssigned is enough to know roles
+            // have been dealt (server-side projection guarantees the
+            // event only fires for us). The host UI uses this to
+            // swap "Start game" → "Begin night", and the invite
+            // banner hides because the room is now closed to joins.
+            rolesDealt = true;
+            if (env.data.playerId === myId) {
+              myRole = env.data.role;
+              $("my-role").textContent = env.data.role;
+            }
+            // Re-render everything: rolesDealt flips multiple
+            // surfaces (action panel + invite banner + player
+            // count framing on next phase). One renderAll() is
+            // cheaper to reason about than tracking which
+            // surfaces care about which fields.
+            renderAll();
+            break;
+
+          case "mafiaRoster":
+            // Faction-scoped: the server only sends this to mafia, so
+            // simply receiving it means I'm mafia and these are my
+            // teammates. Fold the member list into mafiaPeers; the
+            // roster rows then badge each one as "Mafia" from here on.
+            mafiaPeers = new Set(env.data.members || []);
+            renderPlayers();
+            break;
+
+          case "nightActionRecorded":
+            // The mafia turn is a faction-collective: the server sends
+            // this ack to EVERY living mafioso, so a teammate's locked
+            // kill must update our view even though we didn't click.
+            // Town acks (doctor/detective) are PrivateTo the actor, so
+            // for those env.data.actor === myId always holds.
+            if (env.data.faction === "mafia") {
+              mafiaKillTarget = env.data.target;
+            }
+            if (env.data.actor === myId) {
+              myAction = env.data.target;
+              // The vigilante's bullet is one-shot for the whole game.
+              // Recording our own action spends it; latch the flag so the
+              // picker stays hidden on later nights even after myAction
+              // resets at the start of the next night.
+              if (myRole === "vigilante") {
+                vigilanteFired = true;
+              }
+            }
+            if (env.data.actor === myId || env.data.faction === "mafia") {
+              renderActionPanel();
+              renderPlayers();
+            }
+            break;
+
+          case "detectiveResult": {
+            // Server-side projection (PrivateTo) guarantees only the
+            // detective ever receives this event. We deliberately
+            // suppress the modal on REPLAY: the modal is a one-shot
+            // pacing signal tied to the live moment of investigation
+            // (read → "Got it" → night continues). Re-showing it on
+            // every refresh turns it into a persistent reminder
+            // the detective can't dismiss for the rest of the game.
+            //
+            // The detective is expected to remember (or note down)
+            // their finding the first time. We don't currently
+            // surface investigation history anywhere — if that
+            // turns out to be needed, it should be its own
+            // explicit "Past investigations" UI, not a modal that
+            // pops up every refresh.
+            if (!replaying) {
+              const t = players.get(env.data.target);
+              const name = t ? t.name : env.data.target;
+              showDetectiveToast(name, !!env.data.isMafia);
+            }
+            break;
+          }
+
+          case "blocked":
+            // PrivateTo us, delivered at the START of our act window:
+            // the Consort blocked us, so our action can't land. Set the
+            // flag on EVERY path (incl. replay) so the target picker
+            // stays hidden for the turn even after a refresh; pop the
+            // modal only live so a reconnect doesn't re-pop a stale one.
+            iAmBlocked = true;
+            if (!replaying) showBlockedToast();
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "consortPromoted":
+            // PrivateTo us: we (the Consort) have been elevated to full
+            // mafia because the cabal was wiped out. Apply the role
+            // change on EVERY path (including replay) so a reconnecting
+            // promoted consort knows their new faction and gets the
+            // mafia night turn; only pop the announcement modal live.
+            // The mafiaRoster event that follows badges us as Mafia.
+            myRole = "mafia";
+            $("my-role").textContent = "mafia";
+            if (!replaying) showPromotedToast();
+            renderAll();
+            break;
+
+          // Pre-reveal, the server only delivers a voter THEIR OWN
+          // cast/change/retract (the events are private), so these keep
+          // the local player's "your vote" chip + row highlight in sync
+          // without exposing anyone else's choice. The full board
+          // arrives later via votesRevealed.
+          case "voteCast":
+            votes.set(env.data.voter, env.data.target);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteChanged":
+            votes.set(env.data.voter, env.data.to);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteRetracted":
+            votes.delete(env.data.voter);
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "votesRevealed": {
+            // Host opened the box. Replace our (self-only) view with the
+            // authoritative full tally so everyone — including dead
+            // players, who receive this Public event too — sees who
+            // voted for whom. Voting is now locked client-side; the
+            // per-row Vote buttons drop out (renderPlayers keys off
+            // votesRevealed) and the host swaps Reveal → Finalize/Clear.
+            votesRevealed = true;
+            votes = new Map();
+            const tally = env.data.tally || {};
+            for (const [voter, target] of Object.entries(tally)) {
+              votes.set(voter, target);
+            }
+            renderActionPanel();
+            renderPlayers();
+            if (!replaying) {
+              narrate("Votes revealed.");
+            }
+            break;
+          }
+
+          case "voteCleared":
+            votes = new Map();
+            votesRevealed = false;
+            renderActionPanel();
+            renderPlayers();
+            if (!replaying) {
+              narrate("Votes cleared. Cast again.");
+            }
+            break;
+
+          case "gameEnded":
+            winner = env.data.winner || null;
+            if (env.data.finalRoles) {
+              for (const [pid, role] of Object.entries(env.data.finalRoles)) {
+                upsertPlayer(pid, { revealedRole: role });
+              }
+            }
+            renderActionPanel();
+            if (!replaying) {
+              narrate(
+                winner === "town"
+                  ? "Town wins. Roles will now be revealed."
+                  : winner === "mafia"
+                    ? "Mafia wins. Roles will now be revealed."
+                    : "Game over.",
+                { pauseBefore: 300 },
+              );
+            }
+            break;
+        }
+      }
+
+      // --- Narrator scripts -------------------------------------------
+
+      function narratePhaseChange(from, to, dayNum) {
+        if (to === "night") {
+          // "City, go to sleep." used to fire here. It now rides on
+          // the engine's nightOpeningStarted sub-phase event so that
+          // the audio cadence is server-driven and tracked by the
+          // same timer that gates the rest of the night. See the
+          // nightOpeningStarted handler in handleEvent.
+          // (Nothing to speak on the phase boundary itself.)
+        } else if (to === "day_discussion") {
+          // day_discussion is entered from TWO places:
+          //   1. night → day_discussion: morning narration after the
+          //      night resolves ("Everybody, wake up. Last night, X
+          //      was killed." / "...nobody died.").
+          //   2. day_vote → day_discussion: a lynch was finalized.
+          //      The room already knows what happened (PlayerLynched
+          //      event), the host announces it verbally, and a
+          //      narrator line here would be redundant or — worse —
+          //      wrong (e.g. announcing "nobody died last night"
+          //      after a lynch). So we narrate ONLY when arriving
+          //      from night.
+          if (from === "night") {
+            const dead = dayDiscussionPendingDeaths;
+            dayDiscussionPendingDeaths = [];
+            // Slight pause before the wake-up cue so any "doctor,
+            // go to sleep" queued before this one finishes first.
+            narrate("Everybody, wake up.", { pauseBefore: 200 });
+            if (dead.length > 0) {
+              const names = formatVictimList(dead);
+              const verb = dead.length === 1 ? "was" : "were";
+              narrate(`Last night, ${names} ${verb} killed.`, { pauseBefore: 1800 });
+            } else {
+              narrate("Last night, nobody died.", { pauseBefore: 1800 });
+            }
+          }
+        } else if (to === "day_vote") {
+          narrate("Time to vote.");
+        }
+      }
+
+      // --- Role narration lookup -----------------------------------------
+      //
+      // Adding a new role? Add a row to each of ROLE_NARRATION (wake
+      // cue) and ROLE_SLEEP (sleep cue). The matching engine-side
+      // duration lives in internal/game/rolespec.go's roleSpec.Narrate
+      // / Sleep function fields. Keep these two surfaces in sync: the
+      // narration TEXT is owned by the client (so we can edit copy
+      // without touching the server), the narration DURATION is owned
+      // by the engine (so the server's timer pacing matches the
+      // spoken cue's length).
+      //
+      // Entries support per-day variants. The lookup tries `day${N}`
+      // first, then falls back to `default`. Mafia gets a longer Day 0
+      // line ("Look around and recognize each other") because that
+      // first night they need to identify each other; subsequent
+      // nights skip straight to the target prompt.
+      //
+      // If a role arrives that isn't in the table — e.g. a new role
+      // shipped in a server-only update before the client was
+      // redeployed — we fall back to a generic "${role}, wake up."
+      // line and log a warning. That keeps the in-person game
+      // playable while the missing entry gets added.
+      //
+      // COUPLING WARNING: each text entry below has a matching
+      // duration in internal/room/config.go — universal narrate/
+      // sleep timing lives at DefaultNarrateDuration /
+      // DefaultSleepDuration, and per-role variants (mafia Day 0,
+      // future role overrides) live at DefaultNarrate /
+      // DefaultSleep. If you make a cue longer (more words,
+      // slower cadence), bump the matching duration there or the
+      // engine will advance to the next sub-phase mid-sentence.
+      // Test on the slowest TTS voice you support (iOS Safari
+      // "Samantha" is a good worst-case anchor) and add ~500ms
+      // slop.
+      const ROLE_NARRATION = {
+        mafia: {
+          day0:    "Mafia, wake up. Look around and recognize each other. Then choose your target.",
+          default: "Mafia, wake up. Choose your target.",
+        },
+        consort: {
+          default: "Consort, wake up. Choose someone to block.",
+        },
+        detective: {
+          default: "Detective, wake up. Choose someone to investigate.",
+        },
+        doctor: {
+          default: "Doctor, wake up. Choose someone to save.",
+        },
+        vigilante: {
+          default: "Vigilante, wake up. Choose someone to eliminate.",
+        },
+      };
+
+      const ROLE_SLEEP = {
+        mafia:     "Mafia, go to sleep.",
+        consort:   "Consort, go to sleep.",
+        detective: "Detective, go to sleep.",
+        doctor:    "Doctor, go to sleep.",
+        vigilante: "Vigilante, go to sleep.",
+      };
+
+      function lookupRoleNarration(role, dayNum) {
+        const entry = ROLE_NARRATION[role];
+        if (!entry) {
+          console.warn(`narration: no wake-up cue for role "${role}" — using generic fallback`);
+          return `${capitalize(role)}, wake up.`;
+        }
+        const dayKey = `day${dayNum}`;
+        return entry[dayKey] || entry.default || `${capitalize(role)}, wake up.`;
+      }
+
+      function lookupRoleSleep(role) {
+        const text = ROLE_SLEEP[role];
+        if (!text) {
+          console.warn(`narration: no sleep cue for role "${role}" — using generic fallback`);
+          return `${capitalize(role)}, go to sleep.`;
+        }
+        return text;
+      }
+
+      // Cues are fired the moment the matching sub-phase event lands;
+      // the engine's sub-phase timer (set per role in rolespec.go) is
+      // long enough for the utterance to finish before the next
+      // transition. No client-side pauseBefore scheduling — the
+      // server owns the cadence.
+      // The opening cue is short (~1.5s) but the sub-phase intentionally
+      // runs longer (DefaultOpeningDuration in internal/room/config.go,
+      // currently 7s) so the room has time to actually close their
+      // eyes and settle before mafia narrate begins. If you change
+      // this string to something substantially longer, bump
+      // DefaultOpeningDuration too.
+      function narrateNightOpening() {
+        narrate("City, go to sleep.");
+      }
+
+      function narrateRoleWake(role, dayNum) {
+        if (!role) return;
+        narrate(lookupRoleNarration(role, dayNum));
+      }
+
+      function narrateRoleSleep(role) {
+        if (!role) return;
+        narrate(lookupRoleSleep(role));
+      }
+
+      function connect(code, name, creds) {
+        currentRoomCode = code;
+        // Neutralize any prior socket so its late onclose/onerror can't
+        // race this fresh attempt (e.g. fire a redundant reconnect).
+        if (ws) {
+          ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+          try { ws.close(); } catch {}
+        }
+        const params = creds
+          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
+          : "";
+        const url = `${location.origin.replace("http", "ws")}/ws/${code}${params}`;
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+          setStatus(`connected to ${code}`, "text-emerald-400");
+          // Only the fresh-join path needs to send a join frame; rejoin
+          // is handled server-side via the URL params.
+          if (!creds) {
+            pendingJoinCode = code;
+            send("join", { name });
+          }
+        };
+        ws.onmessage = (ev) => {
+          try { handleServerMessage(JSON.parse(ev.data)); }
+          catch (e) { showError(`Failed to parse server message: ${e}`); }
+        };
+        ws.onclose = () => {
+          // If we were mid-PAGE-LOAD-auto-rejoin and the socket died
+          // before any frame (server down, room gone), surface the
+          // lobby instead of leaving the user looking at an empty
+          // in-game view they can't escape. (The in-game reconnect
+          // loop uses the `reconnecting` flag, NOT pendingRejoinCode,
+          // so it falls through to the auto-reconnect branch below.)
+          if (pendingRejoinCode) {
+            const stale = pendingRejoinCode;
+            pendingRejoinCode = null;
+            recoverToLobby(stale, "Could not reconnect — the room may be closed.");
+            return;
+          }
+          // Symmetric guard for first-time joins: socket died before
+          // the server acked. Most likely the server is unreachable
+          // (the alternative — an "error" frame — is handled above and
+          // detaches this handler before close fires).
+          if (pendingJoinCode) {
+            const stale = pendingJoinCode;
+            pendingJoinCode = null;
+            recoverToLobby(stale, "Could not connect — the server may be unreachable.");
+            return;
+          }
+          // An established in-game connection dropped (network blip,
+          // idle proxy/NAT cull, or a mobile tab the OS suspended).
+          // We have an identity and stored creds, so heal it: retry
+          // with backoff until we're back. The server replays our
+          // full state on rejoin, so the player just sees a brief
+          // "Reconnecting…" and then continues.
+          if (myId && currentRoomCode) {
+            scheduleReconnect();
+            return;
+          }
+          setStatus("disconnected", "text-rose-400");
+        };
+        ws.onerror = () => setStatus("connection error", "text-rose-400");
+      }
+

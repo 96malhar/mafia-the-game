@@ -1,0 +1,422 @@
+      // ----- roster reducer + render --------------------------------------
+
+      // resetGameState clears everything derived from the event stream
+      // so a (re)join can rebuild the model from scratch via replay.
+      function resetGameState() {
+        players = new Map();
+        phase = "lobby";
+        day = 0;
+        myAction = null;
+        mafiaKillTarget = null;
+        votes = new Map();
+        votesRevealed = false;
+        winner = null;
+        myRole = null;
+        mafiaPeers = new Set();
+        dayLynchResolved = false;
+        rolesDealt = false;
+        // hostId is rebuilt from the HostChanged event in the
+        // join/rejoin replay; null it so renderPlayers hides the
+        // "Host: <name>" label until the replay re-populates it
+        // (otherwise we'd briefly show stale identity from a
+        // previous session).
+        hostId = null;
+        // Lobby config is event-sourced (gameCreated / mafiaCountChanged);
+        // null out so the replay rebuilds it from the server's
+        // events and we don't briefly render stale numbers from a
+        // previous session.
+        lobbyMinPlayers = null;
+        lobbyMaxPlayers = null;
+        mafiaCount = null;
+        consortEnabled = false;
+        vigilanteEnabled = false;
+        vigilanteFired = false;
+        heldFireThisTurn = false;
+        // Night turn state — engine-authoritative; replayed on join.
+        currentNightRole = "";
+        nightTurnDeadlineMs = 0;
+        currentNightSubPhase = "";
+        currentNightTurnPhantom = false;
+        iAmBlocked = false;
+        dayDiscussionPendingDeaths = [];
+        lastNightVictims = [];
+        narrationsSeen.clear();
+        stopNightCountdown();
+        // Clear any open notice modal so a refresh doesn't carry
+        // a stale "X IS a mafia member" card into the new session.
+        hideModalCard();
+        $("my-role").textContent = "—";
+        renderAll();
+      }
+
+      // renderAll re-renders every dynamic panel. Called whenever phase
+      // changes (cheap: at most every few seconds) so that any UI piece
+      // depending on phase + roster + votes stays consistent.
+      function renderAll() {
+        renderInviteBanner();
+        renderHostAudioBar();
+        renderPlayers();
+        renderActionPanel();
+      }
+
+      // renderInviteBanner toggles the "Invite link" strip based on
+      // whether the room is still accepting joins.
+      //
+      // Boundary: rolesDealt — set when the engine emits its first
+      // RoleAssigned event (i.e. StartGame ran). That's the same
+      // boundary applyAddPlayer uses to reject new joiners, so
+      // hiding the banner here keeps the UI honest with the server.
+      // We deliberately do NOT key on phase === "lobby" alone,
+      // because the phase stays "lobby" between StartGame and
+      // BeginNight — during that window the room is closed but the
+      // phase string would still let the banner show.
+      function renderInviteBanner() {
+        const banner = $("invite-banner");
+        if (!banner) return;
+        banner.classList.toggle("hidden", rolesDealt);
+      }
+
+      function upsertPlayer(pid, patch) {
+        const existing = players.get(pid) || {
+          id: pid,
+          name: pid,
+          alive: true,
+          deathCause: null,    // "killed" | "lynched" | null
+          revealedRole: null,  // populated at gameEnded for everyone
+        };
+        players.set(pid, { ...existing, ...patch });
+        // Roster changes can affect the action panel hint
+        // (e.g. "Waiting for 2 more players" → "Ready to start").
+        renderPlayers();
+        renderActionPanel();
+      }
+
+      function renderPlayers() {
+        const list = $("players");
+        const count = $("player-count");
+        const hostLabel = $("player-host");
+        list.innerHTML = "";
+
+        // "Host: <name>" lives in the panel header (one canonical
+        // spot) instead of as a per-row badge. We hide the label
+        // until HostChanged lands and the host is in our roster —
+        // showing "Host: p1" before the PlayerJoined for p1 lands
+        // would look like a bug. In practice these arrive in the
+        // same WS batch, so the hidden state is sub-frame.
+        if (hostLabel) {
+          const hp = hostId ? players.get(hostId) : null;
+          if (hp) {
+            hostLabel.textContent = `Host: ${hp.name || hostId}`;
+            hostLabel.classList.remove("hidden");
+          } else {
+            hostLabel.textContent = "";
+            hostLabel.classList.add("hidden");
+          }
+        }
+
+        if (players.size === 0) {
+          const empty = document.createElement("li");
+          empty.className = "text-sm text-slate-500";
+          empty.textContent = "Waiting for players to join…";
+          list.appendChild(empty);
+          count.textContent = "0";
+          return;
+        }
+
+        // Deterministic order: insertion order is the join order, which
+        // is the most natural reading order. Map iteration preserves it.
+        let alive = 0;
+        for (const p of players.values()) {
+          if (p.alive) alive++;
+          list.appendChild(renderPlayerRow(p));
+        }
+        // In the lobby, frame the count as "joined / cap" so the host
+        // knows when the room is full. After the game has started the
+        // cap is irrelevant — switch to "alive / total".
+        if (phase === "lobby") {
+          // Use "?" for the cap/min until the server's gameCreated
+          // event lands (lobbyMaxPlayers/MinPlayers are null then).
+          // This is a sub-second window in practice — first
+          // paint to first event — but rendering "null" would
+          // look like a bug.
+          const cap = lobbyMaxPlayers ?? "?";
+          const min = lobbyMinPlayers ?? "?";
+          count.textContent = `${players.size} / ${cap} joined (min ${min})`;
+        } else {
+          count.textContent = `${alive} alive / ${players.size} total`;
+        }
+      }
+
+      function renderPlayerRow(p) {
+        const li = document.createElement("li");
+        li.className =
+          "flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900/60 px-3 py-2";
+
+        const left = document.createElement("div");
+        left.className = "min-w-0";
+
+        const nameEl = document.createElement("div");
+        nameEl.className = "min-w-0 truncate text-sm font-medium";
+        if (!p.alive) nameEl.classList.add("text-slate-500", "line-through");
+        nameEl.textContent = p.name;
+
+        // Secondary line under the name. We used to lead with the
+        // server-assigned PlayerID (p1, p2, ...) for moderator
+        // disambiguation, but it cluttered every row even though
+        // players think of each other by name; engine-level wire
+        // identity doesn't belong in the player-facing UI. Now the
+        // line only renders when there's something meaningful to
+        // show (death cause, revealed role, current vote tally),
+        // and is omitted entirely otherwise so living players in
+        // ordinary phases get a clean single-line row.
+        // The sub-line WRAPS rather than truncates: the post-reveal
+        // "voted by A, B, C, …" list can name up to (roster-1) players,
+        // which on a phone (single-column rows) would otherwise be
+        // clipped to one line with an ellipsis, hiding most voters. The
+        // other sub-line contents (death cause, revealed role) are short
+        // and unaffected. The row is flex items-center, so a taller
+        // wrapped left column stays aligned with the right-side badge.
+        const subEl = document.createElement("div");
+        subEl.className = "font-mono text-xs text-slate-500 break-words leading-snug";
+        const bits = [];
+        if (!p.alive) {
+          bits.push(p.deathCause === "lynched" ? "lynched by vote" : "killed in the night");
+        }
+        if (p.revealedRole) bits.push(p.revealedRole);
+        // Vote tally is secret until the host reveals it. Pre-reveal we
+        // show NO counts (not even your own contribution) — a voter's
+        // selection is conveyed by their row's "Voted ✓" highlight and
+        // the "Your vote: X" chip instead. Post-reveal each living
+        // player's row shows how many votes they received and the names
+        // of everyone who voted against them, so the whole room (incl.
+        // the dead) can read exactly who's lining up on whom.
+        if (phase === "day_vote" && votesRevealed && p.alive) {
+          const voters = votersFor(p.id);
+          if (voters.length > 0) {
+            bits.push(`${voters.length} vote${voters.length === 1 ? "" : "s"}`);
+            bits.push(`voted by ${voters.join(", ")}`);
+          }
+        }
+
+        // Identity badges (You / Mafia) sit inline right after the name
+        // rather than in the right-hand cluster. Keeping them on the left
+        // means the action buttons (Target / Vote / Save self) stay
+        // flush-right and vertically aligned across every row, regardless
+        // of how many badges a given row carries. shrink-0 keeps the
+        // badges intact while a long name truncates on narrow screens.
+        const nameLine = document.createElement("div");
+        nameLine.className = "flex min-w-0 items-center gap-2";
+        nameLine.appendChild(nameEl);
+        if (p.id === myId) {
+          nameLine.appendChild(badge("You", "shrink-0 bg-emerald-700 text-emerald-100"));
+        }
+        // Single role/faction identity badge per row, mutually exclusive
+        // by construction:
+        //   - mafiaPeers (populated only from the faction-scoped
+        //     mafiaRoster event, so empty for town) badges every known
+        //     mafioso "Mafia" — that's the row's identity, whether it's
+        //     self or a teammate, and it covers a promoted consort too.
+        //   - otherwise the LOCAL player sees their own dealt role next
+        //     to "You" (town never learns others' roles, so this is
+        //     self-only). myRole is null until roles are dealt.
+        if (mafiaPeers.has(p.id)) {
+          nameLine.appendChild(badge("Mafia", "shrink-0 bg-rose-800 text-rose-100"));
+        } else if (p.id === myId && myRole) {
+          nameLine.appendChild(badge(capitalize(myRole), "shrink-0 bg-indigo-700 text-indigo-100"));
+        }
+        // Faction-collective kill: once any mafioso locks a target, badge
+        // that player on every mafioso's roster (including teammates who
+        // didn't submit) so the locked kill is visible at a glance. Only
+        // mafia ever have mafiaKillTarget set (town acks are private), so
+        // this never leaks to the village.
+        if (myRole === "mafia" && mafiaKillTarget === p.id) {
+          nameLine.appendChild(badge("Target", "shrink-0 bg-rose-600 text-rose-50"));
+        }
+
+        left.appendChild(nameLine);
+        if (bits.length > 0) {
+          subEl.textContent = bits.join(" · ");
+          left.appendChild(subEl);
+        }
+
+        const right = document.createElement("div");
+        right.className = "flex shrink-0 items-center gap-1";
+
+        // Phase-aware action button on each row. Targeting lives here
+        // (vs a separate panel) so action and identity stay together.
+        const btn = phaseActionButton(p);
+        if (btn) right.appendChild(btn);
+        // No per-row "Host" badge: who-is-host lives in the
+        // Players panel header (see renderPlayers). The previous
+        // badge competed with the row's action button (Vote /
+        // Target) for horizontal space on narrow screens.
+
+        li.appendChild(left);
+        li.appendChild(right);
+        return li;
+      }
+
+      // tallyFor returns the current public vote count against pid.
+      function tallyFor(pid) {
+        let n = 0;
+        for (const target of votes.values()) if (target === pid) n++;
+        return n;
+      }
+
+      // votersFor returns the display names of everyone who voted for
+      // pid, in roster (join) order so the list is stable across renders.
+      // Only meaningful once votes are revealed (pre-reveal the `votes`
+      // map holds at most the local player's own vote).
+      function votersFor(pid) {
+        const names = [];
+        for (const p of players.values()) {
+          if (votes.get(p.id) === pid) names.push(p.name);
+        }
+        return names;
+      }
+
+      // projectedLynch mirrors the server's strict-majority rule
+      // (resolveDayVote in internal/game/rules_day.go): it returns the
+      // player who WOULD be lynched if the host finalized right now — the
+      // single target whose vote count is more than half the living
+      // population (count*2 > living) — or null when no target clears
+      // that bar (a tie, a plurality short of half, abstentions, or no
+      // votes). Only meaningful once votes are revealed, since the full
+      // tally isn't local before then. KEEP IN SYNC with the server rule.
+      function projectedLynch() {
+        let living = 0;
+        for (const p of players.values()) if (p.alive) living++;
+        // At most one target can clear >50%, so the first match is THE
+        // majority target — same uniqueness argument as the server.
+        for (const p of players.values()) {
+          if (tallyFor(p.id) * 2 > living) return p;
+        }
+        return null;
+      }
+
+      // canActAtNight reports whether the LOCAL player has a night
+      // action available given their role. Villager has none. The
+      // engine also forbids the doctor from self-saving on Night 0,
+      // but the wire never echoes the day cleanly enough for us to
+      // pre-block that client-side; we let the server reject and the
+      // error flow into the log. Conservative behavior.
+      function canActAtNight() {
+        if (!myRole) return false;
+        return (
+          myRole === "mafia" ||
+          myRole === "doctor" ||
+          myRole === "detective" ||
+          myRole === "consort" ||
+          myRole === "vigilante"
+        );
+      }
+
+      // phaseActionButton returns a per-row action button suitable for
+      // the current phase, or null if no row-action applies.
+      function phaseActionButton(p) {
+        const me = players.get(myId);
+        const iAmAlive = !!(me && me.alive);
+
+        // Night Target buttons are gated by the strict turn-order
+        // rule: only show them when it's THIS role's turn AND we're
+        // in the "act" sub-phase. Outside the turn or in any other
+        // sub-phase (narrate / ponder / sleep / settle / opening) the
+        // engine would reject the action with ErrNotYourTurn or
+        // ErrWrongPhase, so hiding the buttons makes the UX match
+        // the rules. The act sub-phase is the engine's authoritative
+        // "actor may submit" window; it begins only after the role's
+        // narration has fully played out.
+        //
+        // Phantom turns (no living holder of the role) skip the act
+        // sub-phase entirely on the server, so currentNightSubPhase
+        // never reaches "act" for them — but we keep the explicit
+        // phantom guard for defense-in-depth.
+        // Row buttons (Target / Vote) are sized to clear the 44px
+        // iOS HIG tap-target minimum. The previous px-2/py-1/text-xs
+        // styling looked nice on desktop but produced ~24×16px hit
+        // areas that were borderline unusable on a phone.
+        const rowBtnBase =
+          "inline-flex min-h-[44px] min-w-[64px] items-center justify-center rounded px-3 py-2 text-sm font-medium";
+
+        // Self-targeting policy:
+        //   - mafia: cannot target self OR a fellow mafia — the engine
+        //     rejects a mafia kill on ANY mafia (rolespec.go Validate),
+        //     so we hide the button on every teammate row (mafiaPeers
+        //     includes self, covering the self case too).
+        //   - detective: cannot investigate self (ErrSelfTarget).
+        //   - doctor: CAN save self on any night.
+        // So we allow the self row only for the doctor.
+        const isSelfRow = p.id === myId;
+        const isFellowMafia = myRole === "mafia" && mafiaPeers.has(p.id);
+        const canTargetThisRow =
+          (!isSelfRow && !isFellowMafia) || myRole === "doctor";
+
+        if (
+          phase === "night" &&
+          iAmAlive &&
+          canActAtNight() &&
+          currentNightRole === myRole &&
+          currentNightSubPhase === "act" &&
+          !currentNightTurnPhantom &&
+          !iAmBlocked &&
+          // The vigilante has a single bullet for the whole game. Once
+          // we've fired it (tracked locally from our own
+          // nightActionRecorded), hide the picker — the engine rejects
+          // any further shot with ErrAlreadyActed. Likewise once we've
+          // held fire this turn (an optimistic local flag), hide the
+          // picker immediately rather than waiting for the ponder event.
+          !(myRole === "vigilante" && (vigilanteFired || heldFireThisTurn)) &&
+          p.alive &&
+          canTargetThisRow
+        ) {
+          const submitted = myAction === p.id;
+          const b = document.createElement("button");
+          b.className = submitted
+            ? `${rowBtnBase} bg-amber-600 text-white`
+            : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          // The Consort "blocks" rather than "targets"; the doctor
+          // "saves" (and may pick their own row); the vigilante
+          // "eliminates". Everyone else "targets".
+          if (myRole === "consort") {
+            b.textContent = submitted ? "Blocked" : "Block";
+          } else if (myRole === "vigilante") {
+            b.textContent = submitted ? "Eliminating" : "Eliminate";
+          } else {
+            b.textContent = submitted
+              ? (isSelfRow ? "Saving self" : "Targeted")
+              : (isSelfRow ? "Save self" : "Target");
+          }
+          b.addEventListener("click", () => send("nightAction", { target: p.id }));
+          return b;
+        }
+
+        if (phase === "day_vote" && !votesRevealed && iAmAlive && p.alive && p.id !== myId) {
+          const mine = votes.get(myId);
+          const isMyTarget = mine === p.id;
+          const b = document.createElement("button");
+          b.className = isMyTarget
+            ? `${rowBtnBase} bg-rose-600 text-white`
+            : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          // Tap the active selection again to retract — same button
+          // does both jobs. The engine treats target:"" as a retract
+          // (rules_day.go applyDayVote) and emits VoteRetracted.
+          // The action-panel hint ("Tap your current selection to
+          // retract") teaches the gesture; the button label stays
+          // clean.
+          b.textContent = isMyTarget ? "Voted ✓" : "Vote";
+          b.addEventListener("click", () =>
+            send("vote", { target: isMyTarget ? "" : p.id })
+          );
+          return b;
+        }
+
+        return null;
+      }
+
+      function badge(text, klass) {
+        const span = document.createElement("span");
+        span.className = `rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${klass}`;
+        span.textContent = text;
+        return span;
+      }
+

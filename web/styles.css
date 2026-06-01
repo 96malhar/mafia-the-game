@@ -1,0 +1,25 @@
+      /*
+       * iOS Safari respects env(safe-area-inset-*) only when we use
+       * it explicitly. Apply it as padding on <body> so every
+       * descendant gets a visual breathing room from the notch /
+       * home indicator without each component needing to opt in.
+       *
+       * Using max(env(...), 0px) is the safe pattern for browsers
+       * that don't understand env(): they parse it as max(0px) = 0,
+       * which matches the desktop default.
+       */
+      body {
+        padding-top: max(env(safe-area-inset-top), 0px);
+        padding-bottom: max(env(safe-area-inset-bottom), 0px);
+        padding-left: max(env(safe-area-inset-left), 0px);
+        padding-right: max(env(safe-area-inset-right), 0px);
+      }
+      /*
+       * touch-manipulation kills the iOS Safari 300ms tap delay on
+       * elements that don't need double-tap-to-zoom (every button
+       * in this app). Set globally so we don't have to remember it
+       * per-button.
+       */
+      button, [role="button"], a {
+        touch-action: manipulation;
+      }

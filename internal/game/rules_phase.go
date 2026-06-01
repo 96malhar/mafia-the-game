@@ -467,25 +467,29 @@ func (g *Game) beginNextNightTurn() []Event {
 // the GameEnded event and true. Otherwise returns the zero event and
 // false.
 //
-// Mafia win:  living mafia-aligned >= living town  (can't be out-voted).
-// Town win:   living mafia-aligned == 0.
+// Mafia win:  living STRICT mafia >= living town  (can't be out-voted).
+// Town win:   no living mafia-aligned players remain.
 //
-// "Mafia-aligned" counts both the mafia and a surviving (not-yet-
-// promoted) Consort — she's a threat the town must eliminate, and she
-// keeps the mafia side at parity. Note that a wiped-out cabal with a
-// living consort never reaches the town-win branch here: callers run
-// promoteConsortIfNeeded first, converting her to RoleMafia so she's
-// counted as mafia rather than ending the game.
+// The parity comparison counts ONLY the strict mafia faction (RoleMafia),
+// not a surviving Consort. She has no kill of her own — she only blocks —
+// and the town doesn't even know she's mafia-aligned, so letting her pad
+// the mafia's "can't be out-voted" count would hand a kill-less role the
+// game. She still matters in two ways: the town must eliminate her to win
+// (the town-win branch counts her via mafiaAlignedLivingCount), and if
+// the cabal is wiped while she lives she is promoted to RoleMafia
+// (promoteConsortIfNeeded, which callers run BEFORE this check) and from
+// then on counts toward parity as a real mafioso.
 //
-// These conditions are mutually exclusive once both have at least one
-// living member at the start of any check, which is invariant from the
-// roster validation in CreateGame.
+// Because that promotion always runs first, a wiped-out cabal with a
+// living consort never reaches the town-win branch: she's already a
+// RoleMafia, so both mafiaAlignedLivingCount and the strict mafia count
+// are non-zero.
 func (g *Game) checkWin() (GameEnded, bool) {
-	mafia := g.state.mafiaAlignedLivingCount()
+	mafia := g.state.factionLivingCount(FactionMafia)
 	town := g.state.factionLivingCount(FactionTown)
 
 	switch {
-	case mafia == 0:
+	case g.state.mafiaAlignedLivingCount() == 0:
 		return GameEnded{
 			Winner:     FactionTown,
 			FinalRoles: g.state.finalRolesSnapshot(),

@@ -539,11 +539,11 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("rejects a roster that opens at the mafia parity win", func(t *testing.T) {
-		// 5 players, 2 mafia, consort enabled → mafia-aligned = 3
-		// (2 mafia + consort) vs town = 2 (det + doc). This passes the
-		// villager-fit check (0 villagers is allowed) but checkWin would
-		// declare a mafia win the instant Night 1 resolves, so StartGame
-		// must reject it up front.
+		// 5 players, 2 mafia, consort enabled → strict mafia = 2 vs
+		// town = 2 (det + doc; the consort takes the last villager slot).
+		// This passes the villager-fit check (0 villagers is allowed) but
+		// checkWin would declare a mafia win (strictMafia >= town) the
+		// instant Night 1 resolves, so StartGame must reject it up front.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
@@ -557,7 +557,7 @@ func TestStartGame(t *testing.T) {
 	})
 
 	t.Run("allows a consort roster that stays below parity", func(t *testing.T) {
-		// 5 players, 1 mafia, consort enabled → mafia-aligned = 2 vs
+		// 5 players, 1 mafia, consort enabled → strict mafia = 1 vs
 		// town = 3 (det + doc + villager). Below parity, so it starts.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
@@ -567,6 +567,23 @@ func TestStartGame(t *testing.T) {
 		_, err = g.Apply(game.SetConsort{Enabled: true})
 		require.NoError(t, err)
 		addPlayers(t, g, "a", "b", "c", "d", "e")
+		_, err = g.Apply(game.StartGame{})
+		require.NoError(t, err)
+	})
+
+	t.Run("allows two mafia plus a consort when the town can still out-number them", func(t *testing.T) {
+		// 6 players, 2 mafia, consort enabled → strict mafia = 2 vs
+		// town = 3 (det + doc + villager). The consort no longer pads the
+		// mafia's parity count, so this opens below parity and is a legal
+		// game — it was rejected under the old mafia-aligned rule.
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
+		})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetConsort{Enabled: true})
+		require.NoError(t, err)
+		addPlayers(t, g, "a", "b", "c", "d", "e", "f")
 		_, err = g.Apply(game.StartGame{})
 		require.NoError(t, err)
 	})

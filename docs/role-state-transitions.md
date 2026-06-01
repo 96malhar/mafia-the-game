@@ -169,7 +169,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 
 ## Consort (optional)
 
-- **Faction:** `FactionConsort` — mafia-aligned for *winning*, but her own knowledge group (she neither sees nor appears in mafia coordination).
+- **Faction:** `FactionConsort` — mafia-aligned for *winning*, but her own knowledge group (she neither sees nor appears in mafia coordination). She does **not** count toward the mafia's parity win (that threshold is the *strict* `RoleMafia` count vs the town); the town must still eliminate her to win, and if the cabal is wiped while she lives she is promoted to `RoleMafia` and counts from then on.
 - Wakes **right after the mafia** (only if enabled).
 - **Never blocked herself** (she is the only blocker, and she acts before the town roles).
 - Promotion: if the entire mafia cabal is wiped while she lives, she is promoted to `RoleMafia` (private `ConsortPromoted` + `MafiaRosterRevealed`).

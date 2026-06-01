@@ -423,9 +423,11 @@ func (s *GameState) livingHolderOf(r Role) (PlayerID, bool) {
 }
 
 // mafiaAlignedLivingCount returns the number of living players on the
-// mafia side — mafia plus a not-yet-promoted consort. Used by checkWin:
-// the town only wins once EVERY mafia-aligned player is dead, and the
-// mafia side reaches a winning parity counting the consort as a threat.
+// mafia side — the strict mafia plus a not-yet-promoted consort. Used by
+// checkWin's TOWN-win branch: the town wins only once EVERY mafia-aligned
+// player is dead, the consort included (she must be lynched). The MAFIA
+// parity win, by contrast, counts only the strict mafia faction — a
+// living consort does not pad it (see checkWin).
 func (s *GameState) mafiaAlignedLivingCount() int {
 	return s.countPlayers(func(p *Player) bool {
 		return p.alive && p.role.Faction().MafiaAligned()

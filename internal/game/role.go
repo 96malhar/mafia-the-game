@@ -41,8 +41,10 @@ const (
 )
 
 // Faction is the win-condition + knowledge group a role belongs to.
-// Town wins when all mafia-aligned roles are dead; the mafia side wins
-// when it reaches numerical parity with the town.
+// Town wins when all mafia-aligned roles are dead; the mafia wins when
+// the STRICT mafia faction reaches numerical parity with the town (a
+// not-yet-promoted Consort does not count toward that parity — see
+// checkWin).
 //
 // Faction doubles as the visibility (knowledge) group for FactionOnly
 // events. The Consort is mafia-ALIGNED for winning but sits in her own

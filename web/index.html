@@ -1668,17 +1668,22 @@
             // applyStartGame in internal/game/rules.go — keep them in sync):
             //   mafia <= total - 3                       (Det + Doc + ≥1 villager)
             //   mafia <= total - 2 - (#optional roles)   (room for the optionals)
-            //   2*(mafia + #mafia-aligned optionals) < total
-            //       (don't OPEN at the mafia parity win — checkWin counts the
-            //        Consort as mafia-aligned, so a roster sitting at parity
-            //        would hand the mafia an instant win on Night 1).
+            //   2*mafia + (#mafia-aligned optionals) < total
+            //       (don't OPEN at the mafia parity win — checkWin ends the
+            //        game for the mafia at strictMafia >= town, where town ==
+            //        total - mafia - #mafia-aligned optionals; a roster that
+            //        opens at parity would hand the mafia an instant Night-1
+            //        win. Only the Consort is a mafia-aligned optional.)
             const optionalRoles =
               (consortEnabled ? 1 : 0) + (vigilanteEnabled ? 1 : 0);
             // Only the Consort is mafia-aligned among the optionals (the
-            // Vigilante is town), so the parity cap subtracts just the consort.
+            // Vigilante is town), so she's the only one that shrinks the town
+            // count in the parity test.
             const mafiaAlignedOptionals = consortEnabled ? 1 : 0;
             const slotCap = total - 2 - Math.max(1, optionalRoles);
-            const parityCap = Math.floor((total - 1) / 2) - mafiaAlignedOptionals;
+            // 2*mafia + mafiaAlignedOptionals < total
+            //   ⇒ mafia <= floor((total - mafiaAlignedOptionals - 1) / 2)
+            const parityCap = Math.floor((total - mafiaAlignedOptionals - 1) / 2);
             const maxMafiaNow = Math.max(0, Math.min(slotCap, parityCap));
             const tooFew = configReady && total < lobbyMinPlayers;
             const tooMany = configReady && total > lobbyMaxPlayers;

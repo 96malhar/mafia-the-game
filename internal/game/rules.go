@@ -222,9 +222,11 @@ func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
 //   - MafiaCount must leave room for the reserved town core, i.e.
 //     mafiaCount ≤ playerCount - reservedTownRoles - 1.
 //   - The dealt roster must not already satisfy the mafia's parity win.
-//     Counting mafia-ALIGNED roles the way checkWin does (mafia plus any
-//     mafia-aligned optional like the Consort), we require
-//     2*mafiaAligned < playerCount so the game can't open already decided.
+//     checkWin ends the game for the mafia at strictMafia >= town, and the
+//     town faction is playerCount - mafiaCount - mafiaAlignedOptionals (a
+//     Consort takes a villager slot but isn't town), so we require
+//     2*mafiaCount + mafiaAlignedOptionals < playerCount and the game
+//     can't open already decided. Only the Consort is mafia-aligned.
 //   - StartGame is rejected if roles have already been dealt (we detect
 //     this by checking whether the first player has a non-empty role).
 //
@@ -263,21 +265,22 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	}
 
 	// Reject a roster that would START at or past the mafia's parity win.
-	// checkWin counts mafia-ALIGNED roles (the mafia plus any mafia-aligned
-	// optional, e.g. the Consort) against the town faction and ends the game
-	// for the mafia at mafiaAligned >= town. Because checkWin runs at the end
-	// of EVERY night (death or not, see resolveAndExitNight), a roster that
+	// checkWin ends the game for the mafia when the STRICT mafia faction
+	// reaches living town (strictMafia >= town), and it runs at the end of
+	// EVERY night (death or not, see resolveAndExitNight) — so a roster that
 	// opens at parity hands the mafia an instant, unavoidable win the moment
-	// Night 1 resolves — the town never even gets to vote. The town faction
-	// is exactly n - mafiaAligned, so "not already won" is mafiaAligned <
-	// town, i.e. 2*mafiaAligned < n.
-	mafiaAligned := g.state.mafiaCount
+	// Night 1 resolves, before the town ever votes. At deal time the strict
+	// mafia count is mafiaCount and the town faction is everyone who is
+	// neither mafia nor a mafia-aligned optional (the Consort), i.e.
+	// town = n - mafiaCount - mafiaAlignedOptionals. "Not already won" is
+	// mafiaCount < town, i.e. 2*mafiaCount + mafiaAlignedOptionals < n.
+	mafiaAlignedOptionals := 0
 	for _, r := range optionals {
 		if r.Faction().MafiaAligned() {
-			mafiaAligned++
+			mafiaAlignedOptionals++
 		}
 	}
-	if 2*mafiaAligned >= n {
+	if 2*g.state.mafiaCount+mafiaAlignedOptionals >= n {
 		return nil, ErrRosterMismatch
 	}
 

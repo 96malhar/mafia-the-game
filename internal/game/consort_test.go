@@ -558,32 +558,48 @@ func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
 	}
 }
 
-func TestConsort_CountsTowardMafiaParityWin(t *testing.T) {
-	// An un-promoted consort counts on the mafia side for win conditions:
-	// mafia (1) + consort (1) reach parity with town once town drops to 2.
-	g := fixedRosterWithConsort(t)
+func TestConsort_DoesNotCountTowardMafiaParityWin(t *testing.T) {
+	// The parity win counts ONLY the strict mafia, never a living consort:
+	// she has no kill and the town doesn't know her, so 1 mafia + consort
+	// does NOT reach parity with 2 town. The mafia must shoot the town down
+	// to the strict-mafia count to win.
+	g := fixedRosterWithConsort(t) // mafia1, consort, det, doc, town1, town2
 
-	// Night 1: mafia kills town1. Living after: mafia1, consort, det,
-	// doc, town2 (mafia-aligned 2 < town 3 — no win yet).
+	// Night 1: mafia kills town1. Living: mafia1, consort, det, doc, town2
+	// (strict mafia 1 < town 3 — no win yet).
 	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia: "town1",
 	})
 	_, ended := findEvent[game.GameEnded](evts)
-	require.False(t, ended, "2 mafia-aligned vs 3 town — game continues")
+	require.False(t, ended, "1 mafia vs 3 town — game continues")
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	// Skip the day with no lynch, then start the next night.
 	noLynchDay(t, g) // empty tally -> NoLynch
-	require.True(t, g.State().DayLynchResolved())
 	beginNightToMafiaAct(t, g)
 
-	// Night 2: mafia kills town2. Living after: mafia1, consort, det,
-	// doc (mafia-aligned 2 == town 2 -> mafia wins, consort counted in).
+	// Night 2: mafia kills town2. Living: mafia1, consort, det, doc
+	// (strict mafia 1, town 2). Under the OLD mafia-aligned rule the
+	// consort would tip this to parity (2 vs 2) and end it; under the
+	// strict-mafia rule the game continues.
 	evts = runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia: "town2",
 	})
+	_, ended = findEvent[game.GameEnded](evts)
+	require.False(t, ended,
+		"a living consort must NOT pad parity — 1 mafia vs 2 town continues")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+
+	// Night 3: mafia kills det. Living: mafia1, consort, doc (strict mafia
+	// 1 >= town 1 -> mafia wins, on STRICT parity, with the consort never
+	// having counted toward the threshold).
+	evts = runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia: "det",
+	})
 	ge, ok := findEvent[game.GameEnded](evts)
-	require.True(t, ok, "mafia reaches parity with the consort counted on their side")
+	require.True(t, ok, "strict mafia reaches town parity (1 vs 1)")
 	require.Equal(t, game.FactionMafia, ge.Winner)
 	require.Equal(t, game.PhaseEnded, g.State().Phase())
 }

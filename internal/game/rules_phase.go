@@ -468,25 +468,39 @@ func (g *Game) beginNextNightTurn() []Event {
 
 // checkWin evaluates win conditions and, if a faction has won, returns
 // the GameEnded event and true. Otherwise returns the zero event and
-// false.
+// false. `mafia` is the STRICT mafia faction (RoleMafia); `town` is the
+// town faction (doctor, detective, vigilante, villager). A Consort is in
+// neither count — she is handled by promotion + the town-win branch.
 //
-// Mafia win:  living STRICT mafia >= living town  (can't be out-voted).
-// Town win:   no living mafia-aligned players remain.
+// The decided cases (all evaluated AFTER promoteConsortIfNeeded, which
+// callers run first so a wiped cabal with a living Consort becomes a real
+// RoleMafia before we count):
 //
-// The parity comparison counts ONLY the strict mafia faction (RoleMafia),
-// not a surviving Consort. She has no kill of her own — she only blocks —
-// and the town doesn't even know she's mafia-aligned, so letting her pad
-// the mafia's "can't be out-voted" count would hand a kill-less role the
-// game. She still matters in two ways: the town must eliminate her to win
-// (the town-win branch counts her via mafiaAlignedLivingCount), and if
-// the cabal is wiped while she lives she is promoted to RoleMafia
-// (promoteConsortIfNeeded, which callers run BEFORE this check) and from
-// then on counts toward parity as a real mafioso.
+//   - Town win — no mafia-aligned players remain at all
+//     (mafiaAlignedLivingCount == 0). Promotion-first guarantees a lone
+//     surviving Consort is already RoleMafia, so this only fires once the
+//     town has truly eliminated the whole mafia side.
+//   - Mafia win — the strict mafia OUTNUMBER the town (mafia > town; this
+//     also covers town == 0). Even the town's strongest counter — a doctor
+//     keeping a loaded vigilante alive to spend his one bullet — nets only
+//     one mafioso, leaving mafia >= town, so being strictly ahead is
+//     terminal.
+//   - Mafia win — the 1-vs-1 endgame (mafia == town == 1). The lone
+//     townsperson can never win: a villager/detective just dies, a loaded
+//     vigilante is shot first (kills resolve mafia-first, so his bullet
+//     never lands), and a doctor can only self-save forever — an unbreakable
+//     stalemate the town can't convert (no lynch majority at 1-of-2). We
+//     award it to the mafia rather than loop indefinitely.
 //
-// Because that promotion always runs first, a wiped-out cabal with a
-// living consort never reaches the town-win branch: she's already a
-// RoleMafia, so both mafiaAlignedLivingCount and the strict mafia count
-// are non-zero.
+// Everything else CONTINUES — including exact parity with two or more mafia
+// (mafia == town >= 2). At that point the town may still hold a live path
+// (e.g. a doctor + a loaded vigilante: save the shooter, spend the bullet
+// on a mafioso, drop below parity), so we deliberately do NOT short-circuit
+// — we let the game play it out. If the position is in fact hopeless for the
+// town (no such resource), the mafia's next night kill simply pushes it to
+// mafia > town and the game ends one cycle later. This keeps the rule free
+// of role-specific special cases at the cost of not ending a few decided
+// parities a turn early.
 func (g *Game) checkWin() (GameEnded, bool) {
 	mafia := g.state.factionLivingCount(FactionMafia)
 	town := g.state.factionLivingCount(FactionTown)
@@ -497,7 +511,7 @@ func (g *Game) checkWin() (GameEnded, bool) {
 			Winner:     FactionTown,
 			FinalRoles: g.state.finalRolesSnapshot(),
 		}, true
-	case mafia >= town:
+	case mafia > town, mafia == town && mafia == 1:
 		return GameEnded{
 			Winner:     FactionMafia,
 			FinalRoles: g.state.finalRolesSnapshot(),

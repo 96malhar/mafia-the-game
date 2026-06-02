@@ -1022,8 +1022,9 @@ func TestAdvancePhase_Guards(t *testing.T) {
 	})
 
 	t.Run("Ended rejects further commands", func(t *testing.T) {
-		// 5 players + 2 mafia. One unsaved kill drops town to 2,
-		// matching mafia → mafia wins.
+		// 5 players + 2 mafia. Town is {detective, doctor, villager}.
+		// Exact parity (2-vs-2) plays on, so it takes two unsaved night
+		// kills for the mafia to strictly outnumber the town and win.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
@@ -1036,28 +1037,38 @@ func TestAdvancePhase_Guards(t *testing.T) {
 		require.NoError(t, err)
 		advanceToMafiaAct(t, g)
 
-		var mafia, victim game.PlayerID
-		for _, p := range g.State().Players() {
-			if mafia == "" && p.Role() == game.RoleMafia {
-				mafia = p.ID()
-			} else if victim == "" && p.Role() == game.RoleVillager {
-				victim = p.ID()
+		// mafiaKill has a living mafioso kill an arbitrary living town
+		// member, then walks the night to resolution (mafia → det → doc).
+		mafiaKill := func() {
+			var mafia, victim game.PlayerID
+			for _, p := range g.State().Players() {
+				if !p.Alive() {
+					continue
+				}
+				if p.Role() == game.RoleMafia {
+					if mafia == "" {
+						mafia = p.ID()
+					}
+				} else if victim == "" {
+					victim = p.ID()
+				}
 			}
+			require.NotEmpty(t, mafia)
+			require.NotEmpty(t, victim)
+			_, err := g.Apply(game.NightAction{Actor: mafia, Target: victim})
+			require.NoError(t, err)
+			walkRestOfTurn(t, g) // mafia submit → det's act
+			walkRestOfTurn(t, g) // det skip → doc's act
+			walkRestOfTurn(t, g) // doc skip → resolve
 		}
-		require.NotEmpty(t, mafia)
-		require.NotEmpty(t, victim)
 
-		_, err = g.Apply(game.NightAction{Actor: mafia, Target: victim})
-		require.NoError(t, err)
-		// Walk through everything until the night resolves.
-		// walkRestOfTurn stops at the NEXT role's act window, so it
-		// takes three walks total to clear three roles:
-		//   walk 1: mafia submit → det's act
-		//   walk 2: det skip → doc's act
-		//   walk 3: doc skip → resolve → ended
-		walkRestOfTurn(t, g)
-		walkRestOfTurn(t, g)
-		walkRestOfTurn(t, g)
+		mafiaKill() // 2 mafia vs 2 town — parity, game continues
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+		noLynchDay(t, g)
+		beginNightToMafiaAct(t, g)
+
+		mafiaKill() // 2 mafia vs 1 town — mafia outnumber, game ends
 		require.Equal(t, game.PhaseEnded, g.State().Phase())
 
 		_, err = g.Apply(game.AdvancePhase{})
@@ -1090,18 +1101,38 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 		require.NoError(t, err)
 		advanceToMafiaAct(t, g)
 
-		var mafia, victim game.PlayerID
-		for _, p := range g.State().Players() {
-			if mafia == "" && p.Role() == game.RoleMafia {
-				mafia = p.ID()
-			} else if victim == "" && p.Role() == game.RoleVillager {
-				victim = p.ID()
+		// 5 players, 2 mafia: town is {detective, doctor, villager}. The
+		// mafia win only once they strictly outnumber the town (parity at
+		// 2-vs-2 plays on), so it takes two unsaved night kills. mafiaKill
+		// finds a living mafioso and an arbitrary living town target, then
+		// resolves the night.
+		mafiaKill := func() {
+			var mafia, victim game.PlayerID
+			for _, p := range g.State().Players() {
+				if !p.Alive() {
+					continue
+				}
+				if p.Role() == game.RoleMafia {
+					if mafia == "" {
+						mafia = p.ID()
+					}
+				} else if victim == "" {
+					victim = p.ID()
+				}
 			}
+			_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
+			walkRestOfTurn(t, g) // mafia → det's act
+			walkRestOfTurn(t, g) // det skip → doc's act
+			walkRestOfTurn(t, g) // doc skip → resolve
 		}
-		_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
-		walkRestOfTurn(t, g) // mafia → det's act
-		walkRestOfTurn(t, g) // det skip → doc's act
-		walkRestOfTurn(t, g) // doc skip → resolve → ended
+
+		mafiaKill() // 2 mafia vs 2 town — parity, game continues
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+		noLynchDay(t, g)
+		beginNightToMafiaAct(t, g)
+
+		mafiaKill() // 2 mafia vs 1 town — mafia outnumber, game ends
 		require.Equal(t, game.PhaseEnded, g.State().Phase(),
 			"precondition: game must be in PhaseEnded")
 		return g

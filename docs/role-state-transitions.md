@@ -217,6 +217,8 @@ The reason a turn is phantom changes what it means for the bullet:
 
 The one-shot flag (`vigilanteShotUsed`) is set during resolution **only if a shot was actually recorded**, so a *blocked* Vigilante keeps his bullet.
 
+**Effect on the win condition:** a loaded Vigilante is the one town resource that can remove a mafioso *outside* the daytime vote, and `checkWin` (intentionally) does **not** special-case him. The mafia win only when the **strict** `RoleMafia` count *strictly outnumbers* the living town faction (`mafia > town`), plus the 1-mafia-vs-1-town endgame (which the lone townsperson can never convert). **Exact parity with two or more mafia is not an instant win** — the game plays on. That is precisely what gives a doctor + loaded Vigilante room to work: at `2 mafia vs {doctor, loaded Vigilante}` the doctor keeps the Vigilante alive through the mafia kill, the bullet drops a mafioso below parity, and the town then out-votes the survivor. If the town has no such line, the mafia's next kill simply pushes the board to `mafia > town` and the game ends a cycle later — so the rule stays free of role-specific cases at the cost of not ending a few decided parities a turn early. See `checkWin`.
+
 ---
 
 ## Villager

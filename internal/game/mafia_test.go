@@ -93,17 +93,69 @@ func TestMafia_OneKillPerNightAcrossTheFaction(t *testing.T) {
 		"only one mafia kill per night — the second submission is too late")
 }
 
-func TestMafia_ReachesParityAndWins(t *testing.T) {
-	// 5 players, 2 mafia: one unsaved kill drops the town from 3 to 2,
-	// matching the 2 mafia-aligned, so the mafia win immediately at
-	// night resolution.
+func TestMafia_OutnumbersTownAndWins(t *testing.T) {
+	// 5 players, 2 mafia. The mafia win only once they strictly OUTNUMBER
+	// the town (mafia > town) — exact parity (2 vs 2) is not enough on its
+	// own, since the town may still hold a winning line, so the game plays
+	// on there. Night 1 drops the town 3 -> 2 (parity, no win yet); Night 2
+	// drops it to 1, so 2 mafia > 1 town and the mafia win at resolution.
 	g := fixedRoster2Mafia(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
+
+	evts1 := playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia: "town1", // unsaved (doctor idles)
 	})
+	_, ended := findEvent[game.GameEnded](evts1)
+	require.False(t, ended, "2 mafia vs 2 town is parity — the game continues")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+
+	evts2 := playNight(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia: "det", // unsaved -> 2 mafia vs 1 town
+	})
+	ge, ok := findEvent[game.GameEnded](evts2)
+	require.True(t, ok, "2 mafia now strictly outnumber the lone town survivor")
+	require.Equal(t, game.FactionMafia, ge.Winner)
+	require.Equal(t, game.PhaseEnded, g.State().Phase())
+}
+
+func TestMafia_LynchingTheVillagerAtThreeWinsItForTheMafia(t *testing.T) {
+	// Drive the board down to {mafia1, doctor, villager} — 1 mafia vs 2
+	// town — and then hold the deciding vote. The doctor MISREADS the
+	// alignment and joins the mafia in voting out the villager: with the
+	// villager lynched the board is 1 mafia vs 1 doctor, the 1-vs-1 endgame
+	// the lone townsperson can never convert, so the mafia win.
+	g := fixedRoster(t) // mafia1, det, doc, town1, town2 (1 mafia)
+
+	// Night 1: the mafia kill the detective (unsaved). -> 1 mafia vs 3 town.
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "det"})
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	require.False(t, livingByID(g, "det"))
+
+	// Day 1: the town lynches town2. -> {mafia1, doc, town1}.
+	finalizeLynch(t, g, "town2")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
+		"1 mafia vs 2 town — the game continues")
+	require.False(t, livingByID(g, "town2"))
+
+	// Night 2: the mafia attack town1 but the doctor saves him, so all
+	// three survive into a fresh day with the deciding vote still to come.
+	beginNightToMafiaAct(t, g)
+	playNight(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:  "town1",
+		game.RoleDoctor: "town1", // save -> nobody dies
+	})
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	require.True(t, livingByID(g, "mafia1") && livingByID(g, "doc") && livingByID(g, "town1"),
+		"the doctor's save kept the trio of {mafia, doctor, villager} alive")
+
+	// The deciding vote: the mafia and the doctor both vote the villager
+	// out. finalizeLynch has every non-target vote for the target, which is
+	// exactly mafia1 + doc here.
+	evts := finalizeLynch(t, g, "town1")
 	ge, ok := findEvent[game.GameEnded](evts)
-	require.True(t, ok, "the kill brings the mafia to parity")
+	require.True(t, ok, "lynching the villager leaves 1 mafia vs 1 doctor")
 	require.Equal(t, game.FactionMafia, ge.Winner)
 	require.Equal(t, game.PhaseEnded, g.State().Phase())
 }

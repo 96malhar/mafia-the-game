@@ -642,3 +642,114 @@ func TestNightPass_RejectedForRolesWithoutAllowPass(t *testing.T) {
 	_, err = g.Apply(game.NightPass{Actor: "det"})
 	require.ErrorIs(t, err, game.ErrNotYourAction, "detective cannot pass via NightPass")
 }
+
+// --- two-mafia parity plays on; the town can still convert it -------------
+
+// fixedRoster2MafiaWithVigilante deals a 6-player game with TWO mafia and
+// the vigilante enabled:
+//
+//	mafia1, mafia2 -> RoleMafia
+//	det            -> RoleDetective
+//	doc            -> RoleDoctor
+//	vig            -> RoleVigilante
+//	town1          -> RoleVillager
+//
+// Town faction is det+doc+vig+town1 (4) vs 2 strict mafia, so it opens
+// well below parity. Used to drive the board down to an exact 2-vs-2
+// parity where the town still holds a doctor and a loaded vigilante.
+func fixedRoster2MafiaWithVigilante(t *testing.T) *game.Game {
+	t.Helper()
+	return fixedRosterMatching(t, rosterDeal{
+		ids: []game.PlayerID{"mafia1", "mafia2", "det", "doc", "vig", "town1"},
+		wanted: map[game.PlayerID]game.Role{
+			"mafia1": game.RoleMafia,
+			"mafia2": game.RoleMafia,
+			"det":    game.RoleDetective,
+			"doc":    game.RoleDoctor,
+			"vig":    game.RoleVigilante,
+			"town1":  game.RoleVillager,
+		},
+		mafiaCount: 2,
+		vigilante:  true,
+		maxSeeds:   5000,
+	})
+}
+
+// driveToTwoMafiaParity walks fixedRoster2MafiaWithVigilante down to an
+// exact 2-vs-2 parity with the town still holding a doctor and a LOADED
+// vigilante. The mafia kill the villager (N1) and the detective (N2);
+// nobody is saved and the vigilante holds fire, so the bullet stays
+// loaded. Returns the game on PhaseDayDiscussion at {mafia1, mafia2,
+// doc, vig}. The N2 batch never ends the game — parity with two mafia is
+// not an instant win.
+func driveToTwoMafiaParity(t *testing.T) *game.Game {
+	t.Helper()
+	g := fixedRoster2MafiaWithVigilante(t)
+
+	// Night 1: the mafia kill the lone villager (unsaved). 2 mafia vs 3 town.
+	runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia: "town1",
+	})
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
+		"2 mafia vs 3 town — no win yet")
+	require.False(t, livingByID(g, "town1"))
+
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+
+	// Night 2: the mafia kill the detective -> exact parity, 2 mafia vs
+	// {doc, vig(loaded)}.
+	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia: "det",
+	})
+	_, ended := findEvent[game.GameEnded](evts)
+	require.False(t, ended,
+		"exact parity with two mafia is not an instant win — the game plays on")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	return g
+}
+
+func TestWin_TwoMafiaParityDoesNotEnd(t *testing.T) {
+	// Exact parity with two (or more) mafia is NOT an instant mafia win:
+	// the town may still hold a winning line, so the game plays on rather
+	// than short-circuiting. Here the board is 2 mafia vs {doc, loaded vig}.
+	g := driveToTwoMafiaParity(t)
+
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
+		"the game continues at 2-vs-2 parity")
+	require.False(t, g.State().VigilanteShotUsed(), "the bullet is still loaded")
+	require.True(t, livingByID(g, "mafia1") && livingByID(g, "mafia2"))
+	require.True(t, livingByID(g, "doc") && livingByID(g, "vig"))
+}
+
+func TestWin_LoadedVigilanteAndDoctorConvertParityToTownWin(t *testing.T) {
+	// The payoff that justifies playing a two-mafia parity on: from 2 mafia
+	// vs {doctor, loaded vigilante} the doctor shields the vigilante from the
+	// mafia kill and the vigilante spends his bullet on a mafioso, dropping
+	// the mafia below parity. The town then out-votes the lone survivor.
+	g := driveToTwoMafiaParity(t)
+
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+
+	// Night 3: mafia shoot the vigilante to stop his shot; the doctor saves
+	// him; the vigilante kills mafia1. -> 1 mafia vs {doc, vig(spent)}.
+	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:     "vig",
+		game.RoleVigilante: "mafia1",
+		game.RoleDoctor:    "vig",
+	})
+	_, ended := findEvent[game.GameEnded](evts)
+	require.False(t, ended, "1 mafia vs 2 town — the game continues to the day")
+	require.True(t, livingByID(g, "vig"), "the doctor's save kept the vigilante alive")
+	require.False(t, livingByID(g, "mafia1"), "the vigilante's bullet dropped a mafioso")
+	require.True(t, g.State().VigilanteShotUsed(), "the bullet was spent")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+	// The town now out-votes the lone remaining mafioso for the win.
+	lynch := finalizeLynch(t, g, "mafia2")
+	ge, ok := findEvent[game.GameEnded](lynch)
+	require.True(t, ok, "lynching the last mafioso wins it for the town")
+	require.Equal(t, game.FactionTown, ge.Winner)
+	require.Equal(t, game.PhaseEnded, g.State().Phase())
+}

@@ -224,12 +224,14 @@ func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
 //   - At least one plain Villager must remain after the mafia, the
 //     reserved town core, and every enabled optional role, i.e.
 //     playerCount - mafiaCount - reservedTownRoles - #optionals ≥ 1.
-//   - The dealt roster must not already satisfy the mafia's parity win.
-//     checkWin ends the game for the mafia at strictMafia >= town, and the
-//     town faction is playerCount - mafiaCount - mafiaAlignedOptionals (a
-//     Consort takes a villager slot but isn't town), so we require
-//     2*mafiaCount + mafiaAlignedOptionals < playerCount and the game
-//     can't open already decided. Only the Consort is mafia-aligned.
+//   - The dealt roster must not open at strict-mafia parity or worse, i.e.
+//     we require 2*mafiaCount + mafiaAlignedOptionals < playerCount (town
+//     is playerCount - mafiaCount - mafiaAlignedOptionals; a Consort takes
+//     a villager slot but isn't town, and only the Consort is mafia-
+//     aligned). This is INTENTIONALLY stricter than checkWin, which now
+//     ends a mafia win only at strictMafia > town (plus the 1-vs-1
+//     endgame): see the inline comment for why a parity open is still an
+//     unfair, effectively-decided board we refuse to deal.
 //   - StartGame is rejected if roles have already been dealt (we detect
 //     this by checking whether the first player has a non-empty role).
 //
@@ -268,15 +270,20 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 		return nil, ErrRosterMismatch
 	}
 
-	// Reject a roster that would START at or past the mafia's parity win.
-	// checkWin ends the game for the mafia when the STRICT mafia faction
-	// reaches living town (strictMafia >= town), and it runs at the end of
-	// EVERY night (death or not, see resolveAndExitNight) — so a roster that
-	// opens at parity hands the mafia an instant, unavoidable win the moment
-	// Night 1 resolves, before the town ever votes. At deal time the strict
+	// Refuse to deal a roster that opens at strict-mafia parity or worse
+	// (strictMafia >= town). This is a deliberately CONSERVATIVE guardrail,
+	// stricter than checkWin: checkWin no longer ends the game at exact
+	// parity (it ends a mafia win at strictMafia > town, plus the
+	// 1-mafia-vs-1-town endgame), so a parity board would technically play
+	// on. We still reject it because such an opening is effectively decided
+	// for the mafia: the >=1-villager + reserved-core (det+doc) rules force
+	// town >= 3, so parity means strictMafia >= 3 — either a mafia-aligned
+	// voting majority (with a Consort the town can never lynch) or a board
+	// where the first night kill alone pushes it to strictMafia > town. We
+	// don't make players sit through a lost game. At deal time the strict
 	// mafia count is mafiaCount and the town faction is everyone who is
 	// neither mafia nor a mafia-aligned optional (the Consort), i.e.
-	// town = n - mafiaCount - mafiaAlignedOptionals. "Not already won" is
+	// town = n - mafiaCount - mafiaAlignedOptionals. "Below parity" is
 	// mafiaCount < town, i.e. 2*mafiaCount + mafiaAlignedOptionals < n.
 	mafiaAlignedOptionals := 0
 	for _, r := range optionals {

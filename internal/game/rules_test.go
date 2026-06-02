@@ -575,20 +575,24 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("rejects a roster that opens at the mafia parity win", func(t *testing.T) {
-		// 5 players, 2 mafia, consort enabled → strict mafia = 2 vs
-		// town = 2 (det + doc; the consort takes the last villager slot).
-		// This passes the villager-fit check (0 villagers is allowed) but
-		// checkWin would declare a mafia win (strictMafia >= town) the
-		// instant Night 1 resolves, so StartGame must reject it up front.
+	t.Run("rejects a roster that opens at strict-mafia parity", func(t *testing.T) {
+		// 7 players, 3 mafia, consort enabled → strict mafia = 3 vs
+		// town = 3 (det + doc + 1 villager; the consort takes one of the
+		// villager slots). This PASSES the villager-fit check (one villager
+		// remains: 7 - 3 - 2 - 1 = 1) so it isolates the parity gate. The
+		// gate is a deliberately conservative guardrail: checkWin no longer
+		// ends at exact parity (it needs strictMafia > town), but a board
+		// where the mafia already match the town — and a hidden Consort
+		// pushes mafia-aligned to a voting majority — is effectively lost
+		// for the town, so StartGame refuses to deal it.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 3,
 		})
 		require.NoError(t, err)
 		_, err = g.Apply(game.SetConsort{Enabled: true})
 		require.NoError(t, err)
-		addPlayers(t, g, "a", "b", "c", "d", "e")
+		addPlayers(t, g, "a", "b", "c", "d", "e", "f", "g")
 		_, err = g.Apply(game.StartGame{})
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})

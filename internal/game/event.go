@@ -27,11 +27,12 @@ type Event interface {
 //   - PublicTo("")           : everyone, including dead players & spectators.
 //   - PrivateTo(playerID)    : only that single player.
 //   - FactionOnly(faction)   : only living members of that faction.
+//   - Graveyard()            : only dead players (the spectating graveyard).
 //
 // We model this as a single value (rather than three separate interface
 // types) because it's small, comparable, and easy to JSON-encode.
 type Visibility struct {
-	// Audience is one of "public", "player", "faction".
+	// Audience is one of "public", "player", "faction", "dead".
 	Audience string
 	// Player is set when Audience == "player".
 	Player PlayerID
@@ -47,6 +48,12 @@ func PrivateTo(p PlayerID) Visibility { return Visibility{Audience: "player", Pl
 
 // FactionOnly restricts visibility to living members of a faction.
 func FactionOnly(f Faction) Visibility { return Visibility{Audience: "faction", Faction: f} }
+
+// Graveyard restricts visibility to dead players — the spectating
+// graveyard that, once eliminated, watches the rest of the game with
+// full knowledge. Used by RosterRevealed to hand the dead the complete
+// player→role map without ever leaking it to the living.
+func Graveyard() Visibility { return Visibility{Audience: "dead"} }
 
 // --- Concrete events ---------------------------------------------------
 
@@ -398,6 +405,30 @@ type NoLynch struct {
 
 func (NoLynch) isEvent()               {}
 func (NoLynch) Visibility() Visibility { return Public() }
+
+// RosterRevealed hands the graveyard (dead players) the full
+// player→role map so the eliminated can spectate the rest of the game
+// with complete knowledge — "the dead see everything". It is scoped to
+// the Graveyard audience, so the living never receive it and learn
+// nothing.
+//
+// Emitted whenever the board changes in a way the dead should see: a
+// kill, a lynch, or a consort promotion. Re-issued AFTER
+// promoteConsortIfNeeded so a sleeper's takeover (consort → mafia) is
+// reflected even for players who died before the promotion — they get a
+// refreshed snapshot rather than a stale role. Because every role is
+// dealt at StartGame, a single snapshot already names every player
+// (including those still alive who may die later), so no per-future-death
+// follow-up is needed beyond the promotion refresh.
+//
+// The map is a fresh copy (finalRolesSnapshot) so it stays immutable for
+// replay.
+type RosterRevealed struct {
+	Roles map[PlayerID]Role
+}
+
+func (RosterRevealed) isEvent()               {}
+func (RosterRevealed) Visibility() Visibility { return Graveyard() }
 
 // GameEnded is the terminal event. Winner is one of FactionTown,
 // FactionMafia. FinalRoles reveals every player's role to everyone — this

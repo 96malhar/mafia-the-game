@@ -197,6 +197,13 @@ func (g *Game) resolveAndExitNight() []Event {
 		return events
 	}
 
+	// Game continues: refresh the graveyard's roster if this batch
+	// changed the board (a kill or a consort promotion). Done after the
+	// game-end check on purpose — a terminal batch already carries the
+	// public GameEnded.FinalRoles, so no graveyard-only event is needed
+	// there.
+	events = append(events, g.revealRosterToGraveyard(events)...)
+
 	from := g.state.phase
 	g.state.day++
 	g.state.phase = PhaseDayDiscussion
@@ -364,6 +371,12 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	if events, ended := g.endGameIfWon(events); ended {
 		return events, nil
 	}
+
+	// Game continues: refresh the graveyard's roster for the freshly
+	// lynched player (and any prior dead) now that promotion, if any,
+	// has resolved. After the game-end check — a terminal batch already
+	// carries the public GameEnded.FinalRoles.
+	events = append(events, g.revealRosterToGraveyard(events)...)
 
 	// Lynch but no win: return to DayDiscussion with the resolved flag
 	// set so the only legal host command is BeginNight.
@@ -551,4 +564,30 @@ func (g *Game) promoteConsortIfNeeded() []Event {
 		}
 	}
 	return nil
+}
+
+// revealRosterToGraveyard returns a single RosterRevealed snapshot when
+// the just-resolved batch changed the board in a way the dead should
+// see — a kill, a lynch, or a consort promotion — and nil otherwise (a
+// doctor-saved night or a no-lynch day leaves the graveyard's knowledge
+// unchanged, so the log isn't padded with redundant snapshots).
+//
+// The snapshot is captured from current state, so callers MUST invoke
+// this AFTER promoteConsortIfNeeded so a sleeper's takeover is reflected
+// (the dead see the promoted consort as mafia). Scoped to the Graveyard
+// audience, so projecting it reaches every dead player — the freshly
+// eliminated one in this batch and any who died earlier — while the
+// living see nothing.
+func (g *Game) revealRosterToGraveyard(batch []Event) []Event {
+	changed := false
+	for _, e := range batch {
+		switch e.(type) {
+		case PlayerKilled, PlayerLynched, ConsortPromoted:
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return []Event{RosterRevealed{Roles: g.state.finalRolesSnapshot()}}
 }

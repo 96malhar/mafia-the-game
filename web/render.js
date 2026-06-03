@@ -182,7 +182,9 @@
         if (!p.alive) {
           bits.push(p.deathCause === "lynched" ? "lynched by vote" : "killed in the night");
         }
-        if (p.revealedRole) bits.push(p.revealedRole);
+        // p.revealedRole is rendered as an inline role tag next to the
+        // name (see the badge block below), not here, so the reveal looks
+        // identical whether it arrives mid-game (graveyard) or at game end.
         // Vote tally is secret until the host reveals it. Pre-reveal we
         // show NO counts (not even your own contribution) — a voter's
         // selection is conveyed by their row's "Voted ✓" highlight and
@@ -210,16 +212,23 @@
         if (p.id === myId) {
           nameLine.appendChild(badge("You", "shrink-0 bg-emerald-700 text-emerald-100"));
         }
-        // Single role/faction identity badge per row, mutually exclusive
-        // by construction:
+        // Single role/faction identity badge per row, in precedence order:
+        //   - revealedRole (the player's actual role) wins once it's
+        //     known to this viewer — that happens for EVERY player when
+        //     the roster is revealed to the dead mid-game and for everyone
+        //     at game end. Rendered as the same indigo role tag in both
+        //     cases, so the reveal UI is identical. Covers a promoted
+        //     consort (shown as mafia).
         //   - mafiaPeers (populated only from the faction-scoped
         //     mafiaRoster event, so empty for town) badges every known
-        //     mafioso "Mafia" — that's the row's identity, whether it's
-        //     self or a teammate, and it covers a promoted consort too.
+        //     mafioso "Mafia" — the in-game faction affordance, shown
+        //     before any reveal.
         //   - otherwise the LOCAL player sees their own dealt role next
         //     to "You" (town never learns others' roles, so this is
         //     self-only). myRole is null until roles are dealt.
-        if (mafiaPeers.has(p.id)) {
+        if (p.revealedRole) {
+          nameLine.appendChild(badge(capitalize(p.revealedRole), "shrink-0 bg-indigo-700 text-indigo-100"));
+        } else if (mafiaPeers.has(p.id)) {
           nameLine.appendChild(badge("Mafia", "shrink-0 bg-rose-800 text-rose-100"));
         } else if (p.id === myId && myRole) {
           nameLine.appendChild(badge(capitalize(myRole), "shrink-0 bg-indigo-700 text-indigo-100"));

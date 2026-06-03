@@ -89,6 +89,7 @@ const (
 	EventVoteCleared           = "voteCleared"
 	EventPlayerLynched         = "playerLynched"
 	EventNoLynch               = "noLynch"
+	EventRosterRevealed        = "rosterRevealed"
 	EventGameEnded             = "gameEnded"
 )
 

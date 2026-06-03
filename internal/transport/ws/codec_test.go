@@ -227,6 +227,7 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.VoteCleared{Day: 1},
 		game.PlayerLynched{PlayerID: "p2"},
 		game.NoLynch{Day: 1},
+		game.RosterRevealed{Roles: map[game.PlayerID]game.Role{"p1": game.RoleMafia, "p2": game.RoleVillager}},
 		game.GameEnded{Winner: game.FactionTown, FinalRoles: map[game.PlayerID]game.Role{"p1": game.RoleMafia}},
 	}
 	for _, ev := range all {
@@ -265,6 +266,30 @@ func TestEncodeOutbound_VotesRevealed(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ed.Event.Data, &data))
 	require.Equal(t, 2, data.Day)
 	require.Equal(t, map[string]string{"p1": "p3", "p2": "p3"}, data.Tally)
+}
+
+func TestEncodeOutbound_RosterRevealed(t *testing.T) {
+	// The graveyard roster must carry the full player→role map as a
+	// string→string object under "roles".
+	ev := game.RosterRevealed{
+		Roles: map[game.PlayerID]game.Role{"p1": game.RoleMafia, "p2": game.RoleVillager},
+	}
+	raw, ok, err := encodeOutbound(room.OutEvent{Event: ev})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	env := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "event", env.Type)
+
+	var ed serverEventData
+	require.NoError(t, json.Unmarshal(env.Data, &ed))
+	require.Equal(t, "rosterRevealed", ed.Event.Type)
+
+	var data struct {
+		Roles map[string]string `json:"roles"`
+	}
+	require.NoError(t, json.Unmarshal(ed.Event.Data, &data))
+	require.Equal(t, map[string]string{"p1": "mafia", "p2": "villager"}, data.Roles)
 }
 
 func TestEncodeOutbound_Error(t *testing.T) {

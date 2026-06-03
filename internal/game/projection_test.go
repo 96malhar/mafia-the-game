@@ -366,6 +366,38 @@ func TestProjection_UnknownViewerSeesOnlyPublic(t *testing.T) {
 	}
 }
 
+func TestProjection_RosterRevealedReachesOnlyTheDead(t *testing.T) {
+	// RosterRevealed is the graveyard's window into the full roster:
+	// every DEAD player must see it, while the living — and any unknown
+	// viewer — must not. A leak here would hand a still-playing town
+	// every secret role at once, so this is a security-critical assertion.
+	g := fixedRoster(t)
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "town2"})
+	require.False(t, livingByID(g, "town2"), "town2 should be dead after the night")
+
+	events := []game.Event{
+		game.RosterRevealed{Roles: map[game.PlayerID]game.Role{
+			"mafia1": game.RoleMafia,
+			"det":    game.RoleDetective,
+			"doc":    game.RoleDoctor,
+			"town1":  game.RoleVillager,
+			"town2":  game.RoleVillager,
+		}},
+	}
+
+	t.Run("a dead player sees the full roster", func(t *testing.T) {
+		out := game.Project("town2", events, g.State())
+		require.Len(t, out, 1, "town2 (dead) must receive the graveyard roster")
+	})
+
+	t.Run("the living and unknown viewers see nothing", func(t *testing.T) {
+		for _, viewer := range []game.PlayerID{"mafia1", "det", "doc", "town1", "stranger"} {
+			out := game.Project(viewer, events, g.State())
+			require.Empty(t, out, "viewer %q must NOT see the graveyard roster", viewer)
+		}
+	})
+}
+
 // Note: the default-deny branch for unknown Visibility.Audience tags
 // cannot be exercised from the external game_test package because the
 // Event interface is closed. It is tested in projection_internal_test.go.

@@ -132,6 +132,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.NoLynch:
 		tag = wire.EventNoLynch
 		data = kv{"day": v.Day}
+	case game.RosterRevealed:
+		tag = wire.EventRosterRevealed
+		data = kv{"roles": stringKeyValMap(v.Roles)}
 	case game.GameEnded:
 		tag = wire.EventGameEnded
 		data = kv{"winner": string(v.Winner), "finalRoles": stringKeyValMap(v.FinalRoles)}

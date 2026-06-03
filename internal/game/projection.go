@@ -18,11 +18,15 @@ package game
 //     member of faction f. Dead faction members lose
 //     access to ongoing secret coordination; they become
 //     spectators of public information only.
+//   - Graveyard()    -> visible only when the viewer is a CURRENTLY DEAD
+//     player. The mirror of FactionOnly's aliveness gate:
+//     it hands the eliminated the full roster (RosterRevealed)
+//     while the living see nothing.
 //
 // state is consulted to determine the viewer's role and aliveness for the
-// FactionOnly check. If the viewer is not a known player (e.g. a
-// not-yet-joined client, or a future spectator), only public events are
-// returned.
+// FactionOnly / Graveyard checks. If the viewer is not a known player
+// (e.g. a not-yet-joined client, or a future spectator), only public
+// events are returned.
 func Project(viewer PlayerID, events []Event, state *GameState) []Event {
 	out := make([]Event, 0, len(events))
 	for _, e := range events {
@@ -55,6 +59,19 @@ func canSee(viewer PlayerID, v Visibility, state *GameState) bool {
 			return false
 		}
 		return p.role.Faction() == v.Faction
+
+	case "dead":
+		// The graveyard: only players who have been eliminated. A
+		// not-yet-joined client or future spectator (not a known
+		// player) is not in the graveyard and sees nothing here.
+		if viewer == "" || state == nil {
+			return false
+		}
+		p, ok := state.findPlayer(viewer)
+		if !ok {
+			return false
+		}
+		return !p.alive
 
 	default:
 		// Unknown audience tag: default-deny. The engine only emits

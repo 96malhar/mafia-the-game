@@ -471,6 +471,25 @@
             renderAll();
             break;
 
+          case "rosterRevealed":
+            // Graveyard-only: the server sends this exclusively to DEAD
+            // players, so its mere arrival means I'm in the graveyard.
+            // Fold the full player->role map into each row's revealedRole
+            // — the same field gameEnded populates for everyone — so the
+            // dead see every identity as an inline role tag, identical to
+            // the game-end reveal. Re-emitted on a consort promotion, so
+            // upsertPlayer refreshes her role to "mafia" even for players
+            // who died before her takeover.
+            //
+            // Deliberately SILENT — no toast or modal — so the promotion
+            // never pops the "You've been promoted" announce for the
+            // dead; that stays private to the consort via the separate,
+            // untouched consortPromoted event.
+            for (const [pid, role] of Object.entries(env.data.roles || {})) {
+              upsertPlayer(pid, { revealedRole: role });
+            }
+            break;
+
           // Pre-reveal, the server only delivers a voter THEIR OWN
           // cast/change/retract (the events are private), so these keep
           // the local player's "your vote" chip + row highlight in sync

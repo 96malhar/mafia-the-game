@@ -81,6 +81,35 @@ func (g *Game) endGameIfWon(events []Event) ([]Event, bool) {
 	return events, true
 }
 
+// resolveDeathsAndMaybeEnd runs the shared post-death resolution pipeline
+// that BOTH death paths — a night kill in resolveAndExitNight and a lynch
+// in applyFinalizeVotes — must execute in the same order:
+//
+//  1. promoteConsortIfNeeded — a cabal-ending death promotes a surviving
+//     Consort to RoleMafia BEFORE the win check, so the town isn't handed
+//     a premature victory ("sleeper takes over").
+//  2. endGameIfWon — evaluate win conditions; if a faction won the engine
+//     flips to PhaseEnded and we return ended=true so the caller stops
+//     (the terminal batch already carries GameEnded.FinalRoles, so no
+//     graveyard-only event is needed there).
+//  3. revealRosterToGraveyard — only on the continuing path, refresh the
+//     graveyard's roster snapshot now that any promotion has resolved.
+//
+// Centralizing this is what guarantees the two paths can't drift on the
+// promotion-before-win-check, reveal-after-promotion ordering — the
+// engine's single most safety-critical invariant. Each caller keeps its
+// own phase-transition tail (night→day vs lynch→discussion), which
+// genuinely differs between the two sites and is deliberately NOT folded
+// in here.
+func (g *Game) resolveDeathsAndMaybeEnd(events []Event) (out []Event, ended bool) {
+	events = append(events, g.promoteConsortIfNeeded()...)
+	if events, ended := g.endGameIfWon(events); ended {
+		return events, true
+	}
+	events = append(events, g.revealRosterToGraveyard(events)...)
+	return events, false
+}
+
 // endDayToDiscussion flips PhaseDayVote back to PhaseDayDiscussion,
 // clears the tally, marks the lynch resolved (so the only legal host
 // command becomes BeginNight), and returns the PhaseChanged event.

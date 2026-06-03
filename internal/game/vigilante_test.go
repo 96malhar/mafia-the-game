@@ -536,11 +536,7 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 	_, ended := findEvent[game.GameEnded](evts)
 	require.False(t, ended, "a surviving consort keeps the mafia side alive")
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
-	for _, p := range g.State().Players() {
-		if p.ID() == "consort" {
-			require.Equal(t, game.RoleMafia, p.Role(), "the consort inherits RoleMafia")
-		}
-	}
+	require.Equal(t, game.RoleMafia, roleByID(g, "consort"), "the consort inherits RoleMafia")
 
 	// And the takeover is real: next night the promoted consort carries
 	// the faction kill from the RoleMafia act window.

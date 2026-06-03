@@ -184,25 +184,16 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 func (g *Game) resolveAndExitNight() []Event {
 	events := g.resolveNight()
 
-	// If the night's kills wiped out the last mafia but a consort still
-	// lives, promote her to mafia BEFORE the win check — same "sleeper
-	// takes over" rule as the lynch path (applyFinalizeVotes). This path
-	// matters because the Vigilante can kill a mafioso at night, so the
-	// cabal can now reach zero during night resolution, not only via a
-	// lynch. Without this the consort would never inherit the kill and
-	// the takeover would silently fail. No-op unless the cabal is wiped.
-	events = append(events, g.promoteConsortIfNeeded()...)
-
-	if events, ended := g.endGameIfWon(events); ended {
+	// Run the shared post-death pipeline (promote → win check → graveyard
+	// refresh; see resolveDeathsAndMaybeEnd for the ordering contract).
+	// This path matters because the Vigilante can kill a mafioso at night,
+	// so the cabal can now reach zero during night resolution, not only via
+	// a lynch — without the promotion baked into that pipeline the consort
+	// would never inherit the kill and the takeover would silently fail.
+	events, ended := g.resolveDeathsAndMaybeEnd(events)
+	if ended {
 		return events
 	}
-
-	// Game continues: refresh the graveyard's roster if this batch
-	// changed the board (a kill or a consort promotion). Done after the
-	// game-end check on purpose — a terminal batch already carries the
-	// public GameEnded.FinalRoles, so no graveyard-only event is needed
-	// there.
-	events = append(events, g.revealRosterToGraveyard(events)...)
 
 	from := g.state.phase
 	g.state.day++
@@ -363,20 +354,14 @@ func (g *Game) applyFinalizeVotes(_ FinalizeVotes) ([]Event, error) {
 	}
 	events = append(events, PlayerLynched{PlayerID: target})
 
-	// If that lynch wiped out the last mafia but a consort still lives,
-	// she's promoted to mafia BEFORE the win check — otherwise the town
-	// would be handed a premature victory.
-	events = append(events, g.promoteConsortIfNeeded()...)
-
-	if events, ended := g.endGameIfWon(events); ended {
+	// Run the shared post-death pipeline (see resolveDeathsAndMaybeEnd):
+	// if this lynch wiped the last mafia but a consort still lives, she's
+	// promoted to mafia BEFORE the win check — otherwise the town would be
+	// handed a premature victory.
+	events, ended := g.resolveDeathsAndMaybeEnd(events)
+	if ended {
 		return events, nil
 	}
-
-	// Game continues: refresh the graveyard's roster for the freshly
-	// lynched player (and any prior dead) now that promotion, if any,
-	// has resolved. After the game-end check — a terminal batch already
-	// carries the public GameEnded.FinalRoles.
-	events = append(events, g.revealRosterToGraveyard(events)...)
 
 	// Lynch but no win: return to DayDiscussion with the resolved flag
 	// set so the only legal host command is BeginNight.

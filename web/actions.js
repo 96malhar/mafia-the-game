@@ -62,7 +62,7 @@
           if (youArePlayingThisRole) {
             const pickPhrase =
               myRole === "consort"
-                ? "Pick someone to block"
+                ? "Pick someone to distract"
                 : myRole === "vigilante"
                   ? "Pick someone to eliminate"
                   : "Pick a target";
@@ -73,7 +73,7 @@
               // blocked vigilante (bullet preserved) isn't mislabeled
               // "spent".
               bannerText.textContent =
-                `Your turn — ${display}. You were blocked tonight — your action won't land.`;
+                `Your turn — ${display}. You were distracted tonight — your action won't land.`;
             } else if (myRole === "vigilante" && currentNightTurnPhantom) {
               // Bullet already spent on an earlier night. The server runs
               // a spent vigilante's turn as a phantom (no act window), so
@@ -239,21 +239,18 @@
             } else if (currentNightRole === myRole) {
               if (myAction) {
                 hint.textContent = "Submitted. The next role will be summoned shortly.";
-                const t = players.get(myAction);
-                const verb =
-                  myRole === "consort"
-                    ? "Blocked"
-                    : myRole === "vigilante"
-                      ? "Eliminated"
-                      : "Targeted";
-                extras.appendChild(noteChip(`${verb}: ${t ? t.name : myAction}`, "bg-amber-700/60"));
+                // Past-tense verb from the shared ROLE_VERBS table (keeps
+                // the chip in lockstep with the row button); unknown roles
+                // fall back to the generic "Targeted".
+                const verb = ROLE_VERBS[myRole]?.past ?? "Targeted";
+                extras.appendChild(noteChip(`${verb}: ${nameOf(myAction)}`, "bg-amber-700/60"));
               } else if (iAmBlocked) {
                 // Roleblocked tonight: the turn is phantom (no act
                 // window), so we show this regardless of sub-phase.
                 // Checked before the spent-vigilante branch so a blocked
                 // vigilante (bullet preserved) isn't mislabeled "spent".
                 hint.textContent =
-                  "You were blocked tonight — your action won't land. Sit tight.";
+                  "You were distracted tonight — your action won't land. Sit tight.";
               } else if (
                 myRole === "vigilante" &&
                 (vigilanteFired || currentNightTurnPhantom)
@@ -273,8 +270,7 @@
                 // Show the team's target so we're not left staring at a
                 // dead picker wondering what happened.
                 hint.textContent = "A teammate locked in the kill for the family.";
-                const t = players.get(mafiaKillTarget);
-                extras.appendChild(noteChip(`Team target: ${t ? t.name : mafiaKillTarget}`, "bg-rose-800/70"));
+                extras.appendChild(noteChip(`Team target: ${nameOf(mafiaKillTarget)}`, "bg-rose-800/70"));
               } else if (myRole === "vigilante" && heldFireThisTurn) {
                 // We pressed "Hold fire" — an explicit NightPass that ends
                 // the turn early WITHOUT spending the bullet. Confirm it
@@ -292,7 +288,7 @@
               } else {
                 hint.textContent =
                   myRole === "consort"
-                    ? "Pick someone to block on the Players panel below."
+                    ? "Pick someone to distract on the Players panel below."
                     : myRole === "vigilante"
                       ? "Pick a target below — or hold your fire to save your bullet."
                       : "Pick your target on the Players panel below.";
@@ -419,8 +415,7 @@
                 // The "Your vote: X" chip stays as a one-glance
                 // summary; the retract action moved onto the
                 // selected player's row itself (tap-to-undo).
-                const t = players.get(myVote);
-                extras.appendChild(noteChip(`Your vote: ${t ? t.name : myVote}`, "bg-rose-700/60"));
+                extras.appendChild(noteChip(`Your vote: ${nameOf(myVote)}`, "bg-rose-700/60"));
               }
             }
             // Host-only vote-management buttons. The flow is two-step:

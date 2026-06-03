@@ -57,6 +57,37 @@
       // Shape: { [pid]: { id, name, alive, deathCause, revealedRole } }
       let players = new Map();
 
+      // nameOf resolves a PlayerID to its current display name, falling
+      // back to the raw id when the roster hasn't yet folded in that
+      // player's PlayerJoined. That window is real: an id-bearing event
+      // (lynch, investigation, vote) can arrive in the same WS batch as,
+      // but just before, the naming event. Defined here (helpers.js loads
+      // first) so every later file shares the one fallback-correct copy.
+      const nameOf = (id) => {
+        const p = players.get(id);
+        return p ? p.name : id;
+      };
+
+      // ROLE_VERBS is the single source of truth for each acting role's
+      // action verb in its three on-screen forms: the imperative button
+      // label (base), the locked-in button label (gerund), and the
+      // post-submit confirmation chip (past). render.js and actions.js
+      // both read this so a verb rename happens in ONE place instead of
+      // drifting across the button and the chip.
+      //
+      // NOT modeled here (handled at the call sites, because they depend
+      // on state a flat table can't express): the doctor's self-row
+      // "Save self" variant, and the generic "Target"/"Targeted" fallback
+      // for an unknown role. Full-sentence wake/sleep narration is also
+      // separate — see ROLE_NARRATION / ROLE_SLEEP in events.js.
+      const ROLE_VERBS = {
+        mafia:     { base: "Kill",        gerund: "Killing",       past: "Killed" },
+        consort:   { base: "Distract",    gerund: "Distracting",   past: "Distracted" },
+        detective: { base: "Investigate", gerund: "Investigating", past: "Investigated" },
+        vigilante: { base: "Eliminate",   gerund: "Eliminating",   past: "Eliminated" },
+        doctor:    { base: "Save",        gerund: "Saving",        past: "Saved" },
+      };
+
       // Per-phase state. All of these are reset on phaseChanged so a
       // replay reconstructs them correctly from the event stream.
       //   phase        — current Phase string ("lobby", "night", …).
@@ -245,10 +276,7 @@
       // dawn narration and the day-discussion banner so a multi-death
       // night names every victim, not just the last one seen.
       function formatVictimList(ids) {
-        const names = ids.map((id) => {
-          const p = players.get(id);
-          return p ? p.name : id;
-        });
+        const names = ids.map((id) => nameOf(id));
         if (names.length === 0) return "";
         if (names.length === 1) return names[0];
         if (names.length === 2) return `${names[0]} and ${names[1]}`;
@@ -271,7 +299,7 @@
       //     ("Mafia wake up. [pause] Choose your target.").
       //   - feature detection: not all browsers support it. If
       //     ttsSupported is false, the UI falls back to large on-screen
-      //     text cards (renderNarratorCard).
+      //     text cards (showNarratorCard).
       const ttsSupported =
         typeof window !== "undefined" &&
         "speechSynthesis" in window &&
@@ -404,7 +432,7 @@
         showModalCard(
           "The Consort distracted you. You cannot act.",
           MODAL_AMBER,
-          "Blocked",
+          "Distracted",
           true // auto-clears when our ponder elapses (see nightSleepStarted)
         );
       }

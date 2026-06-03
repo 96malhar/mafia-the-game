@@ -3,12 +3,8 @@
 # =========================================================================
 # Build stage
 # =========================================================================
-# Pinned by digest for reproducible, supply-chain-safe builds. The tag is
-# kept in the comment for readability; bump both together (Dependabot can
-# track the digest). Resolve a new digest with:
-#   docker buildx imagetools inspect golang:1.26-alpine
-# golang:1.26-alpine (multi-arch index)
-FROM golang:1.26-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS build
+# Pinned to an explicit patch + Alpine version for predictable builds.
+FROM golang:1.26.4-alpine3.23 AS build
 
 WORKDIR /src
 

@@ -70,13 +70,42 @@ func drain(sub *Subscriber, deadline time.Duration) []Outbound {
 	}
 }
 
-// newTestManager creates a Manager scoped to the test's lifetime.
-func newTestManager(t *testing.T) *Manager {
+// drainFirstEvent drains sub for the given deadline and returns the first
+// drained OutEvent whose wrapped game event is of concrete type T (with
+// true), or the zero T and false if none arrived. Keeps the doubly-nested
+// OutEvent→game.Event type assertion in one place while letting callers
+// still assert on the returned event's fields.
+func drainFirstEvent[T game.Event](sub *Subscriber, deadline time.Duration) (T, bool) {
+	for _, msg := range drain(sub, deadline) {
+		if ev, ok := msg.(OutEvent); ok {
+			if v, isT := ev.Event.(T); isT {
+				return v, true
+			}
+		}
+	}
+	var zero T
+	return zero, false
+}
+
+// requireNoEvent drains sub for the given deadline and fails the test if
+// any drained OutEvent carries a game event of type T. Used to assert a
+// rejected or no-op action broadcasts nothing of that kind.
+func requireNoEvent[T game.Event](t *testing.T, sub *Subscriber, deadline time.Duration, msgAndArgs ...any) {
+	t.Helper()
+	_, found := drainFirstEvent[T](sub, deadline)
+	require.False(t, found, msgAndArgs...)
+}
+
+// newTestManager creates a Manager scoped to the test's lifetime. Extra
+// ManagerOptions (e.g. WithSweepInterval, WithMaxRooms) are forwarded to
+// NewManager, so tests can tune the manager without re-spelling the
+// context + timeout-Close cleanup boilerplate.
+func newTestManager(t *testing.T, opts ...ManagerOption) *Manager {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	m := NewManager(ctx, silentLogger())
+	m := NewManager(ctx, silentLogger(), opts...)
 	t.Cleanup(func() {
 		shutdown, c := context.WithTimeout(context.Background(), time.Second)
 		defer c()
@@ -197,14 +226,8 @@ func TestRoom_HostChangedNotReemittedOnSecondJoin(t *testing.T) {
 
 	// Alice should see only Bob's PlayerJoined — no second
 	// HostChanged.
-	for _, msg := range drain(subA, 50*time.Millisecond) {
-		ev, ok := msg.(OutEvent)
-		if !ok {
-			continue
-		}
-		_, isHC := ev.Event.(game.HostChanged)
-		require.False(t, isHC, "no HostChanged should fire on a non-first join, got %#v", ev.Event)
-	}
+	requireNoEvent[game.HostChanged](t, subA, 50*time.Millisecond,
+		"no HostChanged should fire on a non-first join")
 }
 
 func TestRoom_LateJoinerReplayIncludesHostChanged(t *testing.T) {
@@ -674,21 +697,6 @@ func TestRoom_JoinErrorForPassesUnrelatedCodesThrough(t *testing.T) {
 
 // --- Lifetime reaping ----------------------------------------------------
 
-// newTestManagerWithSweep is newTestManager with a sub-second sweeper
-// cadence so tests can observe reaping without real-time waits.
-func newTestManagerWithSweep(t *testing.T, interval time.Duration) *Manager {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	m := NewManager(ctx, silentLogger(), WithSweepInterval(interval))
-	t.Cleanup(func() {
-		shutdown, c := context.WithTimeout(context.Background(), time.Second)
-		defer c()
-		_ = m.Close(shutdown)
-	})
-	return m
-}
-
 // waitGone polls the manager's registry until the given code is
 // missing, or fails the test after deadline. We poll (rather than
 // hook into r.done) because the manager-side reapWhenDone is what
@@ -710,7 +718,7 @@ func waitGone(t *testing.T, m *Manager, code string, deadline time.Duration) {
 // room that has existed for longer than its MaxLifetime is reaped
 // on the next sweep, regardless of whether it ever had subscribers.
 func TestRoom_LifetimeReaperClosesOldRoom(t *testing.T) {
-	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
 	r, err := m.CreateRoom(Config{
 		Logger:      silentLogger(),
 		MaxLifetime: 50 * time.Millisecond,
@@ -724,7 +732,7 @@ func TestRoom_LifetimeReaperClosesOldRoom(t *testing.T) {
 // once it crosses MaxLifetime. This is the intentional tradeoff:
 // predictable resource bounds over "wait for everyone to leave".
 func TestRoom_LifetimeReaperIgnoresSubscribers(t *testing.T) {
-	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
 	r, err := m.CreateRoom(Config{
 		Logger:      silentLogger(),
 		MaxLifetime: 80 * time.Millisecond,
@@ -742,7 +750,7 @@ func TestRoom_LifetimeReaperIgnoresSubscribers(t *testing.T) {
 // TestRoom_LifetimeReaperRespectsCap verifies the inverse: a room
 // younger than its cap is NOT reaped, even with no subscribers.
 func TestRoom_LifetimeReaperRespectsCap(t *testing.T) {
-	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
 	r, err := m.CreateRoom(Config{
 		Logger:      silentLogger(),
 		MaxLifetime: time.Hour, // far longer than any test
@@ -758,7 +766,7 @@ func TestRoom_LifetimeReaperRespectsCap(t *testing.T) {
 // TestRoom_LifetimeReaperDisabledByZero verifies that MaxLifetime<=0
 // disables reaping entirely.
 func TestRoom_LifetimeReaperDisabledByZero(t *testing.T) {
-	m := newTestManagerWithSweep(t, 20*time.Millisecond)
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
 	r, err := m.CreateRoom(Config{
 		Logger:      silentLogger(),
 		MaxLifetime: -1,
@@ -815,14 +823,7 @@ func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {
 // --- Room capacity cap ----------------------------------------------------
 
 func TestManager_CreateRoom_AtCapacity(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	m := NewManager(ctx, silentLogger(), WithMaxRooms(2))
-	t.Cleanup(func() {
-		sd, c := context.WithTimeout(context.Background(), time.Second)
-		defer c()
-		_ = m.Close(sd)
-	})
+	m := newTestManager(t, WithMaxRooms(2))
 
 	_, err := m.CreateRoom(Config{Logger: silentLogger()})
 	require.NoError(t, err)
@@ -947,12 +948,8 @@ func TestRoom_HostRejoinWithinGraceKeepsHost(t *testing.T) {
 	require.True(t, rejoined.IsHost, "host keeps host on a within-grace rejoin")
 
 	// Wait past the grace window; p2 must NOT receive a HostChanged.
-	for _, msg := range drain(p2, 300*time.Millisecond) {
-		if ev, ok := msg.(OutEvent); ok {
-			_, isHC := ev.Event.(game.HostChanged)
-			require.False(t, isHC, "no migration should occur on a within-grace rejoin")
-		}
-	}
+	requireNoEvent[game.HostChanged](t, p2, 300*time.Millisecond,
+		"no migration should occur on a within-grace rejoin")
 }
 
 // --- SetConsort host gating ----------------------------------------------
@@ -980,12 +977,8 @@ func TestRoom_NonHostSetConsortRejected(t *testing.T) {
 		"a non-host SetConsort must be forbidden")
 
 	// No ConsortChanged should have been broadcast to anyone.
-	for _, msg := range drain(host, 100*time.Millisecond) {
-		if ev, ok := msg.(OutEvent); ok {
-			_, isCC := ev.Event.(game.ConsortChanged)
-			require.False(t, isCC, "a rejected toggle must not broadcast ConsortChanged")
-		}
-	}
+	requireNoEvent[game.ConsortChanged](t, host, 100*time.Millisecond,
+		"a rejected toggle must not broadcast ConsortChanged")
 }
 
 func TestRoom_HostSetConsortBroadcastsConsortChanged(t *testing.T) {
@@ -1001,15 +994,9 @@ func TestRoom_HostSetConsortBroadcastsConsortChanged(t *testing.T) {
 
 	// Both the host and the other player receive the public toggle.
 	for _, sub := range []*Subscriber{host, other} {
-		var sawEnabled bool
-		for _, msg := range drain(sub, 200*time.Millisecond) {
-			if ev, ok := msg.(OutEvent); ok {
-				if cc, isCC := ev.Event.(game.ConsortChanged); isCC {
-					sawEnabled = cc.Enabled
-				}
-			}
-		}
-		require.True(t, sawEnabled, "every subscriber should see ConsortChanged{Enabled:true}")
+		cc, found := drainFirstEvent[game.ConsortChanged](sub, 200*time.Millisecond)
+		require.True(t, found, "every subscriber should see a ConsortChanged")
+		require.True(t, cc.Enabled, "every subscriber should see ConsortChanged{Enabled:true}")
 	}
 }
 
@@ -1035,14 +1022,8 @@ func TestRoom_HostSetVigilanteBroadcastsVigilanteChanged(t *testing.T) {
 
 	// Both the host and the other player receive the public toggle.
 	for _, sub := range []*Subscriber{host, other} {
-		var sawEnabled bool
-		for _, msg := range drain(sub, 200*time.Millisecond) {
-			if ev, ok := msg.(OutEvent); ok {
-				if vc, isVC := ev.Event.(game.VigilanteChanged); isVC {
-					sawEnabled = vc.Enabled
-				}
-			}
-		}
-		require.True(t, sawEnabled, "every subscriber should see VigilanteChanged{Enabled:true}")
+		vc, found := drainFirstEvent[game.VigilanteChanged](sub, 200*time.Millisecond)
+		require.True(t, found, "every subscriber should see a VigilanteChanged")
+		require.True(t, vc.Enabled, "every subscriber should see VigilanteChanged{Enabled:true}")
 	}
 }

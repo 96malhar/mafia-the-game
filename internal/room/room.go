@@ -293,7 +293,7 @@ func (r *Room) dispatch(msg inbound) {
 // its assigned PlayerID and rejoin secret, and the engine event
 // (PlayerJoined) is broadcast to everyone.
 func (r *Room) handleJoin(m inJoin) {
-	if m.From == nil || m.From.closed.Load() {
+	if !m.From.live() {
 		return // defensive: nil, or a torn-down connection sent a stray frame
 	}
 
@@ -301,11 +301,9 @@ func (r *Room) handleJoin(m inJoin) {
 	pid := game.PlayerID(fmt.Sprintf("p%d", r.nextSeq))
 	secret, err := newSecret()
 	if err != nil {
-		out := errorFor(ErrInternal)
-		out.Message = "could not allocate identity"
 		// Terminal: a join that can't mint a credential can't proceed,
 		// and the client tears the socket down on a join error anyway.
-		r.rejectUnjoined(m.From, out)
+		r.rejectUnjoined(m.From, errorWithMsg(ErrInternal, "could not allocate identity"))
 		return
 	}
 
@@ -375,7 +373,7 @@ func (r *Room) handleJoin(m inJoin) {
 // secret doesn't match (or the player ID is unknown), we send outError
 // and discard the subscriber without disturbing other state.
 func (r *Room) handleRejoin(m inRejoin) {
-	if m.From == nil || m.From.closed.Load() {
+	if !m.From.live() {
 		return
 	}
 	slot, ok := r.players[m.PlayerID]
@@ -420,7 +418,7 @@ func (r *Room) handleRejoin(m inRejoin) {
 // remove the player from the game. The player can rejoin with their
 // secret; meanwhile they're treated as disconnected (no broadcasts).
 func (r *Room) handleLeave(m inLeave) {
-	if m.From == nil || m.From.closed.Load() {
+	if !m.From.live() {
 		return // already torn down (e.g. slow-disconnect or rejected join)
 	}
 	pid := m.From.PlayerID()
@@ -545,7 +543,7 @@ func (r *Room) oldestConnectedPlayer() game.PlayerID {
 //     signal. Forwarding it from a client would let any player skip
 //     the active night turn, so we reject those outright.
 func (r *Room) handleCommand(m inCommand) {
-	if m.From == nil || m.From.closed.Load() {
+	if !m.From.live() {
 		// A subscriber whose channel is already closed (slow-
 		// disconnect, leave, rejected join) must not be acted on:
 		// the error-reply path below would otherwise send on a
@@ -559,20 +557,16 @@ func (r *Room) handleCommand(m inCommand) {
 	}
 
 	if _, isAdvance := m.Cmd.(game.AdvancePhase); isAdvance {
-		// Both branches use ErrForbidden but with distinct messages
-		// — the user benefits from knowing which privilege they
-		// lack. errorFor gives us the typed Code; we overwrite the
-		// generic Message with a per-site one.
-		out := errorFor(ErrForbidden)
-		out.Message = "advancePhase is server-internal"
-		r.sendOne(m.From, out)
+		// Both branches use ErrForbidden but with distinct messages —
+		// the user benefits from knowing which privilege they lack.
+		// errorWithMsg keeps the typed Code while setting a per-site
+		// Message.
+		r.sendOne(m.From, errorWithMsg(ErrForbidden, "advancePhase is server-internal"))
 		return
 	}
 
 	if isHostOnly(m.Cmd) && pid != r.host {
-		out := errorFor(ErrForbidden)
-		out.Message = "only the host can issue this command"
-		r.sendOne(m.From, out)
+		r.sendOne(m.From, errorWithMsg(ErrForbidden, "only the host can issue this command"))
 		return
 	}
 

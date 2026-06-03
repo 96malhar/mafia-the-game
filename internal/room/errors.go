@@ -53,8 +53,8 @@ var sentinelCodes = []struct {
 //
 // Callers that need a per-call-site Message (e.g. ErrForbidden, which
 // covers both "non-host command" and "advancePhase is server-internal")
-// should call errorFor first and then overwrite OutError.Message —
-// see room.dispatch.
+// should use errorWithMsg, which keeps the typed Code and the rejection
+// metric while overriding the text.
 //
 // TestRoom_ErrorForMapsAllSentinels enforces that every engine
 // sentinel is present in sentinelCodes. TestErrorCodes_Registry
@@ -72,6 +72,17 @@ func errorFor(err error) OutError {
 	// (labelled by code) instead of logging, so we get trends/alerting
 	// without flooding the logs with normal user errors.
 	recordCommandRejected(out.Code)
+	return out
+}
+
+// errorWithMsg is errorFor with a per-call-site Message override. It keeps
+// the typed wire.ErrorCode and routes through errorFor's rejection-metric
+// chokepoint, replacing only the default sentinel text — for codes like
+// ErrForbidden that cover several distinct situations the user benefits
+// from distinguishing.
+func errorWithMsg(err error, msg string) OutError {
+	out := errorFor(err)
+	out.Message = msg
 	return out
 }
 

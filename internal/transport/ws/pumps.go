@@ -128,9 +128,7 @@ func readPump(
 		if err != nil {
 			// Normal close codes and context cancellation are not
 			// errors worth logging at warn level.
-			if !isExpectedCloseError(err) && ctx.Err() == nil {
-				logger.Info("ws read ended", "err", err)
-			}
+			logIfUnexpected(ctx, logger, "ws read ended", err)
 			return
 		}
 		if mt != websocket.MessageText {
@@ -187,9 +185,7 @@ func writePump(
 			err := conn.Ping(pctx)
 			pcancel()
 			if err != nil {
-				if !isExpectedCloseError(err) && ctx.Err() == nil {
-					logger.Info("ws ping failed", "err", err)
-				}
+				logIfUnexpected(ctx, logger, "ws ping failed", err)
 				return
 			}
 		case msg, ok := <-out:
@@ -224,9 +220,7 @@ func writePump(
 			err = conn.Write(wctx, websocket.MessageText, raw)
 			wcancel()
 			if err != nil {
-				if !isExpectedCloseError(err) && ctx.Err() == nil {
-					logger.Info("ws write ended", "err", err)
-				}
+				logIfUnexpected(ctx, logger, "ws write ended", err)
 				return
 			}
 		}
@@ -282,6 +276,17 @@ func dispatchClientMessage(
 func sendErrorViaRoom(ctx context.Context, _ *room.Room, sub *room.Subscriber, code wire.ErrorCode, msg string) {
 	recordMessageRejected(ctx, code)
 	_ = sub.TrySend(room.OutError{Code: code, Message: msg})
+}
+
+// logIfUnexpected logs err at info level under msg, UNLESS it represents a
+// normal teardown — an expected close code (isExpectedCloseError) or a
+// cancellation of this connection's own context. Centralizes the two-part
+// suppression predicate the read, ping, and write pumps all share so it
+// can't drift between them.
+func logIfUnexpected(ctx context.Context, logger *slog.Logger, msg string, err error) {
+	if !isExpectedCloseError(err) && ctx.Err() == nil {
+		logger.Info(msg, "err", err)
+	}
 }
 
 // isExpectedCloseError reports whether err is a normal close path that

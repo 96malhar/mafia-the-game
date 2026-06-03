@@ -94,6 +94,31 @@ func sendFrame(t *testing.T, conn *websocket.Conn, kind string, data any) {
 	require.NoError(t, conn.Write(ctx, websocket.MessageText, frame))
 }
 
+// joinWS dials the room, sends a join with the given name, and reads the
+// joined ack — returning the live connection and the decoded ack. It does
+// NOT drain the subsequent broadcast frames; pair it with
+// drainHostBroadcasts for the first (host) joiner.
+func joinWS(t *testing.T, ts *httptest.Server, code, name string) (*websocket.Conn, serverJoinedData) {
+	t.Helper()
+	conn := dialWS(t, ts, "/ws/"+code)
+	sendFrame(t, conn, "join", map[string]string{"name": name})
+	got := recvFrame(t, conn)
+	require.Equal(t, "joined", got.Type, "first frame after join must be the joined ack")
+	var joined serverJoinedData
+	require.NoError(t, json.Unmarshal(got.Data, &joined))
+	return conn, joined
+}
+
+// drainHostBroadcasts consumes the two broadcast frames the FIRST joiner
+// receives right after their joined ack: their own PlayerJoined and the
+// HostChanged that names them host. A non-first joiner gets no separate
+// HostChanged, so this is correct only for the host connection.
+func drainHostBroadcasts(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	_ = recvFrame(t, conn) // own PlayerJoined broadcast
+	_ = recvFrame(t, conn) // HostChanged broadcast
+}
+
 // --- Tests ---------------------------------------------------------------
 
 func TestHTTP_CreateRoom(t *testing.T) {
@@ -164,11 +189,8 @@ func TestWS_JoinedSilentConnectionNotReaped(t *testing.T) {
 	})
 	code := createRoom(t, ts)
 
-	connA := dialWS(t, ts, "/ws/"+code)
-	sendFrame(t, connA, "join", map[string]string{"name": "Alice"})
-	_ = recvFrame(t, connA) // joined ack
-	_ = recvFrame(t, connA) // own PlayerJoined broadcast
-	_ = recvFrame(t, connA) // HostChanged broadcast
+	connA, _ := joinWS(t, ts, code, "Alice")
+	drainHostBroadcasts(t, connA)
 
 	// Stay silent well past the join deadline.
 	time.Sleep(300 * time.Millisecond)
@@ -218,11 +240,8 @@ func TestWS_LateJoinerSeesExistingRoster(t *testing.T) {
 	// Alice joins first. She receives: joined ack, then her own
 	// PlayerJoined broadcast, then the HostChanged broadcast that
 	// announces her as host.
-	connA := dialWS(t, ts, "/ws/"+code)
-	sendFrame(t, connA, "join", map[string]string{"name": "Alice"})
-	_ = recvFrame(t, connA) // joined ack
-	_ = recvFrame(t, connA) // own PlayerJoined broadcast
-	_ = recvFrame(t, connA) // HostChanged broadcast
+	connA, _ := joinWS(t, ts, code, "Alice")
+	drainHostBroadcasts(t, connA)
 
 	// Bob joins second; his joined ack must carry Alice's PlayerJoined
 	// AND the HostChanged that named her host.
@@ -358,14 +377,8 @@ func TestWS_SetMafiaRoundTrip(t *testing.T) {
 	ts, _ := newTestServer(t)
 	code := createRoom(t, ts)
 
-	conn := dialWS(t, ts, "/ws/"+code)
-	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
-
-	// Drain join ack + own PlayerJoined broadcast + HostChanged
-	// broadcast (host learns they're host).
-	_ = recvFrame(t, conn)
-	_ = recvFrame(t, conn)
-	_ = recvFrame(t, conn)
+	conn, _ := joinWS(t, ts, code, "Host")
+	drainHostBroadcasts(t, conn)
 
 	// Default mafia count for a fresh 5-min lobby is 1; change to 3.
 	sendFrame(t, conn, "setMafia", map[string]int{"count": 3})
@@ -391,12 +404,8 @@ func TestWS_SetMafiaOutOfRangeReturnsError(t *testing.T) {
 	ts, _ := newTestServer(t)
 	code := createRoom(t, ts)
 
-	conn := dialWS(t, ts, "/ws/"+code)
-	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
-	// Drain join ack + own PlayerJoined + HostChanged.
-	_ = recvFrame(t, conn)
-	_ = recvFrame(t, conn)
-	_ = recvFrame(t, conn)
+	conn, _ := joinWS(t, ts, code, "Host")
+	drainHostBroadcasts(t, conn)
 
 	// MaxPlayers default is 20, so max mafia = 17. 99 is way over.
 	sendFrame(t, conn, "setMafia", map[string]int{"count": 99})
@@ -419,11 +428,8 @@ func TestWS_RevealVotesRoutedToEngine(t *testing.T) {
 	ts, _ := newTestServer(t)
 	code := createRoom(t, ts)
 
-	conn := dialWS(t, ts, "/ws/"+code)
-	sendFrame(t, conn, "join", map[string]string{"name": "Host"})
-	_ = recvFrame(t, conn) // joined ack
-	_ = recvFrame(t, conn) // own PlayerJoined broadcast
-	_ = recvFrame(t, conn) // HostChanged broadcast
+	conn, _ := joinWS(t, ts, code, "Host")
+	drainHostBroadcasts(t, conn)
 
 	sendFrame(t, conn, "revealVotes", struct{}{})
 

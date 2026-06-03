@@ -1022,56 +1022,8 @@ func TestAdvancePhase_Guards(t *testing.T) {
 	})
 
 	t.Run("Ended rejects further commands", func(t *testing.T) {
-		// 5 players + 2 mafia. Town is {detective, doctor, villager}.
-		// Exact parity (2-vs-2) plays on, so it takes two unsaved night
-		// kills for the mafia to strictly outnumber the town and win.
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
-		})
-		require.NoError(t, err)
-		addPlayers(t, g, "a", "b", "c", "d", "e")
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-		_, err = g.Apply(game.BeginNight{})
-		require.NoError(t, err)
-		advanceToMafiaAct(t, g)
-
-		// mafiaKill has a living mafioso kill an arbitrary living town
-		// member, then walks the night to resolution (mafia → det → doc).
-		mafiaKill := func() {
-			var mafia, victim game.PlayerID
-			for _, p := range g.State().Players() {
-				if !p.Alive() {
-					continue
-				}
-				if p.Role() == game.RoleMafia {
-					if mafia == "" {
-						mafia = p.ID()
-					}
-				} else if victim == "" {
-					victim = p.ID()
-				}
-			}
-			require.NotEmpty(t, mafia)
-			require.NotEmpty(t, victim)
-			_, err := g.Apply(game.NightAction{Actor: mafia, Target: victim})
-			require.NoError(t, err)
-			walkRestOfTurn(t, g) // mafia submit → det's act
-			walkRestOfTurn(t, g) // det skip → doc's act
-			walkRestOfTurn(t, g) // doc skip → resolve
-		}
-
-		mafiaKill() // 2 mafia vs 2 town — parity, game continues
-		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
-
-		noLynchDay(t, g)
-		beginNightToMafiaAct(t, g)
-
-		mafiaKill() // 2 mafia vs 1 town — mafia outnumber, game ends
-		require.Equal(t, game.PhaseEnded, g.State().Phase())
-
-		_, err = g.Apply(game.AdvancePhase{})
+		g := mkEndedGame(t)
+		_, err := g.Apply(game.AdvancePhase{})
 		require.ErrorIs(t, err, game.ErrGameEnded)
 	})
 }
@@ -1087,57 +1039,6 @@ func TestAdvancePhase_Guards(t *testing.T) {
 // fail loudly until the corresponding apply* handler checks PhaseEnded
 // first.
 func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
-	mkEnded := func(t *testing.T) *game.Game {
-		t.Helper()
-		g := game.New()
-		_, err := g.Apply(game.CreateGame{
-			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
-		})
-		require.NoError(t, err)
-		addPlayers(t, g, "a", "b", "c", "d", "e")
-		_, err = g.Apply(game.StartGame{})
-		require.NoError(t, err)
-		_, err = g.Apply(game.BeginNight{})
-		require.NoError(t, err)
-		advanceToMafiaAct(t, g)
-
-		// 5 players, 2 mafia: town is {detective, doctor, villager}. The
-		// mafia win only once they strictly outnumber the town (parity at
-		// 2-vs-2 plays on), so it takes two unsaved night kills. mafiaKill
-		// finds a living mafioso and an arbitrary living town target, then
-		// resolves the night.
-		mafiaKill := func() {
-			var mafia, victim game.PlayerID
-			for _, p := range g.State().Players() {
-				if !p.Alive() {
-					continue
-				}
-				if p.Role() == game.RoleMafia {
-					if mafia == "" {
-						mafia = p.ID()
-					}
-				} else if victim == "" {
-					victim = p.ID()
-				}
-			}
-			_, _ = g.Apply(game.NightAction{Actor: mafia, Target: victim})
-			walkRestOfTurn(t, g) // mafia → det's act
-			walkRestOfTurn(t, g) // det skip → doc's act
-			walkRestOfTurn(t, g) // doc skip → resolve
-		}
-
-		mafiaKill() // 2 mafia vs 2 town — parity, game continues
-		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
-
-		noLynchDay(t, g)
-		beginNightToMafiaAct(t, g)
-
-		mafiaKill() // 2 mafia vs 1 town — mafia outnumber, game ends
-		require.Equal(t, game.PhaseEnded, g.State().Phase(),
-			"precondition: game must be in PhaseEnded")
-		return g
-	}
-
 	cases := []struct {
 		name string
 		cmd  game.Command
@@ -1156,7 +1057,7 @@ func TestPhaseEnded_AllCommandsReturnErrGameEnded(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			g := mkEnded(t)
+			g := mkEndedGame(t)
 			_, err := g.Apply(tc.cmd)
 			require.ErrorIs(t, err, game.ErrGameEnded,
 				"%T against PhaseEnded must return ErrGameEnded, got %v",

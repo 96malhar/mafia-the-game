@@ -55,6 +55,17 @@ func NewSubscriber() *Subscriber {
 	}
 }
 
+// live reports whether s is safe for the room to act on: non-nil and not
+// yet terminally closed. The room checks this before any error-reply or
+// state mutation on an inbound message — a send on a closed channel panics
+// the room goroutine (see the closed field), and a stray frame can still
+// arrive from a torn-down connection the transport hasn't fully unwound. A
+// nil receiver is handled (returns false), so callers can write
+// m.From.live() without a separate nil check.
+func (s *Subscriber) live() bool {
+	return s != nil && !s.closed.Load()
+}
+
 // PlayerID returns the assigned identity, or "" if not yet joined.
 func (s *Subscriber) PlayerID() game.PlayerID {
 	v, _ := s.playerID.Load().(game.PlayerID)

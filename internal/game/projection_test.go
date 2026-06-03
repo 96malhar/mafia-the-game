@@ -36,6 +36,18 @@ func newProjectionFixture(t *testing.T) projectionFixture {
 	return projectionFixture{g: g, events: events}
 }
 
+// assertNobodySees projects events for each viewer and asserts none of
+// them receive ANYTHING — the security-critical "this private/secret event
+// leaks to no one on the non-recipient list" check. `what` names the event
+// for the failure message.
+func assertNobodySees(t *testing.T, st *game.GameState, events []game.Event, viewers []game.PlayerID, what string) {
+	t.Helper()
+	for _, viewer := range viewers {
+		out := game.Project(viewer, events, st)
+		require.Empty(t, out, "viewer %q must not see %s", viewer, what)
+	}
+}
+
 func TestProjection_PublicEventsAlwaysVisible(t *testing.T) {
 	f := newProjectionFixture(t)
 	// PlayerJoined and PlayerKilled are the public ones in our fixture.
@@ -70,22 +82,15 @@ func TestProjection_PrivateEventsOnlyForOwner(t *testing.T) {
 
 	t.Run("detective sees own DetectiveResult", func(t *testing.T) {
 		out := game.Project("det", f.events, f.g.State())
-		var found bool
-		for _, e := range out {
-			if _, ok := e.(game.DetectiveResult); ok {
-				found = true
-			}
-		}
-		require.True(t, found, "detective must see DetectiveResult")
+		require.NotEmpty(t, findAllEvents[game.DetectiveResult](out),
+			"detective must see DetectiveResult")
 	})
 
 	t.Run("non-detective does NOT see DetectiveResult", func(t *testing.T) {
 		for _, viewer := range []game.PlayerID{"mafia1", "doc", "town1", "town2"} {
 			out := game.Project(viewer, f.events, f.g.State())
-			for _, e := range out {
-				_, leaked := e.(game.DetectiveResult)
-				require.False(t, leaked, "viewer %q must not see DetectiveResult", viewer)
-			}
+			require.Empty(t, findAllEvents[game.DetectiveResult](out),
+				"viewer %q must not see DetectiveResult", viewer)
 		}
 	})
 
@@ -114,22 +119,14 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 
 	t.Run("alive mafia member sees mafia-only event", func(t *testing.T) {
 		out := game.Project("mafia1", f.events, f.g.State())
-		var found bool
-		for _, e := range out {
-			if _, ok := e.(game.NightActionRecorded); ok {
-				found = true
-			}
-		}
-		require.True(t, found)
+		require.NotEmpty(t, findAllEvents[game.NightActionRecorded](out))
 	})
 
 	t.Run("non-mafia does NOT see mafia-only event", func(t *testing.T) {
 		for _, viewer := range []game.PlayerID{"det", "doc", "town1", "town2"} {
 			out := game.Project(viewer, f.events, f.g.State())
-			for _, e := range out {
-				_, leaked := e.(game.NightActionRecorded)
-				require.False(t, leaked, "viewer %q must not see NightActionRecorded", viewer)
-			}
+			require.Empty(t, findAllEvents[game.NightActionRecorded](out),
+				"viewer %q must not see NightActionRecorded", viewer)
 		}
 	})
 
@@ -138,20 +135,13 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 		// their teammates, town must not. A leak here would hand the town
 		// a guaranteed mafia ID, so this is a security-critical assertion.
 		mafiaView := game.Project("mafia1", f.events, f.g.State())
-		var mafiaSaw bool
-		for _, e := range mafiaView {
-			if _, ok := e.(game.MafiaRosterRevealed); ok {
-				mafiaSaw = true
-			}
-		}
-		require.True(t, mafiaSaw, "alive mafia must see the mafia roster")
+		require.NotEmpty(t, findAllEvents[game.MafiaRosterRevealed](mafiaView),
+			"alive mafia must see the mafia roster")
 
 		for _, viewer := range []game.PlayerID{"det", "doc", "town1", "town2", "stranger"} {
 			out := game.Project(viewer, f.events, f.g.State())
-			for _, e := range out {
-				_, leaked := e.(game.MafiaRosterRevealed)
-				require.False(t, leaked, "viewer %q must not see the mafia roster", viewer)
-			}
+			require.Empty(t, findAllEvents[game.MafiaRosterRevealed](out),
+				"viewer %q must not see the mafia roster", viewer)
 		}
 	})
 
@@ -179,19 +169,11 @@ func TestProjection_FactionEventsRequireAliveMembership(t *testing.T) {
 		_, _ = g.Apply(game.FinalizeVotes{}) // -> game ends (town wins)
 
 		// Sanity check: mafia1 is dead in the new state.
-		var mafiaAlive bool
-		for _, p := range g.State().Players() {
-			if p.ID() == "mafia1" {
-				mafiaAlive = p.Alive()
-			}
-		}
-		require.False(t, mafiaAlive, "test precondition: mafia1 should be dead")
+		require.False(t, livingByID(g, "mafia1"), "test precondition: mafia1 should be dead")
 
 		out := game.Project("mafia1", f.events, g.State())
-		for _, e := range out {
-			_, leaked := e.(game.NightActionRecorded)
-			require.False(t, leaked, "dead mafia must not see faction-only events anymore")
-		}
+		require.Empty(t, findAllEvents[game.NightActionRecorded](out),
+			"dead mafia must not see faction-only events anymore")
 	})
 }
 
@@ -213,10 +195,9 @@ func TestProjection_SoloTownActionStaysPrivate(t *testing.T) {
 	})
 
 	t.Run("no other town member sees it", func(t *testing.T) {
-		for _, viewer := range []game.PlayerID{"det", "town1", "town2", "mafia1"} {
-			out := game.Project(viewer, events, g.State())
-			require.Empty(t, out, "viewer %q must not see another town role's NightActionRecorded", viewer)
-		}
+		assertNobodySees(t, g.State(), events,
+			[]game.PlayerID{"det", "town1", "town2", "mafia1"},
+			"another town role's NightActionRecorded")
 	})
 }
 
@@ -330,10 +311,9 @@ func TestProjection_BlockedNoticeIsPrivateToTarget(t *testing.T) {
 	})
 
 	t.Run("nobody else sees it — not even the consort", func(t *testing.T) {
-		for _, viewer := range []game.PlayerID{"mafia1", "consort", "det", "town1", "town2", "stranger"} {
-			out := game.Project(viewer, events, g.State())
-			require.Empty(t, out, "viewer %q must not see the doctor's Blocked notice", viewer)
-		}
+		assertNobodySees(t, g.State(), events,
+			[]game.PlayerID{"mafia1", "consort", "det", "town1", "town2", "stranger"},
+			"the doctor's Blocked notice")
 	})
 }
 
@@ -349,10 +329,9 @@ func TestProjection_ConsortPromotedIsPrivateToPromotee(t *testing.T) {
 	})
 
 	t.Run("nobody else sees the promotion", func(t *testing.T) {
-		for _, viewer := range []game.PlayerID{"mafia1", "det", "doc", "town1", "town2", "stranger"} {
-			out := game.Project(viewer, events, g.State())
-			require.Empty(t, out, "viewer %q must not learn a sleeper took over", viewer)
-		}
+		assertNobodySees(t, g.State(), events,
+			[]game.PlayerID{"mafia1", "det", "doc", "town1", "town2", "stranger"},
+			"the consort's secret promotion (a sleeper takeover)")
 	})
 }
 
@@ -391,10 +370,9 @@ func TestProjection_RosterRevealedReachesOnlyTheDead(t *testing.T) {
 	})
 
 	t.Run("the living and unknown viewers see nothing", func(t *testing.T) {
-		for _, viewer := range []game.PlayerID{"mafia1", "det", "doc", "town1", "stranger"} {
-			out := game.Project(viewer, events, g.State())
-			require.Empty(t, out, "viewer %q must NOT see the graveyard roster", viewer)
-		}
+		assertNobodySees(t, g.State(), events,
+			[]game.PlayerID{"mafia1", "det", "doc", "town1", "stranger"},
+			"the graveyard roster")
 	})
 }
 

@@ -197,11 +197,7 @@ func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
 	require.True(t, ok, "with the save blocked, the kill lands")
 	require.Equal(t, game.PlayerID("town1"), killed.PlayerID)
 
-	for _, p := range g.State().Players() {
-		if p.ID() == "town1" {
-			require.False(t, p.Alive(), "town1 should be dead (save blocked)")
-		}
-	}
+	require.False(t, livingByID(g, "town1"), "town1 should be dead (save blocked)")
 }
 
 func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testing.T) {
@@ -234,11 +230,7 @@ func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testin
 	require.True(t, ok, "the consort's kill lands because she blocked her own savior")
 	require.Equal(t, game.PlayerID("consort"), killed.PlayerID)
 
-	for _, p := range g.State().Players() {
-		if p.ID() == "consort" {
-			require.False(t, p.Alive(), "the consort should be dead (her own block voided the save)")
-		}
-	}
+	require.False(t, livingByID(g, "consort"), "the consort should be dead (her own block voided the save)")
 }
 
 func TestConsort_UnblockedDoctorSaveStillWorks(t *testing.T) {
@@ -527,12 +519,8 @@ func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
 	require.False(t, ended, "promotion keeps the mafia side alive — town has not won")
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 
-	for _, p := range g.State().Players() {
-		if p.ID() == "consort" {
-			require.Equal(t, game.RoleMafia, p.Role(),
-				"the consort now holds RoleMafia")
-		}
-	}
+	require.Equal(t, game.RoleMafia, roleByID(g, "consort"),
+		"the consort now holds RoleMafia")
 }
 
 func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
@@ -544,12 +532,8 @@ func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
 	evts := finalizeLynch(t, g, "town1")
 	_, promoted := findEvent[game.ConsortPromoted](evts)
 	require.False(t, promoted, "no promotion while the cabal still lives")
-	for _, p := range g.State().Players() {
-		if p.ID() == "consort" {
-			require.Equal(t, game.RoleConsort, p.Role(),
-				"consort stays a consort while a mafia survives")
-		}
-	}
+	require.Equal(t, game.RoleConsort, roleByID(g, "consort"),
+		"consort stays a consort while a mafia survives")
 }
 
 func TestConsort_DoesNotCountTowardMafiaParityWin(t *testing.T) {

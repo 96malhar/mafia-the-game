@@ -313,46 +313,37 @@ func TestEncodeOutbound_Error(t *testing.T) {
 // --- commandFromClient ----------------------------------------------------
 
 func TestCommandFromClient(t *testing.T) {
-	cmd, ok := commandFromClient(clientMsgNightAction, clientNightActionData{Target: "p2"})
-	require.True(t, ok)
-	require.Equal(t, game.NightAction{Target: "p2"}, cmd)
+	cases := []struct {
+		name   string
+		tag    clientMsgType
+		data   any
+		want   game.Command // nil when wantOK is false
+		wantOK bool
+	}{
+		{"nightAction", clientMsgNightAction, clientNightActionData{Target: "p2"}, game.NightAction{Target: "p2"}, true},
+		// NightPass is payload-less; Actor is filled in server-side.
+		{"nightPass", clientMsgNightPass, struct{}{}, game.NightPass{}, true},
+		{"vote", clientMsgVote, clientVoteData{Target: ""}, game.DayVote{Target: ""}, true},
+		{"setMafia", clientMsgSetMafia, clientSetMafiaData{Count: 3}, game.SetMafiaCount{Count: 3}, true},
+		{"setConsort", clientMsgSetConsort, clientSetConsortData{Enabled: true}, game.SetConsort{Enabled: true}, true},
+		{"setVigilante", clientMsgSetVigilante, clientSetVigilanteData{Enabled: true}, game.SetVigilante{Enabled: true}, true},
+		{"startGame", clientMsgStartGame, struct{}{}, game.StartGame{}, true},
+		{"beginNight", clientMsgBeginNight, struct{}{}, game.BeginNight{}, true},
+		{"openVoting", clientMsgOpenVoting, struct{}{}, game.OpenVoting{}, true},
+		{"revealVotes", clientMsgRevealVotes, struct{}{}, game.RevealVotes{}, true},
+		{"clearVotes", clientMsgClearVotes, struct{}{}, game.ClearVotes{}, true},
+		{"finalizeVotes", clientMsgFinalizeVotes, struct{}{}, game.FinalizeVotes{}, true},
+		// "join" isn't a command in the engine sense.
+		{"join is not a command", clientMsgJoin, clientJoinData{Name: "x"}, nil, false},
+	}
 
-	// NightPass is payload-less; Actor is filled in server-side.
-	cmd, ok = commandFromClient(clientMsgNightPass, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.NightPass{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgVote, clientVoteData{Target: ""})
-	require.True(t, ok)
-	require.Equal(t, game.DayVote{Target: ""}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgStartGame, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.StartGame{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgBeginNight, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.BeginNight{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgOpenVoting, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.OpenVoting{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgRevealVotes, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.RevealVotes{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgClearVotes, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.ClearVotes{}, cmd)
-
-	cmd, ok = commandFromClient(clientMsgFinalizeVotes, struct{}{})
-	require.True(t, ok)
-	require.Equal(t, game.FinalizeVotes{}, cmd)
-
-	// "join" isn't a command in the engine sense.
-	_, ok = commandFromClient(clientMsgJoin, clientJoinData{Name: "x"})
-	require.False(t, ok)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, ok := commandFromClient(tc.tag, tc.data)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.want, cmd)
+		})
+	}
 }
 
 // --- helpers --------------------------------------------------------------

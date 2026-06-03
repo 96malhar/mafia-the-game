@@ -212,6 +212,18 @@ func livingByID(g *game.Game, id game.PlayerID) bool {
 	return false
 }
 
+// roleByID returns the role of the player with the given id, or the zero
+// Role if no such player exists. Mirrors livingByID for the suites that
+// assert on a single named player's role.
+func roleByID(g *game.Game, id game.PlayerID) game.Role {
+	for _, p := range g.State().Players() {
+		if p.ID() == id {
+			return p.Role()
+		}
+	}
+	return ""
+}
+
 // finalizeLynch drives the current DayDiscussion to a lynch of target: it
 // opens voting, has every living player except the target vote for the
 // target (always a strict majority), and finalizes. It returns the
@@ -256,6 +268,63 @@ func intoDayVote(t *testing.T) *game.Game {
 		game.RoleMafia:  "town1",
 		game.RoleDoctor: "town1", // save -> nobody dies
 	})
+	return g
+}
+
+// mkEndedGame drives a fresh 5-player, 2-mafia game all the way to
+// PhaseEnded (a mafia win) and returns it. Town is {detective, doctor,
+// villager}; exact parity (2-vs-2) plays on, so it takes TWO unsaved night
+// kills for the mafia to strictly outnumber the town and win. The returned
+// game is asserted to be in PhaseEnded. Shared by the tests that exercise
+// behaviour against a finished game.
+func mkEndedGame(t *testing.T) *game.Game {
+	t.Helper()
+	g := game.New()
+	_, err := g.Apply(game.CreateGame{
+		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 1,
+	})
+	require.NoError(t, err)
+	addPlayers(t, g, "a", "b", "c", "d", "e")
+	_, err = g.Apply(game.StartGame{})
+	require.NoError(t, err)
+	_, err = g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+
+	// mafiaKill finds a living mafioso and an arbitrary living town target,
+	// submits the kill, and walks the night to resolution (mafia → det → doc).
+	mafiaKill := func() {
+		var mafia, victim game.PlayerID
+		for _, p := range g.State().Players() {
+			if !p.Alive() {
+				continue
+			}
+			if p.Role() == game.RoleMafia {
+				if mafia == "" {
+					mafia = p.ID()
+				}
+			} else if victim == "" {
+				victim = p.ID()
+			}
+		}
+		require.NotEmpty(t, mafia)
+		require.NotEmpty(t, victim)
+		_, err := g.Apply(game.NightAction{Actor: mafia, Target: victim})
+		require.NoError(t, err)
+		walkRestOfTurn(t, g) // mafia submit → det's act
+		walkRestOfTurn(t, g) // det skip → doc's act
+		walkRestOfTurn(t, g) // doc skip → resolve
+	}
+
+	mafiaKill() // 2 mafia vs 2 town — parity, game continues
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+
+	mafiaKill() // 2 mafia vs 1 town — mafia outnumber, game ends
+	require.Equal(t, game.PhaseEnded, g.State().Phase(),
+		"precondition: game must be in PhaseEnded")
 	return g
 }
 

@@ -271,11 +271,11 @@
         detectiveResult event arrives (server-side PrivateTo
         visibility filter guarantees no one else receives the
         event). Color is tied to the result: rose = mafia hit,
-        emerald = town. Both variants' classes are listed in the
-        static class attribute below so Tailwind CDN's JIT picks
-        them up (it scans HTML, not reliably JS strings) — guarded
-        by "hidden" so they have no visual effect until the modal
-        fires.
+        emerald = town, amber = the distracted/roleblock notice. All
+        three palettes' classes are listed in the static class
+        attribute below so Tailwind CDN's JIT picks them up (it scans
+        HTML, not reliably JS strings) — guarded by "hidden" so they
+        have no visual effect until the modal fires.
       -->
       <div id="notice-modal"
            class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-6 backdrop-blur-sm"
@@ -285,7 +285,8 @@
         <div id="notice-modal-card"
              class="max-w-lg rounded-xl border-2 px-8 py-8 text-center shadow-2xl
                     border-rose-500/70 bg-rose-950/95 text-rose-100
-                    border-emerald-500/70 bg-emerald-950/95 text-emerald-100">
+                    border-emerald-500/70 bg-emerald-950/95 text-emerald-100
+                    border-amber-500/70 bg-amber-950/95 text-amber-100">
           <div id="notice-modal-eyebrow" class="text-sm uppercase tracking-widest opacity-70">Investigation result</div>
           <div id="notice-modal-body" class="mt-4 text-3xl font-bold tracking-wide leading-snug"></div>
           <button id="notice-modal-dismiss"

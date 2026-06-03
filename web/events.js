@@ -5,55 +5,51 @@
         ws.send(JSON.stringify({ type, data }));
       }
 
+      // enterRoomFromServer applies the session-entry setup shared by a
+      // successful join and rejoin: adopt our identity, stop any reconnect
+      // loop, reset to a clean model, paint the in-game view, and replay
+      // the server's projected event log. The replay is marked
+      // {replaying:true} so narration and one-shot toasts don't re-fire on
+      // catch-up (we don't want a late joiner's / reconnecter's phone
+      // re-announcing every event from earlier in the night). The joined
+      // and rejoined cases wrap this with their own small deltas.
+      function enterRoomFromServer(d) {
+        myId = d.playerId;
+        myIsHost = !!d.isHost;
+        pendingRejoinCode = null;
+        cancelReconnect();
+        reconnectAttempts = 0;
+        showReconnectingBanner(false);
+        resetGameState();
+        $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
+        showGame(d.roomCode);
+        // (d.events || []) makes the presence guard universal: a rejoin
+        // always carries the projected log, a fresh join may omit it.
+        for (const env of (d.events || [])) handleEvent(env, { replaying: true });
+      }
+
       function handleServerMessage(msg) {
         switch (msg.type) {
           case "joined": {
             const d = msg.data;
-            myId = d.playerId;
-            myIsHost = !!d.isHost;
-            pendingRejoinCode = null;
+            // Fresh join: also clear the pending-join guard and persist
+            // our credentials so a later tab refresh can silently
+            // auto-rejoin. The server attaches its projected view of prior
+            // events; our own PlayerJoined arrives as a separate "event"
+            // frame immediately after.
             pendingJoinCode = null;
-            // A clean join means any prior reconnect loop is done.
-            cancelReconnect();
-            reconnectAttempts = 0;
-            showReconnectingBanner(false);
-            // Fresh socket: start from a clean model. The server
-            // attaches its projected view of prior events so we can
-            // see who else is already in the room. Our own PlayerJoined
-            // arrives as a separate "event" frame immediately after.
-            resetGameState();
-            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
-            showGame(d.roomCode);
             credStore.setItem(storageKey(d.roomCode), JSON.stringify({
               playerId: d.playerId,
               secret: d.secret,
             }));
-            if (Array.isArray(d.events)) {
-              // Replay: feed prior events through the reducer so the
-              // UI reflects the room's current state. Mark them as
-              // replay so narration is suppressed (we don't want a
-              // late-joining host's phone re-announcing every event
-              // from earlier in the night).
-              for (const env of d.events) handleEvent(env, { replaying: true });
-            }
+            enterRoomFromServer(d);
             break;
           }
           case "rejoined": {
-            const d = msg.data;
-            myId = d.playerId;
-            myIsHost = !!d.isHost;
-            pendingRejoinCode = null;
-            // Reconnect (or page-load auto-rejoin) succeeded: stop the
-            // retry loop, reset backoff, clear the banner. Replayed
-            // events below pass {replaying:true} so we don't re-fire a
-            // burst of stale narration on catch-up.
-            cancelReconnect();
-            reconnectAttempts = 0;
-            showReconnectingBanner(false);
-            resetGameState();
-            $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
-            showGame(d.roomCode);
-            for (const env of d.events) handleEvent(env, { replaying: true });
+            // Reconnect (or page-load auto-rejoin) succeeded — the shared
+            // setup stops the retry loop, resets backoff, and replays our
+            // full state.
+            enterRoomFromServer(msg.data);
             break;
           }
           case "event":
@@ -197,9 +193,7 @@
             // instead of Open voting).
             dayLynchResolved = true;
             if (!replaying) {
-              const p = players.get(env.data.playerId);
-              const name = p ? p.name : env.data.playerId;
-              narrate(`${name} has been voted out.`);
+              narrate(`${nameOf(env.data.playerId)} has been voted out.`);
             }
             break;
 
@@ -343,7 +337,7 @@
             nightTurnDeadlineMs = env.data.deadline || 0;
             if (!replaying) {
               // Sleep means our ponder just elapsed. If the auto-dismiss
-              // "Blocked" notice is still up, clear it now so the player
+              // "Distracted" notice is still up, clear it now so the player
               // isn't stuck behind it even if they never tapped "Got it".
               if (modalAutoDismisses) hideModalCard();
               startNightCountdown(nightTurnDeadlineMs);
@@ -439,9 +433,7 @@
             // explicit "Past investigations" UI, not a modal that
             // pops up every refresh.
             if (!replaying) {
-              const t = players.get(env.data.target);
-              const name = t ? t.name : env.data.target;
-              showDetectiveToast(name, !!env.data.isMafia);
+              showDetectiveToast(nameOf(env.data.target), !!env.data.isMafia);
             }
             break;
           }
@@ -643,11 +635,11 @@
       // slop.
       const ROLE_NARRATION = {
         mafia: {
-          day0:    "Mafia, wake up. Look around and recognize each other. Then choose your target.",
-          default: "Mafia, wake up. Choose your target.",
+          day0:    "Mafia, wake up. Look around and recognize each other. Then choose someone to kill.",
+          default: "Mafia, wake up. Choose someone to kill.",
         },
         consort: {
-          default: "Consort, wake up. Choose someone to block.",
+          default: "Consort, wake up. Choose someone to distract.",
         },
         detective: {
           default: "Detective, wake up. Choose someone to investigate.",

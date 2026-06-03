@@ -383,13 +383,20 @@
           b.className = submitted
             ? `${rowBtnBase} bg-amber-600 text-white`
             : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
-          // The Consort "blocks" rather than "targets"; the doctor
-          // "saves" (and may pick their own row); the vigilante
-          // "eliminates". Everyone else "targets".
-          if (myRole === "consort") {
-            b.textContent = submitted ? "Blocked" : "Block";
-          } else if (myRole === "vigilante") {
-            b.textContent = submitted ? "Eliminating" : "Eliminate";
+          // Button label per acting role, sourced from ROLE_VERBS (the
+          // shared verb table in helpers.js) so it can't drift from the
+          // confirmation chip. The doctor is special-cased for its
+          // self-row "Save self" variant (it's the only role that can
+          // target its own row); any unknown role falls back to the
+          // generic "Target". For every other role isSelfRow is
+          // guaranteed false here (canTargetThisRow gates it).
+          const verbs = ROLE_VERBS[myRole];
+          if (myRole === "doctor") {
+            b.textContent = submitted
+              ? (isSelfRow ? "Saving self" : verbs.gerund)
+              : (isSelfRow ? "Save self" : verbs.base);
+          } else if (verbs) {
+            b.textContent = submitted ? verbs.gerund : verbs.base;
           } else {
             b.textContent = submitted
               ? (isSelfRow ? "Saving self" : "Targeted")

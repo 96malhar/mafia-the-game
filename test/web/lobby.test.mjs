@@ -23,6 +23,8 @@ test("showUnjoinableRoom pivots the lobby to Create with the typed name", () => 
   // Reason is surfaced as the subtitle, and the room is named in the title.
   assert.match(app.$("lobby-title").textContent, /Room ABCD unavailable/);
   assert.match(app.$("lobby-subtitle").textContent, /doesn't exist/);
+  // The reason reads as an error, in red.
+  assert.ok(app.$("lobby-subtitle").classList.contains("text-rose-400"), "reason shown in red");
 
   // Create takes over from Join (the target room can't accept us) and is
   // enabled because a name is present — one click creates a fresh room

@@ -53,7 +53,11 @@
         // generic "Start a game" copy, dropping the reason. Hide Join (the
         // target room can't accept us) and surface Create in its place.
         $("lobby-title").textContent = code ? `Room ${code} unavailable` : "Room unavailable";
+        // Render the reason in red so it reads unmistakably as an error,
+        // not just muted helper copy. applyURLState restores the default
+        // slate when the lobby returns to a normal join/create view.
         $("lobby-subtitle").textContent = reason;
+        $("lobby-subtitle").className = "text-sm text-rose-400";
         $("join").classList.add("hidden");
         $("create").classList.remove("hidden");
         refreshLobbyButtons();
@@ -86,6 +90,10 @@
       }
 
       function applyURLState() {
+        // Restore the muted-slate subtitle: showUnjoinableRoom may have
+        // turned it red, and any normal join/create view that follows
+        // should read as neutral helper copy again.
+        $("lobby-subtitle").className = "text-sm text-slate-400";
         const fromLink = roomFromURL();
         if (fromLink) {
           // Visitor came from a share link. Make joining the obvious

@@ -35,6 +35,9 @@ test("the role guide lists all seven roles, grouped by faction", () => {
   }
   assert.match(text, /Town/, "has a Town faction heading");
   assert.match(text, /Mafia/, "has a Mafia faction heading");
+  // The mafia win condition is "outnumber the town" (mafia > town, plus the
+  // 1-v-1 endgame), NOT bare parity — see checkWin in rules_phase.go.
+  assert.match(text, /outnumber the town/i, "mafia win is outnumber, not parity");
 });
 
 test("the guide surfaces the key role gotchas", () => {

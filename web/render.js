@@ -60,8 +60,21 @@
       function renderAll() {
         renderInviteBanner();
         renderHostAudioBar();
+        renderRoleGuide();
         renderPlayers();
         renderActionPanel();
+      }
+
+      // renderRoleGuide hides the static role-guide reference during the
+      // night phase (eyes closed) and shows it otherwise — the whole lobby
+      // and roles-dealt window (phase stays "lobby" until BeginNight), every
+      // day phase, and after the game ends. The panel's content is static
+      // markup in index.html; only its visibility is phase-driven. The
+      // collapsed/expanded state is browser-managed (<details>) and untouched
+      // here, so a player's choice survives re-renders.
+      function renderRoleGuide() {
+        const guide = $("role-guide");
+        if (guide) guide.classList.toggle("hidden", phase === "night");
       }
 
       // renderInviteBanner toggles the "Invite link" strip based on

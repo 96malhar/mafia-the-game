@@ -211,6 +211,43 @@
           <div id="action-extras" class="mt-3 flex flex-wrap items-center gap-2"></div>
         </section>
 
+        <!--
+          Role guide. A static, always-available reference of every role the
+          game supports, collapsed by default. renderRoleGuide() (render.js)
+          hides it during the night phase (phase === "night") so players keep
+          their eyes closed; it's visible the rest of the time — including the
+          whole lobby and the roles-dealt window, right up until "Begin night".
+          Content is intentionally static (all roles, spoiler-free): it never
+          reveals who holds which role.
+        -->
+        <details id="role-guide"
+                 class="hidden rounded border border-slate-700 bg-slate-800/40 p-4">
+          <summary class="cursor-pointer select-none text-xs font-semibold uppercase tracking-wide text-slate-300">
+            Role guide
+          </summary>
+          <div class="mt-3 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-emerald-300">Town</h3>
+              <p class="mb-2 text-xs text-slate-500">Wins when every mafia-aligned player is gone.</p>
+              <ul class="space-y-2 text-slate-200">
+                <li><span class="font-semibold">Villager</span> — no night action; relies on the day's discussion and vote to find the mafia.</li>
+                <li><span class="font-semibold">Detective</span> — each night, investigates one player and learns whether they're mafia. Can't check themselves — and a clean result isn't a guarantee: the Consort (and a Yakuza that has already recruited) read as "not mafia."</li>
+                <li><span class="font-semibold">Doctor</span> — each night, protects one player (including themselves); a protected target survives an attack that night. The save is silent — you only know it worked if your target lives.</li>
+                <li><span class="font-semibold">Vigilante</span> <span class="text-slate-500">(optional)</span> — has a single bullet for the whole game; on one night may shoot one player, or hold fire to keep the bullet for later. A shot the doctor saves still spends the bullet.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-rose-300">Mafia</h3>
+              <p class="mb-2 text-xs text-slate-500">Wins on reaching parity with the town.</p>
+              <ul class="space-y-2 text-slate-200">
+                <li><span class="font-semibold">Mafia</span> — each night the mafia secretly agree on one player to kill (whoever locks a target first decides it). Immune to the Consort's distraction.</li>
+                <li><span class="font-semibold">Consort</span> <span class="text-slate-500">(optional)</span> — each night, distracts one player, blocking their action. Doesn't know the other mafia (and reads as "not mafia" to the Detective); wins with the mafia, and takes over the kill if the mafia are wiped out.</li>
+                <li><span class="font-semibold">Yakuza</span> <span class="text-slate-500">(optional)</span> — a mafia member who may instead, once per game, recruit a townsperson into the mafia — forgoing the kill that night and sacrificing themselves to do it. The sacrifice can't be prevented — not even by the doctor.</li>
+              </ul>
+            </div>
+          </div>
+        </details>
+
         <div>
           <!--
             Players panel header. Three slots:

@@ -51,8 +51,9 @@ func (g *Game) requireLobbyOpen() error {
 }
 
 // applyLobbyToggle is the shared body for the optional-role lobby toggles
-// (SetConsort, SetVigilante). It validates the lobby is open, no-ops when
-// the flag is unchanged, flips it, and returns the matching change event.
+// (SetConsort, SetVigilante, SetYakuza — every SetX toggle). It validates
+// the lobby is open, no-ops when the flag is unchanged, flips it, and
+// returns the matching change event.
 func (g *Game) applyLobbyToggle(enabled bool, current *bool, event Event) ([]Event, error) {
 	if err := g.requireLobbyOpen(); err != nil {
 		return nil, err

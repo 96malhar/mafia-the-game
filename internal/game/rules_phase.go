@@ -153,18 +153,30 @@ func (g *Game) enterNightSubPhase(sub NightSubPhase) []Event {
 		Phantom:  g.state.roleTurnIsPhantom(role),
 	}}
 
-	// A Consort-blocked actor's turn is phantom (no act window — see
-	// roleTurnIsPhantom), so we deliver the private Blocked notice when
-	// the cannot-act ponder begins, i.e. right AFTER the role's narrate
-	// cue plays. This mirrors the old "told at the start of your action
-	// beat" timing and lets the client show the notice + suppress the
-	// picker. A real (unblocked) role reaches ponder only after acting
-	// and is never blocked, so this never double-fires on a normal turn.
-	// Mafia are immune (the block is a no-op against the faction kill).
-	// resolveNight nullifies a blocked action as a further backstop.
+	// A neutralized actor's turn is phantom (no act window — see
+	// roleTurnIsPhantom), so we deliver the private notice when the
+	// cannot-act ponder begins, i.e. right AFTER the role's narrate cue
+	// plays. This mirrors the old "told at the start of your action beat"
+	// timing and lets the client show the notice + suppress the picker. A
+	// real (un-neutralized) role reaches ponder only after acting, so this
+	// never double-fires on a normal turn. The mafia faction is immune (a
+	// block is a no-op against the faction kill; the Yakuza acts within the
+	// Mafia turn). resolveNight nullifies a neutralized action as a backstop.
+	//
+	// The notice differs by cause: a Consort block sends Blocked, while a
+	// Yakuza recruit sends Recruited (the target learns they've flipped, not
+	// merely been distracted). A RECRUIT takes precedence when both apply to
+	// the same player this night: a recruited player should only ever see the
+	// Recruited notice (here, at their turn) — never a Blocked one — since the
+	// conversion subsumes the distract.
 	if sub == NightSubPonder && role != RoleMafia {
-		if holder, ok := g.state.livingHolderOf(role); ok && g.state.isNightBlocked(holder) {
-			events = append(events, Blocked{PlayerID: holder})
+		if holder, ok := g.state.livingHolderOf(role); ok {
+			switch {
+			case g.state.recruitPending && g.state.recruitTarget == holder:
+				events = append(events, Recruited{PlayerID: holder})
+			case g.state.isNightBlocked(holder):
+				events = append(events, Blocked{PlayerID: holder})
+			}
 		}
 	}
 	return events
@@ -541,10 +553,13 @@ func (g *Game) promoteConsortIfNeeded() []Event {
 			p.role = RoleMafia
 			return []Event{
 				ConsortPromoted{PlayerID: p.id},
-				// She is now the (sole) mafia; re-issue the roster so
-				// her client recognizes its new faction. FactionOnly,
-				// so it reaches only her.
-				MafiaRosterRevealed{Members: []PlayerID{p.id}},
+				// Re-issue the FULL faction roster so her client recognizes
+				// its new faction AND can badge her predecessors — the dead
+				// original cabal and (if any) the dead Yakuza. She now holds
+				// RoleMafia, so allMafiaFactionIDs includes her. FactionOnly,
+				// so it reaches only her; sending the whole cabal makes the
+				// live promotion match what a rejoin reconstructs.
+				g.state.currentMafiaRoster(),
 			}
 		}
 	}

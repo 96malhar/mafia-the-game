@@ -38,6 +38,24 @@ const (
 	// target (the shot is wasted but the bullet is still spent); and a
 	// consort block nullifies the shot WITHOUT spending the bullet.
 	RoleVigilante Role = "vigilante"
+
+	// RoleYakuza is an OPTIONAL mafia-aligned role (the host toggles it
+	// on before StartGame, like the Consort). It is a FULL mafia member:
+	// FactionMafia, so it appears in the mafia roster, knows (and is
+	// known to) the other mafia, counts toward the mafia parity win, and
+	// reads as mafia to the detective. The Yakuza has NO separate night
+	// turn — it acts during the regular Mafia turn, where it may submit
+	// the ordinary faction kill OR, instead, perform a one-shot RECRUIT
+	// (the Recruit command). Recruiting is a self-sacrifice: at night
+	// resolution the target is converted to full RoleMafia, the Yakuza
+	// dies (unpreventable — the doctor can't stop it), and the faction
+	// kill is forgone for the night (kill and recruit are mutually
+	// exclusive within the one mafia turn). The recruit also neutralizes
+	// the target's own night power for that night (see the recruit
+	// resolution / power-suppression logic in rules_night.go and
+	// rules_phase.go). It can recruit any living non-RoleMafia player,
+	// the Consort included; recruiting an actual mafioso is rejected.
+	RoleYakuza Role = "yakuza"
 )
 
 // Faction is the win-condition + knowledge group a role belongs to.

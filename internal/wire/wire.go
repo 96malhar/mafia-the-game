@@ -42,6 +42,8 @@ const (
 	ClientMsgSetMafia      = "setMafia"
 	ClientMsgSetConsort    = "setConsort"
 	ClientMsgSetVigilante  = "setVigilante"
+	ClientMsgSetYakuza     = "setYakuza"
+	ClientMsgRecruit       = "recruit"
 )
 
 // --- Server → client message types ---------------------------------------
@@ -70,7 +72,10 @@ const (
 	EventMafiaRoster           = "mafiaRoster"
 	EventConsortChanged        = "consortChanged"
 	EventVigilanteChanged      = "vigilanteChanged"
+	EventYakuzaChanged         = "yakuzaChanged"
 	EventBlocked               = "blocked"
+	EventRecruited             = "recruited"
+	EventRecruitRecorded       = "recruitRecorded"
 	EventConsortPromoted       = "consortPromoted"
 	EventPhaseChanged          = "phaseChanged"
 	EventNightOpeningStarted   = "nightOpeningStarted"

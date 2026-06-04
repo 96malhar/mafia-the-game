@@ -48,16 +48,18 @@ type rosterDeal struct {
 	mafiaCount int
 	consort    bool
 	vigilante  bool
+	yakuza     bool
 	maxSeeds   int64
 }
 
-// fixedRosterMatching brute-forces seeds until StartGame deals exactly
-// d.wanted, then walks BeginNight → opening → mafia narrate → mafia act,
-// leaving the game on the mafia's act window. It is the shared core of
-// every fixed-roster fixture (fixedRoster and the optional-role variants).
-// With small rosters the permutation space is tiny, so a matching seed is
-// found almost immediately.
-func fixedRosterMatching(t *testing.T, d rosterDeal) *game.Game {
+// fixedRosterDealt brute-forces seeds until StartGame deals exactly d.wanted,
+// then returns the game (with roles dealt, still in PhaseLobby) together with
+// the raw StartGame event batch. It is the seed-search core shared by
+// fixedRosterMatching and by the rare test that must assert on the
+// StartGame-time batch itself (e.g. the MafiaRosterRevealed reveal). With
+// small rosters the permutation space is tiny, so a matching seed is found
+// almost immediately.
+func fixedRosterDealt(t *testing.T, d rosterDeal) (*game.Game, []game.Event) {
 	t.Helper()
 	for seed := range d.maxSeeds {
 		g := game.New()
@@ -77,18 +79,33 @@ func fixedRosterMatching(t *testing.T, d rosterDeal) *game.Game {
 			_, err = g.Apply(game.SetVigilante{Enabled: true})
 			require.NoError(t, err)
 		}
+		if d.yakuza {
+			_, err = g.Apply(game.SetYakuza{Enabled: true})
+			require.NoError(t, err)
+		}
 		addPlayers(t, g, d.ids...)
-		_, err = g.Apply(game.StartGame{})
+		start, err := g.Apply(game.StartGame{})
 		require.NoError(t, err)
 
 		if !rosterMatches(g, d.wanted) {
 			continue
 		}
-		beginNightToMafiaAct(t, g)
-		return g
+		return g, start
 	}
 	t.Fatalf("no seed in %d attempts yielded the wanted roster", d.maxSeeds)
-	return nil
+	return nil, nil
+}
+
+// fixedRosterMatching brute-forces seeds until StartGame deals exactly
+// d.wanted (via fixedRosterDealt), then walks BeginNight → opening → mafia
+// narrate → mafia act, leaving the game on the mafia's act window. It is the
+// shared core of every fixed-roster fixture (fixedRoster and the optional-role
+// variants).
+func fixedRosterMatching(t *testing.T, d rosterDeal) *game.Game {
+	t.Helper()
+	g, _ := fixedRosterDealt(t, d)
+	beginNightToMafiaAct(t, g)
+	return g
 }
 
 // fixedRoster2Mafia builds a deterministic 5-player, 2-mafia game:
@@ -291,29 +308,20 @@ func mkEndedGame(t *testing.T) *game.Game {
 	require.NoError(t, err)
 	advanceToMafiaAct(t, g)
 
-	// mafiaKill finds a living mafioso and an arbitrary living town target,
-	// submits the kill, and walks the night to resolution (mafia → det → doc).
+	// mafiaKill picks an arbitrary living town target and walks the canonical
+	// 3-role night (mafia → det → doc) to resolution via playNight, which
+	// finds the living mafioso actor itself and returns once the night
+	// resolves.
 	mafiaKill := func() {
-		var mafia, victim game.PlayerID
+		var victim game.PlayerID
 		for _, p := range g.State().Players() {
-			if !p.Alive() {
-				continue
-			}
-			if p.Role() == game.RoleMafia {
-				if mafia == "" {
-					mafia = p.ID()
-				}
-			} else if victim == "" {
+			if p.Alive() && p.Role() != game.RoleMafia {
 				victim = p.ID()
+				break
 			}
 		}
-		require.NotEmpty(t, mafia)
 		require.NotEmpty(t, victim)
-		_, err := g.Apply(game.NightAction{Actor: mafia, Target: victim})
-		require.NoError(t, err)
-		walkRestOfTurn(t, g) // mafia submit → det's act
-		walkRestOfTurn(t, g) // det skip → doc's act
-		walkRestOfTurn(t, g) // doc skip → resolve
+		playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: victim})
 	}
 
 	mafiaKill() // 2 mafia vs 2 town — parity, game continues

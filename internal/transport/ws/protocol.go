@@ -62,6 +62,8 @@ const (
 	clientMsgSetMafia      clientMsgType = wire.ClientMsgSetMafia
 	clientMsgSetConsort    clientMsgType = wire.ClientMsgSetConsort
 	clientMsgSetVigilante  clientMsgType = wire.ClientMsgSetVigilante
+	clientMsgSetYakuza     clientMsgType = wire.ClientMsgSetYakuza
+	clientMsgRecruit       clientMsgType = wire.ClientMsgRecruit
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled
@@ -102,6 +104,20 @@ type clientSetConsortData struct {
 // the transport just forwards the flag.
 type clientSetVigilanteData struct {
 	Enabled bool `json:"enabled"`
+}
+
+// clientSetYakuzaData carries a host-driven toggle of the optional Yakuza
+// role during PhaseLobby. The engine validates phase/no-op; the transport
+// just forwards the flag.
+type clientSetYakuzaData struct {
+	Enabled bool `json:"enabled"`
+}
+
+// clientRecruitData carries the Yakuza's recruit target. Actor is omitted
+// on the wire — the room rewrites it server-side to the authenticated PID,
+// like clientNightActionData.
+type clientRecruitData struct {
+	Target string `json:"target"`
 }
 
 // --- Server → Client messages --------------------------------------------

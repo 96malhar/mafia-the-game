@@ -55,6 +55,52 @@ func TestSpectator_NightActionReachesOnlyTheDead(t *testing.T) {
 	})
 }
 
+// TestSpectator_RecruitShownAsRecruitedToTheDead asserts a Yakuza recruit
+// reaches the graveyard as a recruit-flavored SpectatorNightAction
+// (Recruit=true), so the dead feed renders "Yakuza recruited X" rather than a
+// kill. Real flow: a prior night kill leaves a dead spectator, then the Yakuza
+// recruits during the next Mafia turn. The living must NOT see the feed.
+func TestSpectator_RecruitShownAsRecruitedToTheDead(t *testing.T) {
+	g := fixedRosterWithYakuza(t)
+	// Night 1: the mafia kills town2, creating a dead spectator.
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "town2"})
+	require.False(t, livingByID(g, "town2"), "town2 is dead and now spectating")
+	noLynchDay(t, g)
+
+	// Night 2: the Yakuza recruits town1 during the Mafia turn.
+	_, err := g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+	evts := recruit(t, g, "yak", "town1")
+
+	// The recruit mirrors to the graveyard, flagged as a recruit (not a kill),
+	// carrying both roles so the dead feed can render "Yakuza recruited X".
+	sa, ok := findEvent[game.SpectatorNightAction](evts)
+	require.True(t, ok, "the recruit mirrors to the graveyard")
+	require.True(t, sa.Recruit, "flagged Recruit so the feed renders the 'recruited' verb")
+	require.Equal(t, game.RoleYakuza, sa.ActorRole)
+	require.Equal(t, game.PlayerID("town1"), sa.Target)
+	require.Equal(t, game.Graveyard().Audience, sa.Visibility().Audience,
+		"the recruit feed is graveyard-only — never seen by the living")
+
+	t.Run("the dead spectator sees the recruit, flagged 'recruited'", func(t *testing.T) {
+		out := game.Project("town2", evts, g.State())
+		feed := findAllEvents[game.SpectatorNightAction](out)
+		require.Len(t, feed, 1, "town2 (dead) receives the recruit in their feed")
+		require.True(t, feed[0].Recruit, "and it's flagged so the verb reads 'recruited'")
+	})
+
+	t.Run("no living viewer sees the spectator feed", func(t *testing.T) {
+		// mafia1 (living mafia) sees the faction-only RecruitRecorded, but never
+		// the graveyard feed; town1/det/stranger see neither.
+		for _, viewer := range []game.PlayerID{"mafia1", "det", "town1", "stranger"} {
+			out := game.Project(viewer, evts, g.State())
+			require.Empty(t, findAllEvents[game.SpectatorNightAction](out),
+				"living viewer %q must not see the spectator feed", viewer)
+		}
+	})
+}
+
 // TestSpectator_PrivateRoleResultsNotLeakedToTheDead guards the boundary the
 // spectator feed must NOT cross: a dead spectator may watch WHO acted on whom
 // (SpectatorNightAction), but must never receive the private OUTCOMES those

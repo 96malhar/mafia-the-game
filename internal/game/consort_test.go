@@ -337,6 +337,26 @@ func TestConsort_BlockOnMafiaHasNoEffect(t *testing.T) {
 	}
 }
 
+func TestConsort_BlockOnVillagerEmitsNoNotice(t *testing.T) {
+	// A villager has no night turn and no action, so distracting one is a
+	// wasted block: the Blocked notice fires only at a night-role holder's
+	// turn (a villager is never such a holder), so the villager is NEVER
+	// told. A toast here would leak to the villager that they were targeted,
+	// so this asserts no Blocked event is produced for them at all.
+	g := fixedRosterWithConsort(t)
+	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:   "town2", // kill an unrelated villager so the night resolves normally
+		game.RoleConsort: "town1", // distract a villager — a no-op
+	})
+
+	for _, e := range evts {
+		if b, ok := e.(game.Blocked); ok {
+			require.Failf(t, "unexpected Blocked notice",
+				"distracting a villager must emit no Blocked notice, got one for %q", b.PlayerID)
+		}
+	}
+}
+
 func TestConsort_BlockedActorTurnIsPhantom(t *testing.T) {
 	// A blocked non-mafia actor's turn runs as a phantom (narrate ->
 	// ponder, no act window), which is what makes it timing- and
@@ -511,9 +531,12 @@ func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
 		"promotion is private: the town must not learn a sleeper took over")
 
 	// A fresh roster reveal rides along so her client learns its new faction.
+	// It lists the FULL cabal — her plus her now-dead predecessor — so she
+	// can badge them. No Yakuza in this game, so that field is empty.
 	roster, ok := findEvent[game.MafiaRosterRevealed](evts)
-	require.True(t, ok, "promotion re-issues the mafia roster (now just her)")
-	require.Equal(t, []game.PlayerID{"consort"}, roster.Members)
+	require.True(t, ok, "promotion re-issues the mafia roster (the full cabal)")
+	require.ElementsMatch(t, []game.PlayerID{"mafia1", "consort"}, roster.Members)
+	require.Equal(t, game.PlayerID(""), roster.Yakuza)
 
 	_, ended := findEvent[game.GameEnded](evts)
 	require.False(t, ended, "promotion keeps the mafia side alive — town has not won")

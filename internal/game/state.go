@@ -55,6 +55,27 @@ type GameState struct {
 	// further shot once it's true.
 	vigilanteShotUsed bool
 
+	// yakuzaEnabled records whether the host has toggled the optional
+	// Yakuza role on for the upcoming game. Set via SetYakuza while in
+	// PhaseLobby; consumed by composeRoster at StartGame to add one
+	// RoleYakuza (taking the slot of a villager, like the Consort). The
+	// Yakuza is a full mafia member that acts during the Mafia turn.
+	yakuzaEnabled bool
+
+	// recruitPending / recruitYakuza / recruitTarget hold the in-flight
+	// Yakuza recruit for the current night. recruitPending distinguishes
+	// "a recruit was submitted" from the zero-value ids. The recruit is
+	// deliberately NOT stored in pendingNight (which is keyed actor->kill
+	// target and replayed by runNightPhase as a kill); it gets its own
+	// fields so resolveRecruit can apply the conversion + self-sacrifice
+	// separately. Set in applyRecruit during the Mafia turn; consulted by
+	// the detective read, the recruit-target power suppression, and the
+	// vigilante void guard; cleared in resolveRecruit (and whenever the
+	// night ends without one).
+	recruitPending bool
+	recruitYakuza  PlayerID
+	recruitTarget  PlayerID
+
 	phase   Phase
 	day     int // day number; 0 in Lobby/first Night, 1 after first day starts
 	players []Player
@@ -247,22 +268,112 @@ func (s *GameState) roleTurnIsPhantom(r Role) bool {
 	if r == "" {
 		return false
 	}
+	// The Mafia turn is faction-collective: it opens whenever ANY living
+	// FactionMafia member exists, not just a strict RoleMafia holder. A
+	// living Yakuza (FactionMafia) keeps the turn real so it can take the
+	// kill or recruit even after every strict mafioso is dead. (HasLivingRole
+	// would wrongly phantom the turn in that case.)
+	if r == RoleMafia {
+		return s.factionLivingCount(FactionMafia) == 0
+	}
 	if !s.HasLivingRole(r) {
 		return true
 	}
 	if r == RoleVigilante && s.vigilanteShotUsed {
 		return true
 	}
-	// A Consort-blocked non-mafia holder is present but can't act. Mafia
-	// are immune to the block. The Consort acts earlier in the night
-	// queue, so any block is already recorded in pendingNight by the time
-	// a town role's turn begins and this is consulted.
-	if r != RoleMafia {
-		if holder, ok := s.livingHolderOf(r); ok && s.isNightBlocked(holder) {
-			return true
-		}
+	// A non-mafia holder that was neutralized this night (Consort-blocked OR
+	// the Yakuza's recruit target) is present but can't act. Both the Consort
+	// and the Yakuza act earlier in the night (the Yakuza during the Mafia
+	// turn, which leads the queue), so the neutralization is already recorded
+	// by the time a town role's turn begins and this is consulted.
+	if holder, ok := s.livingHolderOf(r); ok && s.isNightNeutralized(holder) {
+		return true
 	}
 	return false
+}
+
+// clearRecruit resets the in-flight Yakuza recruit fields. Called at the end
+// of resolveNight (the night-end cleanup, alongside clearing pendingNight) so
+// a recruit never leaks across nights.
+func (s *GameState) clearRecruit() {
+	s.recruitPending = false
+	s.recruitYakuza = ""
+	s.recruitTarget = ""
+}
+
+// isActorsTurn reports whether it is currently actor's turn to submit a
+// night action. The base rule is strict role equality with currentNightRole;
+// the Mafia turn is the faction-collective exception — any living FactionMafia
+// member (a strict mafioso or the Yakuza) may submit during the RoleMafia turn.
+func (s *GameState) isActorsTurn(actor *Player) bool {
+	if actor.role == s.currentNightRole {
+		return true
+	}
+	return s.currentNightRole == RoleMafia && actor.role.Faction() == FactionMafia
+}
+
+// isNightNeutralized reports whether pid's night action is nullified this
+// night — either a living Consort blocked them (isNightBlocked) OR the
+// Yakuza recruited them (recruitPending and recruitTarget == pid; the
+// recruit suppresses the target's own power the night they're converted).
+// Used by roleTurnIsPhantom and the act-time/resolve-time backstops. The
+// Blocked-vs-Recruited NOTICE distinction is made at the call sites that
+// emit it (enterNightSubPhase), which still consult isNightBlocked directly.
+func (s *GameState) isNightNeutralized(pid PlayerID) bool {
+	return s.isNightBlocked(pid) || (s.recruitPending && s.recruitTarget == pid)
+}
+
+// allMafiaFactionIDs returns the ids of every player whose role is in the
+// mafia faction (strict RoleMafia or RoleYakuza), ALIVE OR DEAD, in join
+// order. Because roles never revert out of the faction (the only role change
+// is Consort→Mafia, which moves INTO it), this is the full historical cabal:
+// the original mafia, the Yakuza, any recruited convert, and a promoted
+// consort.
+//
+// It is used to re-issue the roster to a NEW faction member (a promoted
+// consort, or a fresh recruit) so they see every predecessor — the dead
+// mafia and the dead Yakuza — as well as any living teammates, matching what
+// a rejoin reconstructs from the StartGame roster (faction visibility is
+// evaluated at the viewer's CURRENT faction, so a rejoining member replays
+// the whole faction history). Living town never receives any of these events,
+// so the dead-role information stays inside the faction.
+func (s *GameState) allMafiaFactionIDs() []PlayerID {
+	var out []PlayerID
+	for i := range s.players {
+		if s.players[i].role.Faction() == FactionMafia {
+			out = append(out, s.players[i].id)
+		}
+	}
+	return out
+}
+
+// yakuzaPlayerID returns the id of the player dealt RoleYakuza (alive or
+// dead), or "" if the role was not in this game. Used to set the Yakuza
+// field on a re-issued roster so a new faction member can badge the
+// (possibly dead) Yakuza distinctly, consistent with the StartGame reveal.
+func (s *GameState) yakuzaPlayerID() PlayerID {
+	for i := range s.players {
+		if s.players[i].role == RoleYakuza {
+			return s.players[i].id
+		}
+	}
+	return ""
+}
+
+// currentMafiaRoster snapshots the full historical cabal from current state —
+// every faction member (alive or dead, via allMafiaFactionIDs) plus the
+// Yakuza badge (via yakuzaPlayerID) — as a re-issued roster event. The
+// Members/Yakuza pairing is the canonical "current full cabal" view, so the
+// two re-issue sites (a fresh recruit, a promoted consort) build it through
+// here rather than restating the pair. NOT used by the StartGame reveal:
+// that builds its roster from ids accumulated in the deal loop, not a
+// post-deal state scan.
+func (s *GameState) currentMafiaRoster() MafiaRosterRevealed {
+	return MafiaRosterRevealed{
+		Members: s.allMafiaFactionIDs(),
+		Yakuza:  s.yakuzaPlayerID(),
+	}
 }
 
 // findPlayer returns a pointer to the player record and true, or nil and

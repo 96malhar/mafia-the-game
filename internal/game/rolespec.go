@@ -164,6 +164,26 @@ func rejectSelfTarget(actor, target *Player) error {
 	return nil
 }
 
+// validateFactionKill is the shared Validate hook for the faction kill,
+// used by both RoleMafia and RoleYakuza (which share the single nightly
+// mafia kill). A mafioso/yakuza may not kill a strict mafia teammate; a
+// Consort (FactionConsort, role RoleConsort) is NOT a strict mafia and so
+// remains a legal kill target, matching the long-standing rule.
+func validateFactionKill(_ *GameState, _, target *Player) error {
+	if target.role == RoleMafia {
+		return ErrNotYourAction
+	}
+	return nil
+}
+
+// applyFactionKill is the shared Apply hook for the faction kill. Both the
+// mafia and the yakuza write into the same killTarget so the faction lands
+// exactly one kill per night (last-write wins among multiple killers, V1).
+func applyFactionKill(ctx *nightContext, _, target *Player) {
+	ctx.killTarget = target.id
+	ctx.hasKill = true
+}
+
 // roleSpecs is the registry. Every value in the Role enum MUST have an
 // entry here; a TestEveryRoleHasASpec test enforces this invariant.
 var roleSpecs = map[Role]roleSpec{
@@ -180,19 +200,27 @@ var roleSpecs = map[Role]roleSpec{
 		// other" beat); see DefaultNarrate for the value and the
 		// client-coupling comment.
 		NightAction: &nightActionSpec{
-			Phase: nightPhaseSchedule,
-			Validate: func(_ *GameState, _, target *Player) error {
-				if target.role == RoleMafia {
-					// Mafia cannot kill another mafia.
-					return ErrNotYourAction
-				}
-				return nil
-			},
-			Apply: func(ctx *nightContext, _, target *Player) {
-				// V1: last-write wins among multiple mafia killers.
-				ctx.killTarget = target.id
-				ctx.hasKill = true
-			},
+			Phase:    nightPhaseSchedule,
+			Validate: validateFactionKill,
+			Apply:    applyFactionKill,
+		},
+	},
+
+	RoleYakuza: {
+		// A FULL mafia member (FactionMafia): in the roster, counts for
+		// parity, reads as mafia. Its kill is IDENTICAL to the mafia's —
+		// it shares the same faction-collective kill during the Mafia turn
+		// (validateFactionKill / applyFactionKill below). The act-window
+		// gate in applyNightAction accepts any living FactionMafia member
+		// during the RoleMafia turn, so the Yakuza's kill lands in the same
+		// nightContext.killTarget as a mafioso's. The Yakuza's OTHER move —
+		// the one-shot recruit — is a separate command (Recruit), not a
+		// NightAction, handled in applyRecruit + resolveRecruit.
+		Faction: FactionMafia,
+		NightAction: &nightActionSpec{
+			Phase:    nightPhaseSchedule,
+			Validate: validateFactionKill,
+			Apply:    applyFactionKill,
 		},
 	},
 
@@ -301,6 +329,20 @@ var roleSpecs = map[Role]roleSpec{
 				return nil
 			},
 			Apply: func(ctx *nightContext, actor, target *Player) {
+				// Shooting a Yakuza that has already committed its
+				// self-sacrifice recruit THIS night hits a dead man
+				// walking: the shot does NOT land (the sacrifice is what
+				// kills it, in resolveRecruit), but the bullet is still
+				// SPENT — exactly like firing at a target the mafia already
+				// killed (resolveHit no-ops on the corpse, yet the one shot
+				// is gone). We record the spend (vigilanteFired) WITHOUT
+				// scheduling a hit (hasVigKill stays false). The recruit is
+				// locked during the earlier Mafia turn, so recruitPending is
+				// reliably set by the time this schedule-phase Apply runs.
+				if ctx.state.recruitPending && target.id == ctx.state.recruitYakuza {
+					ctx.vigilanteFired = true
+					return
+				}
 				ctx.vigKillTarget = target.id
 				ctx.vigilanteActor = actor.id
 				ctx.hasVigKill = true

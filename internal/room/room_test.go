@@ -952,15 +952,31 @@ func TestRoom_HostRejoinWithinGraceKeepsHost(t *testing.T) {
 		"no migration should occur on a within-grace rejoin")
 }
 
-// --- SetConsort host gating ----------------------------------------------
+// --- optional-role toggle host gating ------------------------------------
 
-func TestRoom_SetConsortIsClassifiedHostOnly(t *testing.T) {
-	// Unit guard: the consort toggle must be on the host-only list so a
-	// non-host can't reconfigure the roster.
-	require.True(t, isHostOnly(game.SetConsort{Enabled: true}),
-		"SetConsort must be host-only")
+// TestRoom_RoleToggleIsClassifiedHostOnly is a unit guard: every optional-role
+// toggle must be on the host-only list so a non-host can't reconfigure the
+// roster. (End-to-end host gating is covered by the broadcast / non-host tests
+// below.)
+func TestRoom_RoleToggleIsClassifiedHostOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  game.Command
+	}{
+		{"SetConsort", game.SetConsort{Enabled: true}},
+		{"SetVigilante", game.SetVigilante{Enabled: true}},
+		{"SetYakuza", game.SetYakuza{Enabled: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Truef(t, isHostOnly(tc.cmd), "%s must be host-only", tc.name)
+		})
+	}
 }
 
+// TestRoom_NonHostSetConsortRejected covers the rejection path once (it's
+// identical across the toggles): a non-host attempt is Forbidden and broadcasts
+// nothing.
 func TestRoom_NonHostSetConsortRejected(t *testing.T) {
 	_, r := newTestRoom(t)
 	host, _ := connect(t, r, "Host")     // first joiner becomes host
@@ -981,49 +997,54 @@ func TestRoom_NonHostSetConsortRejected(t *testing.T) {
 		"a rejected toggle must not broadcast ConsortChanged")
 }
 
-func TestRoom_HostSetConsortBroadcastsConsortChanged(t *testing.T) {
-	_, r := newTestRoom(t)
-	host, _ := connect(t, r, "Host")
-	other, _ := connect(t, r, "Player2")
-	_ = drain(host, 50*time.Millisecond)
-	_ = drain(other, 50*time.Millisecond)
-
-	require.NoError(t, r.submit(context.Background(), inCommand{
-		From: host, Cmd: game.SetConsort{Enabled: true},
-	}))
-
-	// Both the host and the other player receive the public toggle.
-	for _, sub := range []*Subscriber{host, other} {
-		cc, found := drainFirstEvent[game.ConsortChanged](sub, 200*time.Millisecond)
-		require.True(t, found, "every subscriber should see a ConsortChanged")
-		require.True(t, cc.Enabled, "every subscriber should see ConsortChanged{Enabled:true}")
+// TestRoom_HostRoleToggleBroadcastsChange: a host toggle reaches EVERY
+// subscriber (host + others) as its public *Changed event. The per-role
+// wantEvent closure is needed because drainFirstEvent's type parameter can't
+// come from a struct field.
+func TestRoom_HostRoleToggleBroadcastsChange(t *testing.T) {
+	cases := []struct {
+		name      string
+		cmd       game.Command
+		wantEvent func(sub *Subscriber) (enabled, found bool)
+	}{
+		{
+			name: "consort", cmd: game.SetConsort{Enabled: true},
+			wantEvent: func(sub *Subscriber) (bool, bool) {
+				cc, found := drainFirstEvent[game.ConsortChanged](sub, 200*time.Millisecond)
+				return cc.Enabled, found
+			},
+		},
+		{
+			name: "vigilante", cmd: game.SetVigilante{Enabled: true},
+			wantEvent: func(sub *Subscriber) (bool, bool) {
+				vc, found := drainFirstEvent[game.VigilanteChanged](sub, 200*time.Millisecond)
+				return vc.Enabled, found
+			},
+		},
+		{
+			name: "yakuza", cmd: game.SetYakuza{Enabled: true},
+			wantEvent: func(sub *Subscriber) (bool, bool) {
+				yc, found := drainFirstEvent[game.YakuzaChanged](sub, 200*time.Millisecond)
+				return yc.Enabled, found
+			},
+		},
 	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, r := newTestRoom(t)
+			host, _ := connect(t, r, "Host")
+			other, _ := connect(t, r, "Player2")
+			_ = drain(host, 50*time.Millisecond)
+			_ = drain(other, 50*time.Millisecond)
 
-// --- SetVigilante host gating --------------------------------------------
+			require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: tc.cmd}))
 
-func TestRoom_SetVigilanteIsClassifiedHostOnly(t *testing.T) {
-	// Unit guard: the vigilante toggle must be on the host-only list so a
-	// non-host can't reconfigure the roster.
-	require.True(t, isHostOnly(game.SetVigilante{Enabled: true}),
-		"SetVigilante must be host-only")
-}
-
-func TestRoom_HostSetVigilanteBroadcastsVigilanteChanged(t *testing.T) {
-	_, r := newTestRoom(t)
-	host, _ := connect(t, r, "Host")
-	other, _ := connect(t, r, "Player2")
-	_ = drain(host, 50*time.Millisecond)
-	_ = drain(other, 50*time.Millisecond)
-
-	require.NoError(t, r.submit(context.Background(), inCommand{
-		From: host, Cmd: game.SetVigilante{Enabled: true},
-	}))
-
-	// Both the host and the other player receive the public toggle.
-	for _, sub := range []*Subscriber{host, other} {
-		vc, found := drainFirstEvent[game.VigilanteChanged](sub, 200*time.Millisecond)
-		require.True(t, found, "every subscriber should see a VigilanteChanged")
-		require.True(t, vc.Enabled, "every subscriber should see VigilanteChanged{Enabled:true}")
+			// Both the host and the other player receive the public toggle.
+			for _, sub := range []*Subscriber{host, other} {
+				enabled, found := tc.wantEvent(sub)
+				require.Truef(t, found, "every subscriber should see a %s change", tc.name)
+				require.Truef(t, enabled, "every subscriber should see the %s toggle Enabled:true", tc.name)
+			}
+		})
 	}
 }

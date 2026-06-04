@@ -145,6 +145,11 @@
             renderActionPanel();
             break;
 
+          case "yakuzaChanged":
+            yakuzaEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
           case "playerJoined":
             upsertPlayer(env.data.playerId, {
               name: env.data.name,
@@ -230,6 +235,8 @@
               currentNightSubPhase = "";
               currentNightTurnPhantom = false;
               iAmBlocked = false;
+              iAmRecruited = false;
+              mafiaRecruitTarget = null;
               heldFireThisTurn = false;
               stopNightCountdown();
               dayLynchResolved = false;
@@ -375,6 +382,14 @@
             // banner hides because the room is now closed to joins.
             rolesDealt = true;
             if (env.data.playerId === myId) {
+              // This is either the initial deal or a mid-game Yakuza recruit
+              // flipping US to mafia. Either way, just adopt the new role —
+              // the "you've been recruited" TOAST rides on the separate,
+              // engine-emitted `recruited` event (exactly one per convert,
+              // timed correctly), so we deliberately don't toast here. That
+              // keeps villagers from getting a double toast and lets a
+              // blocked-then-recruited player see "distracted" at their turn
+              // and "recruited" at resolution as two distinct notices.
               myRole = env.data.role;
               $("my-role").textContent = env.data.role;
             }
@@ -389,9 +404,20 @@
           case "mafiaRoster":
             // Faction-scoped: the server only sends this to mafia, so
             // simply receiving it means I'm mafia and these are my
-            // teammates. Fold the member list into mafiaPeers; the
-            // roster rows then badge each one as "Mafia" from here on.
-            mafiaPeers = new Set(env.data.members || []);
+            // teammates. Faction knowledge only ever WIDENS, so we MERGE the
+            // revealed members into mafiaPeers rather than replacing it: a
+            // re-issued roster (a consort promotion, or a Yakuza recruit)
+            // lists only the LIVING members, so replacing would drop a
+            // teammate who has since died — e.g. a Yakuza that sacrificed
+            // itself on a recruit — and strip its "Mafia" badge. Merging
+            // keeps every known mafioso badged for the rest of the game.
+            for (const m of (env.data.members || [])) mafiaPeers.add(m);
+            // Remember which member is the Yakuza so its row badges "Yakuza"
+            // instead of the generic "Mafia". Only set when the field is
+            // present (the StartGame reveal); re-issued rosters omit it, so we
+            // don't clear a known yakuzaId — the Yakuza stays badged after it
+            // dies on a recruit.
+            if (env.data.yakuza) yakuzaId = env.data.yakuza;
             renderPlayers();
             break;
 
@@ -432,6 +458,7 @@
               actorRole: env.data.actorRole,
               target: env.data.target,
               targetRole: env.data.targetRole,
+              recruit: !!env.data.recruit,
             });
             renderActionPanel();
             break;
@@ -469,6 +496,37 @@
             renderPlayers();
             break;
 
+          case "recruited":
+            // PrivateTo us: the Yakuza recruited us into the mafia. The engine
+            // sends exactly ONE of these per convert, timed by role:
+            //   - active role (not blocked): at the start of our (now phantom)
+            //     turn — our original power is suppressed tonight;
+            //   - active role ALSO blocked by the Consort: at resolution (the
+            //     Blocked notice took our turn slot), so we see "distracted"
+            //     at our turn and "recruited" at resolution;
+            //   - villager (no turn): at resolution.
+            // Set the flag on EVERY path so the picker stays hidden after a
+            // refresh; toast only live. Our role flips via roleAssigned.
+            iAmRecruited = true;
+            if (!replaying) showRecruitedToast();
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "recruitRecorded":
+            // Faction-scoped: the server sends this to every living mafioso
+            // (and the Yakuza) so the WHOLE faction sees the night's action is
+            // a recruit — no kill is coming. Clear any stale kill target and
+            // record the recruit target for everyone; the UI then shows the
+            // recruiting Yakuza its "Recruited: X" confirmation and co-mafia a
+            // "the Yakuza is recruiting X" notice, plus a "Recruit" row badge.
+            mafiaKillTarget = null;
+            mafiaRecruitTarget = env.data.target;
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+
           case "consortPromoted":
             // PrivateTo us: we (the Consort) have been elevated to full
             // mafia because the cabal was wiped out. Apply the role
@@ -478,6 +536,12 @@
             // The mafiaRoster event that follows badges us as Mafia.
             myRole = "mafia";
             $("my-role").textContent = "mafia";
+            // The full-cabal mafiaRoster event that follows in this same batch
+            // (and, on rejoin, the StartGame roster too) populates mafiaPeers
+            // with her predecessors — the dead original mafia and the dead
+            // Yakuza — so a promoted consort sees them badged. We do NOT reset
+            // mafiaPeers here: faction knowledge only widens, and the merge in
+            // the mafiaRoster handler keeps live and rejoin consistent.
             if (!replaying) showPromotedToast();
             renderAll();
             break;

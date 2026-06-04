@@ -13,6 +13,7 @@
         winner = null;
         myRole = null;
         mafiaPeers = new Set();
+        yakuzaId = null;
         dayLynchResolved = false;
         rolesDealt = false;
         // hostId is rebuilt from the HostChanged event in the
@@ -30,6 +31,7 @@
         mafiaCount = null;
         consortEnabled = false;
         vigilanteEnabled = false;
+        yakuzaEnabled = false;
         vigilanteFired = false;
         heldFireThisTurn = false;
         // Night turn state — engine-authoritative; replayed on join.
@@ -38,6 +40,8 @@
         currentNightSubPhase = "";
         currentNightTurnPhantom = false;
         iAmBlocked = false;
+        iAmRecruited = false;
+        mafiaRecruitTarget = null;
         dayDiscussionPendingDeaths = [];
         lastNightVictims = [];
         spectatorNightActions = [];
@@ -230,17 +234,34 @@
         if (p.revealedRole) {
           nameLine.appendChild(badge(capitalize(p.revealedRole), "shrink-0 bg-indigo-700 text-indigo-100"));
         } else if (mafiaPeers.has(p.id)) {
-          nameLine.appendChild(badge("Mafia", "shrink-0 bg-rose-800 text-rose-100"));
+          // The whole faction (and the Yakuza itself) badges the Yakuza
+          // distinctly; every other faction member is the interchangeable
+          // "Mafia". yakuzaId comes from the faction-only mafiaRoster event,
+          // so this never leaks to town.
+          nameLine.appendChild(
+            p.id === yakuzaId
+              ? badge("Yakuza", "shrink-0 bg-rose-600 text-rose-50")
+              : badge("Mafia", "shrink-0 bg-rose-800 text-rose-100")
+          );
         } else if (p.id === myId && myRole) {
           nameLine.appendChild(badge(capitalize(myRole), "shrink-0 bg-indigo-700 text-indigo-100"));
         }
         // Faction-collective kill: once any mafioso locks a target, badge
-        // that player on every mafioso's roster (including teammates who
-        // didn't submit) so the locked kill is visible at a glance. Only
-        // mafia ever have mafiaKillTarget set (town acks are private), so
-        // this never leaks to the village.
-        if (myRole === "mafia" && mafiaKillTarget === p.id) {
+        // that player on every faction member's roster (mafia AND the yakuza,
+        // including teammates who didn't submit) so the locked kill is
+        // visible at a glance. Only the mafia faction ever has mafiaKillTarget
+        // set (town acks are private), so this never leaks to the village.
+        if (iAmMafiaFaction() && mafiaKillTarget === p.id) {
           nameLine.appendChild(badge("Target", "shrink-0 bg-rose-600 text-rose-50"));
+        }
+        // Faction recruit: when the Yakuza locks a recruit, badge the target
+        // on every faction member's roster (the recruiting Yakuza AND co-mafia)
+        // so the whole family sees who's being converted. Amber distinguishes
+        // it from a rose kill "Target". Only the mafia faction ever has
+        // mafiaRecruitTarget set (recruitRecorded is faction-scoped), so this
+        // never leaks to town.
+        if (iAmMafiaFaction() && mafiaRecruitTarget === p.id) {
+          nameLine.appendChild(badge("Recruit", "shrink-0 bg-amber-600 text-amber-50"));
         }
 
         left.appendChild(nameLine);
@@ -314,6 +335,7 @@
         if (!myRole) return false;
         return (
           myRole === "mafia" ||
+          myRole === "yakuza" ||
           myRole === "doctor" ||
           myRole === "detective" ||
           myRole === "consort" ||
@@ -357,7 +379,12 @@
         //   - doctor: CAN save self on any night.
         // So we allow the self row only for the doctor.
         const isSelfRow = p.id === myId;
-        const isFellowMafia = myRole === "mafia" && mafiaPeers.has(p.id);
+        // Fellow-mafia rows carry no action button for either the mafia OR
+        // the yakuza: the engine rejects a faction kill on any mafia, and a
+        // recruit on a mafioso, and mafiaPeers includes our own id (covering
+        // the self case too). The consort is NOT in mafiaPeers, so she stays
+        // a legal target — including a recruit.
+        const isFellowMafia = iAmMafiaFaction() && mafiaPeers.has(p.id);
         const canTargetThisRow =
           (!isSelfRow && !isFellowMafia) || myRole === "doctor";
 
@@ -365,10 +392,17 @@
           phase === "night" &&
           iAmAlive &&
           canActAtNight() &&
-          currentNightRole === myRole &&
+          // The yakuza acts during the MAFIA turn (it has no turn of its
+          // own), so myNightTurnActive() opens its picker when the mafia is
+          // up even though myRole is "yakuza".
+          myNightTurnActive() &&
           currentNightSubPhase === "act" &&
           !currentNightTurnPhantom &&
           !iAmBlocked &&
+          // A recruited player's own power is suppressed for the night —
+          // their turn is phantom server-side, but we also hide the picker
+          // locally the moment the private "recruited" notice lands.
+          !iAmRecruited &&
           // The vigilante has a single bullet for the whole game. Once
           // we've fired it (tracked locally from our own
           // nightActionRecorded), hide the picker — the engine rejects
@@ -380,10 +414,33 @@
           canTargetThisRow
         ) {
           const submitted = myAction === p.id;
-          const b = document.createElement("button");
-          b.className = submitted
-            ? `${rowBtnBase} bg-amber-600 text-white`
-            : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+          const mkBtn = (label, active, onClick) => {
+            const b = document.createElement("button");
+            b.className = active
+              ? `${rowBtnBase} bg-amber-600 text-white`
+              : `${rowBtnBase} bg-slate-700 text-white hover:bg-slate-600`;
+            b.textContent = label;
+            b.addEventListener("click", onClick);
+            return b;
+          };
+
+          // The yakuza gets TWO buttons on every eligible row: the regular
+          // faction Kill and a Recruit (one-shot self-sacrifice conversion).
+          // We return a fragment so both land as direct children of the row's
+          // flex cluster and pick up its gap spacing.
+          if (myRole === "yakuza") {
+            const frag = document.createDocumentFragment();
+            frag.appendChild(
+              mkBtn(submitted ? "Killing" : "Kill", submitted, () =>
+                send("nightAction", { target: p.id })
+              )
+            );
+            frag.appendChild(
+              mkBtn("Recruit", false, () => send("recruit", { target: p.id }))
+            );
+            return frag;
+          }
+
           // Button label per acting role, sourced from ROLE_VERBS (the
           // shared verb table in helpers.js) so it can't drift from the
           // confirmation chip. The doctor is special-cased for its
@@ -392,19 +449,22 @@
           // generic "Target". For every other role isSelfRow is
           // guaranteed false here (canTargetThisRow gates it).
           const verbs = ROLE_VERBS[myRole];
+          let label;
           if (myRole === "doctor") {
-            b.textContent = submitted
+            label = submitted
               ? (isSelfRow ? "Saving self" : verbs.gerund)
               : (isSelfRow ? "Save self" : verbs.base);
           } else if (verbs) {
-            b.textContent = submitted ? verbs.gerund : verbs.base;
+            label = submitted ? verbs.gerund : verbs.base;
           } else {
-            b.textContent = submitted
-              ? (isSelfRow ? "Saving self" : "Targeted")
-              : (isSelfRow ? "Save self" : "Target");
+            // No self-row variant here: canTargetThisRow gates isSelfRow
+            // false for every role that reaches this generic fallback (only
+            // the doctor renders its own row, handled above).
+            label = submitted ? "Targeted" : "Target";
           }
-          b.addEventListener("click", () => send("nightAction", { target: p.id }));
-          return b;
+          return mkBtn(label, submitted, () =>
+            send("nightAction", { target: p.id })
+          );
         }
 
         if (phase === "day_vote" && !votesRevealed && iAmAlive && p.alive && p.id !== myId) {

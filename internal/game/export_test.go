@@ -34,6 +34,9 @@ func (s *GameState) ConsortEnabled() bool { return s.consortEnabled }
 // VigilanteEnabled reports whether the optional Vigilante role is toggled on.
 func (s *GameState) VigilanteEnabled() bool { return s.vigilanteEnabled }
 
+// YakuzaEnabled reports whether the optional Yakuza role is toggled on.
+func (s *GameState) YakuzaEnabled() bool { return s.yakuzaEnabled }
+
 // VigilanteShotUsed reports whether the Vigilante has already fired his
 // single bullet on a prior night.
 func (s *GameState) VigilanteShotUsed() bool { return s.vigilanteShotUsed }

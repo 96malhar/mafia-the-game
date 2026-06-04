@@ -105,6 +105,17 @@ type VigilanteChanged struct {
 func (VigilanteChanged) isEvent()               {}
 func (VigilanteChanged) Visibility() Visibility { return Public() }
 
+// YakuzaChanged records a host-driven toggle of the optional Yakuza role
+// during PhaseLobby. Public so every observer sees the configured
+// composition update in real time (it does NOT reveal who, if anyone, will
+// be dealt the role — that stays secret until GameEnded).
+type YakuzaChanged struct {
+	Enabled bool
+}
+
+func (YakuzaChanged) isEvent()               {}
+func (YakuzaChanged) Visibility() Visibility { return Public() }
+
 // PlayerJoined records a successful lobby join.
 type PlayerJoined struct {
 	PlayerID PlayerID
@@ -163,8 +174,18 @@ func (e RoleAssigned) Visibility() Visibility { return PrivateTo(e.PlayerID) }
 // roster, and a dead mafioso loses access on rejoin like other faction
 // secrets (NightActionRecorded). Roles still stay hidden from town until
 // GameEnded; this only ever widens knowledge within the mafia faction.
+//
+// Yakuza, when non-empty, is the PlayerID of the faction's Yakuza, so the
+// faction can tell WHICH member is the Yakuza (the rest are interchangeable
+// RoleMafia). It is set whenever a Yakuza was dealt — on the StartGame reveal
+// and on every re-issue (a consort promotion, a recruit), both of which build
+// the roster via currentMafiaRoster / yakuzaPlayerID, which returns the
+// Yakuza's id even after it has died. So the Yakuza stays distinctly badged
+// for the whole game, and the value is consistent across the live and
+// rejoin-reconstructed views.
 type MafiaRosterRevealed struct {
 	Members []PlayerID
+	Yakuza  PlayerID
 }
 
 func (MafiaRosterRevealed) isEvent()               {}
@@ -284,10 +305,43 @@ type SpectatorNightAction struct {
 	ActorRole  Role
 	Target     PlayerID
 	TargetRole Role
+	// Recruit marks this as a Yakuza recruit rather than a kill/target
+	// action, so the graveyard feed can render "recruited" instead of the
+	// role's usual verb. Default false preserves the existing semantics for
+	// every other action.
+	Recruit bool
 }
 
 func (SpectatorNightAction) isEvent()               {}
 func (SpectatorNightAction) Visibility() Visibility { return Graveyard() }
+
+// RecruitRecorded acknowledges that the Yakuza locked a recruit during the
+// Mafia turn. Faction-scoped (like the mafia kill ack) so co-mafia see that
+// the night's faction action is a recruit — and thus no kill is coming —
+// while it stays hidden from the town. The recruit TARGET does not see this
+// (they are still town at submission time and only learn at resolution, via
+// RoleAssigned / Recruited).
+type RecruitRecorded struct {
+	Yakuza PlayerID
+	Target PlayerID
+}
+
+func (RecruitRecorded) isEvent()               {}
+func (RecruitRecorded) Visibility() Visibility { return FactionOnly(FactionMafia) }
+
+// Recruited tells a player the Yakuza has recruited them into the mafia AND
+// that their own night power is suppressed for this night. Private to the
+// recruited player; the town must never learn a conversion happened. Emitted
+// for a recruit target that holds a night role at the start of their (now
+// phantom) turn — mirroring the Blocked notice's timing — and at night
+// resolution for a target with no night turn (a villager), who has no earlier
+// beat to be told at.
+type Recruited struct {
+	PlayerID PlayerID
+}
+
+func (e Recruited) isEvent()               {}
+func (e Recruited) Visibility() Visibility { return PrivateTo(e.PlayerID) }
 
 // PlayerKilled is emitted at Night -> Day if the mafia's target was not
 // saved by the doctor. Always public.
@@ -316,8 +370,9 @@ func (e Blocked) Visibility() Visibility { return PrivateTo(e.PlayerID) }
 // still lived (see promoteConsortIfNeeded). Private to the promoted
 // player: the town must NOT learn that a sleeper has taken over the
 // kill — to everyone else the game simply continues. A fresh
-// MafiaRosterRevealed (now listing just her) is emitted alongside so
-// her client recognizes its new faction.
+// MafiaRosterRevealed (listing the full cabal — her plus her now-dead
+// predecessors) is emitted alongside so her client recognizes its new
+// faction and can badge those predecessors.
 type ConsortPromoted struct {
 	PlayerID PlayerID
 }

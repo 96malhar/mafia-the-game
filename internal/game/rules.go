@@ -213,6 +213,13 @@ func (g *Game) applySetVigilante(c SetVigilante) ([]Event, error) {
 	return g.applyLobbyToggle(c.Enabled, &g.state.vigilanteEnabled, VigilanteChanged(c))
 }
 
+// applySetYakuza toggles the optional Yakuza role during PhaseLobby. See
+// SetYakuza in command.go for the validity envelope. Locked once roles are
+// dealt, like every other lobby toggle.
+func (g *Game) applySetYakuza(c SetYakuza) ([]Event, error) {
+	return g.applyLobbyToggle(c.Enabled, &g.state.yakuzaEnabled, YakuzaChanged(c))
+}
+
 // applyStartGame deals roles and locks the lobby; the game stays in
 // PhaseLobby until the host issues BeginNight.
 //
@@ -309,6 +316,7 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	events = append(events, GameStarted{})
 
 	var mafiaIDs []PlayerID
+	var yakuzaID PlayerID
 	for i := range g.state.players {
 		g.state.players[i].role = dealt[i]
 		events = append(events, RoleAssigned{
@@ -318,14 +326,19 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 		if dealt[i].Faction() == FactionMafia {
 			mafiaIDs = append(mafiaIDs, g.state.players[i].id)
 		}
+		if dealt[i] == RoleYakuza {
+			yakuzaID = g.state.players[i].id
+		}
 	}
 	g.state.rolesDealt = true
 
 	// Reveal the full mafia roster to the mafia faction so each member
 	// knows their teammates (FactionOnly, so town never sees it). Emitted
 	// after the RoleAssigned events so a client has every player's slot
-	// before it learns which of them are allies.
-	events = append(events, MafiaRosterRevealed{Members: mafiaIDs})
+	// before it learns which of them are allies. Yakuza names which member
+	// is the Yakuza (empty when the role wasn't dealt) so the faction can
+	// badge it distinctly.
+	events = append(events, MafiaRosterRevealed{Members: mafiaIDs, Yakuza: yakuzaID})
 
 	return events, nil
 }
@@ -342,6 +355,7 @@ type optionalRole struct {
 var optionalRoles = []optionalRole{
 	{role: RoleConsort, enabled: func(s *GameState) bool { return s.consortEnabled }},
 	{role: RoleVigilante, enabled: func(s *GameState) bool { return s.vigilanteEnabled }},
+	{role: RoleYakuza, enabled: func(s *GameState) bool { return s.yakuzaEnabled }},
 }
 
 // enabledOptionalRoles returns the optional roles toggled on for the

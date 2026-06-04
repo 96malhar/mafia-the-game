@@ -54,3 +54,51 @@ func TestSpectator_NightActionReachesOnlyTheDead(t *testing.T) {
 			"a spectator night action")
 	})
 }
+
+// TestSpectator_PrivateRoleResultsNotLeakedToTheDead guards the boundary the
+// spectator feed must NOT cross: a dead spectator may watch WHO acted on whom
+// (SpectatorNightAction), but must never receive the private OUTCOMES or
+// secrets those roles learn — the detective's investigation result above all,
+// plus the mafia's faction kill ack, the mafia roster, and a roleblock
+// notice. Adding the spectator feed widened only SpectatorNightAction's
+// audience; every other night event keeps its original privacy.
+func TestSpectator_PrivateRoleResultsNotLeakedToTheDead(t *testing.T) {
+	g := fixedRoster(t)
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "town2"})
+	require.False(t, livingByID(g, "town2"), "town2 should be dead after the night")
+
+	events := []game.Event{
+		// What the dead ARE allowed to spectate: who the detective targeted.
+		game.SpectatorNightAction{
+			Actor: "det", ActorRole: game.RoleDetective,
+			Target: "mafia1", TargetRole: game.RoleMafia,
+		},
+		// Private outcomes/secrets the dead must NOT receive.
+		game.DetectiveResult{Detective: "det", Target: "mafia1", IsMafia: true},
+		game.NightActionRecorded{Actor: "mafia1", Target: "town1", Faction: game.FactionMafia},
+		game.MafiaRosterRevealed{Members: []game.PlayerID{"mafia1"}},
+		game.Blocked{PlayerID: "doc"},
+	}
+
+	t.Run("a dead spectator sees the action feed but none of the secrets", func(t *testing.T) {
+		out := game.Project("town2", events, g.State())
+		require.NotEmpty(t, findAllEvents[game.SpectatorNightAction](out),
+			"the dead spectate who the detective targeted")
+		require.Empty(t, findAllEvents[game.DetectiveResult](out),
+			"the dead must NOT learn the detective's investigation result")
+		require.Empty(t, findAllEvents[game.NightActionRecorded](out),
+			"the dead must NOT receive the mafia's private faction kill ack")
+		require.Empty(t, findAllEvents[game.MafiaRosterRevealed](out),
+			"the dead must NOT receive the mafia roster")
+		require.Empty(t, findAllEvents[game.Blocked](out),
+			"the dead must NOT receive a private roleblock notice")
+	})
+
+	t.Run("the detective still receives their own result", func(t *testing.T) {
+		// PrivateTo is aliveness-agnostic: the owner sees it whether alive or
+		// dead — what's withheld is only NON-owner dead spectators.
+		out := game.Project("det", events, g.State())
+		require.NotEmpty(t, findAllEvents[game.DetectiveResult](out),
+			"the detective sees their own investigation result")
+	})
+}

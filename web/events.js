@@ -62,11 +62,9 @@
 
             // First-time join error: the server has already shaped a
             // player-facing message (see room.joinErrorFor); we just
-            // render it in the lobby status line and bounce back to
-            // a clean lobby. The URL is cleared so the "Start a
-            // game" / Create view is visible, since retrying against
-            // the same closed/full/ended room would just fail again.
+            // render it and pivot the lobby appropriately.
             if (pendingJoinCode) {
+              const failedCode = pendingJoinCode;
               pendingJoinCode = null;
               if (ws) {
                 ws.onclose = null;
@@ -74,7 +72,18 @@
                 try { ws.close(); } catch {}
                 ws = null;
               }
-              recoverToLobby(null, message);
+              // A duplicate name is the one join error the SAME room can
+              // still accept — the player just needs a different name. Keep
+              // the "Join room XYZ" screen (recoverToLobby with the code) so
+              // they can rename and retry without re-entering the code. Every
+              // other join error (in progress, full, ended) means the room
+              // can't take them at all, so offer to create a fresh one with
+              // the name they typed.
+              if (code === "duplicate_name") {
+                recoverToLobby(failedCode, message);
+              } else {
+                showUnjoinableRoom(failedCode, message);
+              }
               break;
             }
 

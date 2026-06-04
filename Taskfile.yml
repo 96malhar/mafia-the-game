@@ -144,6 +144,29 @@ tasks:
     cmds:
       - go test -race -count=1 {{.PKG}}
 
+  setup:web:
+    desc: Install frontend test deps (npm — jsdom). One-time, online.
+    cmds:
+      - npm ci
+
+  test:web:
+    desc: Run the frontend tests (node:test + jsdom). Run `task setup:web` once first.
+    # Skips gracefully when Node or the deps are absent so `check` stays
+    # offline-friendly and a Go-only environment doesn't fail — it just
+    # doesn't run the frontend suite. Where Node + node_modules are present
+    # (local after setup:web, and CI), the suite runs and gates.
+    cmds:
+      - |
+        if ! command -v node >/dev/null 2>&1; then
+          echo "node not found — skipping frontend tests (install Node 18+ to run them)"
+          exit 0
+        fi
+        if [ ! -d node_modules/jsdom ]; then
+          echo "frontend test deps missing — run 'task setup:web' first; skipping"
+          exit 0
+        fi
+        node --test "test/web/*.test.mjs"
+
   test:cover:
     desc: Run tests and open an HTML coverage report.
     cmds:
@@ -199,12 +222,13 @@ tasks:
         govulncheck ./...
 
   check:
-    desc: Fast pre-commit gate — fmt, vet, lint, test. Offline-friendly.
+    desc: Fast pre-commit gate — fmt, vet, lint, Go tests, frontend tests. Offline-friendly.
     cmds:
       - task: fmt
       - task: vet
       - task: lint
       - task: test
+      - task: test:web
 
   ci:
     desc: Full CI pipeline — everything in `check` plus a vulnerability scan.

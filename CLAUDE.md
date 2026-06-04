@@ -16,11 +16,16 @@ task test PKG=./internal/game/    # one package
 task lint                         # golangci-lint (run `task tools` once to install)
 task tools                        # install goimports, golangci-lint, govulncheck
 
+task setup:web                    # one-time: npm ci (jsdom) for the frontend tests
+task test:web                     # frontend tests (node:test + jsdom) — see test/web/
+
 go test -race -run TestWinConditions ./internal/game/   # a single test
 go test -race -run TestRoom ./internal/room/            # tests matching a prefix
 ```
 
 `task check` is offline and is what CI gates on (plus `task vuln`). Always run it before considering a change done. Lint is strict — `goimports -local github.com/96malhar/mafia-the-game` formatting is enforced.
+
+`task check` also runs the **frontend tests** (`task test:web`) — Node's test runner driving the real `web/*.js` in a jsdom DOM (see `test/web/README.md`). They are dev-only (the shipped app stays no-build-step) and skip gracefully if Node/`node_modules` are absent, so a Go-only run still passes; run `task setup:web` once to enable them.
 
 ## Architecture
 

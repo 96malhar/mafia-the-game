@@ -459,46 +459,59 @@ func TestYakuza_RecruitKilledBeforeConversionGetsNoNotice(t *testing.T) {
 
 // --- detective reads ------------------------------------------------------
 
-// TestYakuza_DetectiveReadsYakuzaAsMafiaWhenNotRecruited: before any recruit
-// the Yakuza reads as mafia.
-func TestYakuza_DetectiveReadsYakuzaAsMafiaWhenNotRecruited(t *testing.T) {
-	g := fixedRosterWithYakuza(t)
-	// Walk past the (no-action) Mafia turn to the detective's act window.
-	walkRestOfTurn(t, g)
-	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	evts := nightAction(t, g, "det", "yak")
-	res, ok := findEvent[game.DetectiveResult](evts)
-	require.True(t, ok)
-	require.True(t, res.IsMafia, "an un-recruited Yakuza reads as mafia")
-}
+// TestYakuza_DetectiveReads covers the detective's read of the Yakuza axis:
+// an un-recruited Yakuza reads mafia; once it has committed its sacrifice
+// (recruited) it reads clean; and the in-flight recruit target reads mafia
+// immediately, the same night, BEFORE the role flip resolves at night end.
+func TestYakuza_DetectiveReads(t *testing.T) {
+	cases := []struct {
+		name          string
+		recruitTarget game.PlayerID // "" => no recruit this turn
+		readTarget    game.PlayerID
+		wantMafia     bool
+		// when set, also assert the read target is still a plain villager in
+		// state — proving the mafia read comes from the in-flight recruit, not
+		// from a role that has already flipped (the flip resolves at night end).
+		wantTargetStillVillager bool
+	}{
+		{
+			name:       "un-recruited Yakuza reads as mafia",
+			readTarget: "yak",
+			wantMafia:  true,
+		},
+		{
+			name:          "recruited Yakuza reads as NOT mafia",
+			recruitTarget: "town1", // committed its self-sacrifice
+			readTarget:    "yak",
+			wantMafia:     false,
+		},
+		{
+			name:                    "recruit target reads as mafia immediately",
+			recruitTarget:           "town1",
+			readTarget:              "town1",
+			wantMafia:               true, // in-flight recruit reads mafia the same night
+			wantTargetStillVillager: true, // ...even though the flip only resolves at night end
+		},
+	}
 
-// TestYakuza_DetectiveReadsYakuzaAsCleanAfterRecruit: once the Yakuza has
-// recruited (committed its sacrifice) it reads as NOT mafia.
-func TestYakuza_DetectiveReadsYakuzaAsCleanAfterRecruit(t *testing.T) {
-	g := fixedRosterWithYakuza(t)
-	recruit(t, g, "yak", "town1") // recruit during the Mafia turn
-	walkRestOfTurn(t, g)          // -> detective act window
-	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	evts := nightAction(t, g, "det", "yak")
-	res, ok := findEvent[game.DetectiveResult](evts)
-	require.True(t, ok)
-	require.False(t, res.IsMafia, "a Yakuza that has recruited reads as NOT mafia")
-}
-
-// TestYakuza_DetectiveReadsRecruitTargetAsMafia: the recruit target reads as
-// mafia immediately, even the same night (before the role flip resolves).
-func TestYakuza_DetectiveReadsRecruitTargetAsMafia(t *testing.T) {
-	g := fixedRosterWithYakuza(t)
-	recruit(t, g, "yak", "town1")
-	walkRestOfTurn(t, g) // -> detective act window
-	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
-	// town1 is still a villager in state (flip resolves at night end), but
-	// the in-flight recruit makes the detective read it as mafia.
-	require.Equal(t, game.RoleVillager, roleByID(g, "town1"))
-	evts := nightAction(t, g, "det", "town1")
-	res, ok := findEvent[game.DetectiveResult](evts)
-	require.True(t, ok)
-	require.True(t, res.IsMafia, "the recruit target reads as mafia immediately")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := fixedRosterWithYakuza(t)
+			if tc.recruitTarget != "" {
+				recruit(t, g, "yak", tc.recruitTarget) // recruit during the Mafia turn
+			}
+			// Walk past the (no-action) Mafia turn to the detective's act window.
+			walkRestOfTurn(t, g)
+			require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+			if tc.wantTargetStillVillager {
+				require.Equal(t, game.RoleVillager, roleByID(g, tc.readTarget))
+			}
+			evts := nightAction(t, g, "det", tc.readTarget)
+			res, ok := findEvent[game.DetectiveResult](evts)
+			require.True(t, ok)
+			require.Equal(t, tc.wantMafia, res.IsMafia)
+		})
+	}
 }
 
 // --- doctor save vs the sacrifice -----------------------------------------

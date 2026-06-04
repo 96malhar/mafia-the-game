@@ -27,29 +27,30 @@ func TestDetective_FactionIsTown(t *testing.T) {
 	require.Equal(t, game.FactionTown, game.RoleDetective.Faction())
 }
 
-func TestDetective_ReadsMafiaAsMafia(t *testing.T) {
-	g := fixedRoster(t)
-	toDetectiveAct(t, g)
-
-	evts := nightAction(t, g, "det", "mafia1")
-	res, ok := findEvent[game.DetectiveResult](evts)
-	require.True(t, ok)
-	require.Equal(t, game.PlayerID("mafia1"), res.Target)
-	require.True(t, res.IsMafia, "a mafioso reads as mafia")
-}
-
-func TestDetective_ReadsTownRolesAsNotMafia(t *testing.T) {
-	// Every town-aligned target reads as NOT mafia, whatever its role.
-	for _, target := range []game.PlayerID{"doc", "town1", "town2"} {
-		t.Run(string(target), func(t *testing.T) {
+// TestDetective_Reads: an investigation reads a target's FACTION (mafia vs
+// not), regardless of which role it is.
+func TestDetective_Reads(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    game.PlayerID
+		wantMafia bool
+		note      string // doubles as the require message, preserving the original WHY verbatim
+	}{
+		{"mafia reads as mafia", "mafia1", true, "a mafioso reads as mafia"},
+		{"doctor reads as not mafia", "doc", false, "a town-aligned target reads as NOT mafia"},
+		{"town1 reads as not mafia", "town1", false, "a town-aligned target reads as NOT mafia"},
+		{"town2 reads as not mafia", "town2", false, "a town-aligned target reads as NOT mafia"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			g := fixedRoster(t)
 			toDetectiveAct(t, g)
 
-			evts := nightAction(t, g, "det", target)
+			evts := nightAction(t, g, "det", tc.target)
 			res, ok := findEvent[game.DetectiveResult](evts)
 			require.True(t, ok)
-			require.Equal(t, target, res.Target)
-			require.False(t, res.IsMafia, "a town-aligned target reads as NOT mafia")
+			require.Equal(t, tc.target, res.Target)
+			require.Equal(t, tc.wantMafia, res.IsMafia, tc.note)
 		})
 	}
 }

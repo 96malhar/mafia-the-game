@@ -17,73 +17,65 @@ func TestDoctor_FactionIsTown(t *testing.T) {
 	require.Equal(t, game.FactionTown, game.RoleDoctor.Faction())
 }
 
-func TestDoctor_SaveCancelsKillOnSameTarget(t *testing.T) {
-	g := fixedRoster(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleMafia:  "town1",
-		game.RoleDoctor: "town1", // protect the mafia's target
-	})
+// TestDoctor_SaveOutcomes covers the doctor's single-night save outcomes: a
+// save cancels a kill on the same target, misses on the wrong one, may protect
+// the doctor themselves, is irrelevant when nothing was attacked, and is always
+// SILENT (no event — survival is the only signal). mafiaTarget == "" means the
+// mafia idles, so no kill is queued.
+func TestDoctor_SaveOutcomes(t *testing.T) {
+	tests := []struct {
+		name         string
+		mafiaTarget  game.PlayerID
+		doctorTarget game.PlayerID
+		wantKilled   bool
+		wantVictim   game.PlayerID // only meaningful when wantKilled
+		note         string        // the load-bearing WHY, preserved per case
+	}{
+		{
+			name: "save cancels kill on same target", mafiaTarget: "town1", doctorTarget: "town1",
+			note: "the save cancels the kill — nobody dies; the protected target survives",
+		},
+		{
+			name: "save on wrong target leaves the kill standing", mafiaTarget: "town1", doctorTarget: "town2",
+			wantKilled: true, wantVictim: "town1",
+			note: "protecting someone other than the mafia's victim doesn't help the victim",
+		},
+		{
+			name: "self-save protects the doctor (legal on any night)", mafiaTarget: "doc", doctorTarget: "doc",
+			note: "the doctor may protect themselves on any night, including night 1; a self-save is legal and cancels the kill",
+		},
+		{
+			name: "save on an un-attacked player is silently irrelevant", mafiaTarget: "", doctorTarget: "town1",
+			note: "protecting a player nobody attacked produces no kill event — the mafia idles, so there is no kill to cancel",
+		},
+		{
+			// Same inputs as the same-target case, kept distinct to pin the
+			// no-save-event invariant explicitly.
+			name: "a save that lands is still silent", mafiaTarget: "town1", doctorTarget: "town1",
+			note: "a save that cancels a kill is still silent: the only emitted night-outcome events are kills, never a save. Survival is the only signal — there is no private confirmation to leak the role",
+		},
+	}
 
-	_, killed := findEvent[game.PlayerKilled](evts)
-	require.False(t, killed, "the save cancels the kill — nobody dies")
-	require.True(t, livingByID(g, "town1"), "the protected target survives")
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := fixedRoster(t)
+			actions := map[game.Role]game.PlayerID{game.RoleDoctor: tc.doctorTarget}
+			if tc.mafiaTarget != "" {
+				actions[game.RoleMafia] = tc.mafiaTarget
+			}
+			evts := playNight(t, g, actions)
 
-func TestDoctor_SaveWrongTargetVictimDies(t *testing.T) {
-	// Protecting someone other than the mafia's victim doesn't help the
-	// victim.
-	g := fixedRoster(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleMafia:  "town1",
-		game.RoleDoctor: "town2",
-	})
-
-	killed, ok := findEvent[game.PlayerKilled](evts)
-	require.True(t, ok, "a save on the wrong player leaves the kill standing")
-	require.Equal(t, game.PlayerID("town1"), killed.PlayerID)
-	require.False(t, livingByID(g, "town1"))
-}
-
-func TestDoctor_SelfSaveProtectsTheDoctor(t *testing.T) {
-	// The doctor may protect themselves on any night, including night 1.
-	g := fixedRoster(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleMafia:  "doc",
-		game.RoleDoctor: "doc", // self-save
-	})
-
-	_, killed := findEvent[game.PlayerKilled](evts)
-	require.False(t, killed, "a self-save is legal and cancels the kill")
-	require.True(t, livingByID(g, "doc"), "the self-saved doctor survives")
-}
-
-func TestDoctor_SaveWithoutKillEmitsNothing(t *testing.T) {
-	// Protecting a player nobody attacked produces no kill event — the
-	// doctor's action is silently irrelevant.
-	g := fixedRoster(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleDoctor: "town1", // mafia idles, so no kill to cancel
-	})
-
-	_, killed := findEvent[game.PlayerKilled](evts)
-	require.False(t, killed, "nobody died")
-	require.True(t, livingByID(g, "town1"))
-}
-
-func TestDoctor_SaveEmitsNoEventEvenWhenItLands(t *testing.T) {
-	// A save that actually cancels a kill is still silent: the only
-	// emitted night-outcome events are kills, never a save. The doctor
-	// (and everyone else) can tell a save happened only by the absence
-	// of a death — there is no private confirmation to leak the role.
-	g := fixedRoster(t)
-	evts := playNight(t, g, map[game.Role]game.PlayerID{
-		game.RoleMafia:  "town1",
-		game.RoleDoctor: "town1",
-	})
-
-	_, killed := findEvent[game.PlayerKilled](evts)
-	require.False(t, killed, "the save cancels the kill")
-	require.True(t, livingByID(g, "town1"), "the protected target survives silently")
+			killed, ok := findEvent[game.PlayerKilled](evts)
+			if tc.wantKilled {
+				require.True(t, ok, tc.note)
+				require.Equal(t, tc.wantVictim, killed.PlayerID)
+				require.False(t, livingByID(g, tc.wantVictim))
+			} else {
+				require.False(t, ok, tc.note)
+				require.True(t, livingByID(g, tc.doctorTarget))
+			}
+		})
+	}
 }
 
 func TestDoctor_ProtectionDoesNotPersistAcrossNights(t *testing.T) {

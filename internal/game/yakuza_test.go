@@ -750,3 +750,190 @@ func advanceToMafiaActIfNeeded(t *testing.T, g *game.Game) {
 	}
 	advanceToMafiaAct(t, g)
 }
+
+// --- recruit interaction edge cases ---------------------------------------
+
+// TestYakuza_RecruitedDoctorCannotSaveVigilanteVictim proves the recruit's
+// power suppression has teeth: a recruited Doctor's turn is phantom, so no
+// save lands and the Vigilante's victim dies. (The recruited-Detective test
+// proves the no-result case; this proves the no-save consequence.)
+func TestYakuza_RecruitedDoctorCannotSaveVigilanteVictim(t *testing.T) {
+	g := fixedRosterWithYakuzaAndVigilante(t)
+	var evts []game.Event
+	evts = append(evts, recruit(t, g, "yak", "doc")...) // recruit the doctor
+	evts = append(evts, walkRestOfTurn(t, g)...)        // mafia ponder -> detective act
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	evts = append(evts, walkRestOfTurn(t, g)...) // detective idle -> vigilante act
+	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
+	evts = append(evts, nightAction(t, g, "vig", "town1")...) // vigilante shoots town1
+	evts = append(evts, walkRestOfTurn(t, g)...)              // vig submit -> doctor turn (phantom)
+	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a recruited doctor's turn is phantom — no save window")
+	evts = append(evts, finishNight(t, g)...)
+
+	require.False(t, livingByID(g, "town1"),
+		"the recruited doctor could not save, so the vigilante's shot lands")
+	require.Equal(t, game.RoleMafia, roleByID(g, "doc"), "the doctor was converted")
+	rec := findAllEvents[game.Recruited](evts)
+	require.Len(t, rec, 1, "the recruited doctor gets exactly one Recruited notice")
+	require.Equal(t, game.PlayerID("doc"), rec[0].PlayerID)
+}
+
+// TestYakuza_DoctorSavesRecruitTargetWhichStillConverts: a doctor save on the
+// recruit target cancels a vigilante shot on them (so they survive) — and the
+// recruit still converts the survivor. The cancelled shot still spends the
+// bullet. Resolution order: resolvePhase (save cancels the shot) runs before
+// resolveRecruit (which converts the still-living target).
+func TestYakuza_DoctorSavesRecruitTargetWhichStillConverts(t *testing.T) {
+	g := fixedRosterWithYakuzaAndVigilante(t)
+	recruit(t, g, "yak", "town1") // recruit town1
+	walkRestOfTurn(t, g)          // -> detective act
+	walkRestOfTurn(t, g)          // -> vigilante act
+	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
+	nightAction(t, g, "vig", "town1") // vigilante shoots town1
+	walkRestOfTurn(t, g)              // -> doctor act
+	require.Equal(t, game.RoleDoctor, g.State().CurrentNightRole())
+	nightAction(t, g, "doc", "town1") // doctor saves town1
+	finishNight(t, g)
+
+	require.True(t, livingByID(g, "town1"), "the doctor saved town1 from the vigilante")
+	require.Equal(t, game.RoleMafia, roleByID(g, "town1"), "the survivor is still converted")
+	require.True(t, g.State().VigilanteShotUsed(), "the cancelled shot still spends the bullet")
+	require.False(t, livingByID(g, "yak"), "the Yakuza sacrificed itself")
+}
+
+// TestYakuza_ConvertActsAsMafiaNextNight: the convert is a functioning
+// mafioso, not just a relabeled survivor — the night after conversion it
+// submits the faction kill, which lands.
+func TestYakuza_ConvertActsAsMafiaNextNight(t *testing.T) {
+	g := fixedRosterWithYakuza(t)
+	recruit(t, g, "yak", "town1") // night 1: recruit town1
+	finishNight(t, g)
+	require.Equal(t, game.RoleMafia, roleByID(g, "town1"), "town1 is now a mafioso")
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	noLynchDay(t, g)
+
+	// Night 2: the convert submits the faction kill.
+	_, err := g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+	evts := nightAction(t, g, "town1", "town2") // the convert kills
+	evts = append(evts, finishNight(t, g)...)
+	killed, ok := findEvent[game.PlayerKilled](evts)
+	require.True(t, ok, "the convert's faction kill lands")
+	require.Equal(t, game.PlayerID("town2"), killed.PlayerID)
+	require.False(t, livingByID(g, "town2"))
+}
+
+// TestYakuza_RecruitCanTripMafiaParityWin: a recruit keeps the mafia count
+// flat while dropping the town by one, so it can be the move that pushes the
+// strict mafia past parity into a win. checkWin runs in resolveDeathsAndMaybeEnd
+// right after the recruit resolves.
+func TestYakuza_RecruitCanTripMafiaParityWin(t *testing.T) {
+	g := fixedRosterWithYakuza(t)
+	// Whittle the town down to parity via two faction kills (det, then doc).
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "det"}) // 2 mafia vs 3 town
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	noLynchDay(t, g)
+	_, err := g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "doc"}) // 2 mafia vs 2 town
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	noLynchDay(t, g)
+	_, err = g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+
+	// The recruit converts town1 and sacrifices the Yakuza: mafia stays at 2
+	// while the town drops to 1 (town2), so the mafia strictly outnumber it.
+	evts := recruit(t, g, "yak", "town1")
+	evts = append(evts, finishNight(t, g)...)
+	end, ok := findEvent[game.GameEnded](evts)
+	require.True(t, ok, "the recruit drops the town below parity -> mafia win")
+	require.Equal(t, game.FactionMafia, end.Winner)
+	require.Equal(t, game.PhaseEnded, g.State().Phase())
+}
+
+// TestYakuza_RecruitsVigilantePreservesBulletAndConverts: recruiting the
+// Vigilante phantoms its turn (no shot), so its one bullet is never spent, and
+// it is converted to RoleMafia (its night turn then phantoms for good, since
+// no living RoleVigilante remains).
+func TestYakuza_RecruitsVigilantePreservesBulletAndConverts(t *testing.T) {
+	g := fixedRosterWithYakuzaAndVigilante(t)
+	var evts []game.Event
+	evts = append(evts, recruit(t, g, "yak", "vig")...) // recruit the vigilante
+	evts = append(evts, walkRestOfTurn(t, g)...)        // -> detective act
+	evts = append(evts, walkRestOfTurn(t, g)...)        // -> vigilante turn (phantom: recruited)
+	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"a recruited vigilante's turn is phantom — no shot window")
+	evts = append(evts, finishNight(t, g)...)
+
+	require.Equal(t, game.RoleMafia, roleByID(g, "vig"), "the vigilante was converted")
+	require.False(t, g.State().VigilanteShotUsed(),
+		"a recruited vigilante never fires — its bullet is preserved")
+	rec := findAllEvents[game.Recruited](evts)
+	require.Len(t, rec, 1)
+	require.Equal(t, game.PlayerID("vig"), rec[0].PlayerID)
+	require.False(t, livingByID(g, "yak"))
+}
+
+// TestYakuza_RecruitRejectedOutsideMafiaActWindow: the recruit is valid ONLY
+// during the Mafia turn's act window against a living player — an unknown/empty
+// target, the wrong turn, and a day phase are all rejected.
+func TestYakuza_RecruitRejectedOutsideMafiaActWindow(t *testing.T) {
+	g := fixedRosterWithYakuza(t)
+	// Unknown / empty target during the mafia act window.
+	_, err := g.Apply(game.Recruit{Actor: "yak", Target: "nobody"})
+	require.ErrorIs(t, err, game.ErrUnknownPlayer)
+	_, err = g.Apply(game.Recruit{Actor: "yak", Target: ""})
+	require.ErrorIs(t, err, game.ErrUnknownPlayer)
+
+	// Wrong turn: walk past the mafia turn to the detective's act window.
+	walkRestOfTurn(t, g)
+	require.Equal(t, game.RoleDetective, g.State().CurrentNightRole())
+	_, err = g.Apply(game.Recruit{Actor: "yak", Target: "town1"})
+	require.ErrorIs(t, err, game.ErrNotYourTurn)
+
+	// Wrong phase: a recruit attempted in the day is rejected.
+	finishNight(t, g)
+	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+	_, err = g.Apply(game.Recruit{Actor: "yak", Target: "town1"})
+	require.ErrorIs(t, err, game.ErrWrongPhase)
+}
+
+// TestYakuza_CannotRecruitDeadTarget: a dead player is not a legal recruit
+// target (requireLivingPlayer rejects it).
+func TestYakuza_CannotRecruitDeadTarget(t *testing.T) {
+	g := fixedRosterWithYakuza(t)
+	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "town2"}) // kill town2
+	require.False(t, livingByID(g, "town2"))
+	noLynchDay(t, g)
+	_, err := g.Apply(game.BeginNight{})
+	require.NoError(t, err)
+	advanceToMafiaAct(t, g)
+	_, err = g.Apply(game.Recruit{Actor: "yak", Target: "town2"}) // town2 is dead
+	require.ErrorIs(t, err, game.ErrPlayerDead)
+}
+
+// TestYakuza_ConsortBlockOnYakuzaHasNoEffect: the Yakuza is faction-immune to
+// the Consort block (and acts earlier, in the Mafia turn), so distracting it
+// neither stops the recruit nor sends it a Blocked notice.
+func TestYakuza_ConsortBlockOnYakuzaHasNoEffect(t *testing.T) {
+	g := fixedRosterWithYakuzaAndConsort(t)
+	var evts []game.Event
+	evts = append(evts, recruit(t, g, "yak", "town1")...) // yakuza recruits in the mafia turn
+	evts = append(evts, walkRestOfTurn(t, g)...)          // -> consort act
+	require.Equal(t, game.RoleConsort, g.State().CurrentNightRole())
+	evts = append(evts, nightAction(t, g, "cons", "yak")...) // consort distracts the Yakuza (no-op)
+	evts = append(evts, finishNight(t, g)...)
+
+	require.Equal(t, game.RoleMafia, roleByID(g, "town1"), "the recruit still converts")
+	require.False(t, livingByID(g, "yak"), "the Yakuza still sacrifices itself")
+	for _, b := range findAllEvents[game.Blocked](evts) {
+		require.NotEqual(t, game.PlayerID("yak"), b.PlayerID,
+			"the Yakuza is faction-immune — no Blocked notice")
+	}
+}

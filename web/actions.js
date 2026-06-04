@@ -237,14 +237,18 @@
               // The past-tense verb comes from the shared ROLE_VERBS table
               // (lowercased mid-sentence); an unknown role falls back to
               // "targeted". Empty until the first role acts; cleared at the
-              // start of each night (see spectatorNightActions).
+              // start of each night (see spectatorNightActions). A self-target
+              // (e.g. a doctor saving themselves) collapses to "… saved
+              // themselves" instead of repeating the name on both sides.
               for (const a of spectatorNightActions) {
                 const verb = (ROLE_VERBS[a.actorRole]?.past ?? "Targeted").toLowerCase();
+                const actorLabel = `${nameOf(a.actor)} (${a.actorRole})`;
+                const objectLabel =
+                  a.actor === a.target
+                    ? "themselves"
+                    : `${nameOf(a.target)} (${a.targetRole})`;
                 extras.appendChild(
-                  noteChip(
-                    `${nameOf(a.actor)} (${a.actorRole}) ${verb} ${nameOf(a.target)} (${a.targetRole})`,
-                    "bg-indigo-800/60",
-                  ),
+                  noteChip(`${actorLabel} ${verb} ${objectLabel}`, "bg-indigo-800/60"),
                 );
               }
               break;

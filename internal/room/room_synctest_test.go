@@ -206,3 +206,102 @@ func TestRoomSynctest_ConsortBlocksDoctor(t *testing.T) {
 		require.Equal(t, wire.ErrCodeNotYourTurn, awaitError(t, doctorSub, time.Minute).Code)
 	})
 }
+
+// TestRoomSynctest_DeadSpectatorReceivesNightActionFeed is the end-to-end
+// proof of the dead-spectator feature: a villager killed on night 1 is, on
+// night 2, delivered the graveyard-only SpectatorNightAction over the real
+// room → projection → broadcast path — while a LIVING villager never
+// receives it. The engine emission + projection visibility are unit-tested
+// in internal/game/spectator_test.go; this asserts the room actually fans
+// the event out to the right (dead) subscriber and withholds it from the
+// living.
+func TestRoomSynctest_DeadSpectatorReceivesNightActionFeed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r, err := newRoom(context.Background(), "SYNC", Config{
+			Logger:     silentLogger(),
+			MafiaCount: 1,
+		})
+		require.NoError(t, err)
+		go r.Run()
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+
+		// 6 players → mafia + detective + doctor + 3 villagers, so one
+		// villager can die night 1 and the game still has ample living
+		// players for night 2 (no premature win).
+		names := []string{"Alice", "Bob", "Cara", "Dan", "Eve", "Finn"}
+		subs := make([]*Subscriber, len(names))
+		acks := make([]OutJoined, len(names))
+		for i, n := range names {
+			subs[i], acks[i] = connect(t, r, n)
+		}
+		host := subs[0]
+		for _, s := range subs {
+			_ = drain(s, time.Second)
+		}
+
+		require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: game.StartGame{}}))
+		cast := discoverNightRoles(t, subs, acks)
+		mafiaSub := cast.subByRole[game.RoleMafia]
+		mafiaID := cast.idByRole[game.RoleMafia]
+		doctorID := cast.idByRole[game.RoleDoctor]
+		require.NotNil(t, mafiaSub)
+
+		// The victim-to-be must NOT be the host (the host drives the
+		// day/night transitions, so keep them alive). A second, distinct
+		// living villager sequences the act windows on night 2 — and proves
+		// the feed is withheld from the living.
+		var deadSub, liveWatcher *Subscriber
+		var deadID game.PlayerID
+		for i, vs := range cast.villagers {
+			if vs == host {
+				continue
+			}
+			switch {
+			case deadSub == nil:
+				deadSub, deadID = vs, cast.villagerIDs[i]
+			case liveWatcher == nil:
+				liveWatcher = vs
+			}
+		}
+		require.NotNil(t, deadSub, "need a non-host villager to kill")
+		require.NotNil(t, liveWatcher, "need a living villager to sequence night 2")
+
+		// --- Night 1: mafia kills the villager; nobody saves. ---
+		require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: game.BeginNight{}}))
+		awaitActWindow(t, liveWatcher) // mafia act window
+		submitNightAction(t, r, mafiaSub, deadID)
+		// Detective + doctor time out; the night resolves itself to day.
+		awaitPhaseChanged(t, liveWatcher, game.PhaseNight, game.PhaseDayDiscussion)
+
+		// Clear all night-1 chatter (incl. the victim's graveyard
+		// RosterRevealed) so only night-2 events remain to assert on.
+		synctest.Wait()
+		for _, s := range subs {
+			_ = drain(s, time.Second)
+		}
+
+		// --- Day 1 → Night 2: no lynch, then the next night opens. ---
+		require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: game.OpenVoting{}}))
+		require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: game.FinalizeVotes{}}))
+		require.NoError(t, r.submit(context.Background(), inCommand{From: host, Cmd: game.BeginNight{}}))
+
+		// Night 2: mafia targets the (living) doctor.
+		awaitActWindow(t, liveWatcher) // night-2 mafia act window
+		submitNightAction(t, r, mafiaSub, doctorID)
+		synctest.Wait()
+
+		// The DEAD villager spectates the feed: actor + target with both
+		// roles, projected only to the graveyard.
+		sa, ok := drainFirstEvent[game.SpectatorNightAction](deadSub, time.Second)
+		require.True(t, ok, "the dead villager must receive the spectator night feed")
+		require.Equal(t, mafiaID, sa.Actor)
+		require.Equal(t, game.RoleMafia, sa.ActorRole)
+		require.Equal(t, doctorID, sa.Target)
+		require.Equal(t, game.RoleDoctor, sa.TargetRole)
+
+		// A LIVING villager must never receive it — the feed would otherwise
+		// leak cross-role night targeting to the table.
+		requireNoEvent[game.SpectatorNightAction](t, liveWatcher, time.Second,
+			"a living player must never receive the spectator night feed")
+	})
+}

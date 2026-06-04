@@ -40,6 +40,7 @@
         iAmBlocked = false;
         dayDiscussionPendingDeaths = [];
         lastNightVictims = [];
+        spectatorNightActions = [];
         narrationsSeen.clear();
         stopNightCountdown();
         // Clear any open notice modal so a refresh doesn't carry

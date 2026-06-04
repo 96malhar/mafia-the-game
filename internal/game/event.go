@@ -269,6 +269,26 @@ func (e NightActionRecorded) Visibility() Visibility {
 	return PrivateTo(e.Actor)
 }
 
+// SpectatorNightAction reveals a submitted night action to the GRAVEYARD
+// (dead players spectating). Unlike NightActionRecorded — which is scoped
+// to the actor's own faction so the LIVING can't see across roles — this
+// is Graveyard-only: it never reaches a living player, so it leaks nothing
+// to the table, while letting the dead (who already hold the full roster
+// via RosterRevealed) watch the night unfold. It carries both
+// participants' roles so the client can render "Actor (role) targeted
+// Target (role)" without depending on roster-delivery timing. Emitted
+// alongside NightActionRecorded for every submitted action — one per role
+// that acts — so the feed builds up across the night in turn order.
+type SpectatorNightAction struct {
+	Actor      PlayerID
+	ActorRole  Role
+	Target     PlayerID
+	TargetRole Role
+}
+
+func (SpectatorNightAction) isEvent()               {}
+func (SpectatorNightAction) Visibility() Visibility { return Graveyard() }
+
 // PlayerKilled is emitted at Night -> Day if the mafia's target was not
 // saved by the doctor. Always public.
 type PlayerKilled struct {

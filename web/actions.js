@@ -229,6 +229,19 @@
             headline.textContent = "Night falls";
             if (!iAmAlive) {
               hint.textContent = "You're out. Watch the night unfold.";
+              // Spectator feed: the dead receive a graveyard-only
+              // SpectatorNightAction for each submitted action, so render
+              // them in turn order as "Name (role) has targeted Name (role)".
+              // Empty until the first role acts; cleared at the start of each
+              // night (see spectatorNightActions).
+              for (const a of spectatorNightActions) {
+                extras.appendChild(
+                  noteChip(
+                    `${nameOf(a.actor)} (${a.actorRole}) has targeted ${nameOf(a.target)} (${a.targetRole})`,
+                    "bg-indigo-800/60",
+                  ),
+                );
+              }
               break;
             }
             // Hint text is driven by the strict turn order: only act

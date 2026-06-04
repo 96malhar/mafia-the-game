@@ -18,11 +18,11 @@ func TestVillager_FactionIsTown(t *testing.T) {
 		"the town faction is not mafia-aligned")
 }
 
+// A villager submitting a night action is rejected with
+// ErrNotYourAction regardless of whose turn it is — they have no
+// power to use. This is distinct from ErrNotYourTurn (wrong time for
+// a role that DOES act).
 func TestVillager_HasNoNightAction(t *testing.T) {
-	// A villager submitting a night action is rejected with
-	// ErrNotYourAction regardless of whose turn it is — they have no
-	// power to use. This is distinct from ErrNotYourTurn (wrong time for
-	// a role that DOES act).
 	g := fixedRoster(t)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
@@ -51,9 +51,9 @@ func TestVillager_NeverAppearsInMafiaRoster(t *testing.T) {
 	}
 }
 
+// The villager's only agency is the daytime vote: they can cast one
+// and can themselves be a vote target.
 func TestVillager_VotesAndCanBeVotedDuringDay(t *testing.T) {
-	// The villager's only agency is the daytime vote: they can cast one
-	// and can themselves be a vote target.
 	g := fixedRoster(t)
 	toDayVote(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:  "town1",
@@ -70,9 +70,9 @@ func TestVillager_VotesAndCanBeVotedDuringDay(t *testing.T) {
 	require.NoError(t, err, "a villager may be voted against")
 }
 
+// Villagers are town: lynching the last mafia hands the town the win
+// while villagers are still alive and counted on the town side.
 func TestVillager_CountsTowardTownWin(t *testing.T) {
-	// Villagers are town: lynching the last mafia hands the town the win
-	// while villagers are still alive and counted on the town side.
 	g := fixedRoster(t)
 	playNight(t, g, nil) // quiet night, everyone idles
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())

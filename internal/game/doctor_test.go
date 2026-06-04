@@ -78,10 +78,10 @@ func TestDoctor_SaveOutcomes(t *testing.T) {
 	}
 }
 
+// A save protects only the night it was cast. Night 1 the doctor
+// saves town1 from the mafia; night 2 the doctor idles and the same
+// target is killed.
 func TestDoctor_ProtectionDoesNotPersistAcrossNights(t *testing.T) {
-	// A save protects only the night it was cast. Night 1 the doctor
-	// saves town1 from the mafia; night 2 the doctor idles and the same
-	// target is killed.
 	g := fixedRoster(t)
 	evts1 := playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:  "town1",

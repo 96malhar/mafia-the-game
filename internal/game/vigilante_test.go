@@ -104,10 +104,10 @@ func TestVigilante_SetVigilanteLockedAfterDeal(t *testing.T) {
 		"the vigilante toggle is locked once roles are dealt")
 }
 
+// Enabling the vigilante deals exactly one RoleVigilante, taking the
+// slot of a villager. The vigilante is town-aligned and so does NOT
+// appear in the mafia roster.
 func TestVigilante_RosterComposition(t *testing.T) {
-	// Enabling the vigilante deals exactly one RoleVigilante, taking the
-	// slot of a villager. The vigilante is town-aligned and so does NOT
-	// appear in the mafia roster.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 6, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
@@ -142,10 +142,10 @@ func TestVigilante_RosterComposition(t *testing.T) {
 	}
 }
 
+// With both optional roles on and the mafia count at its cap, the
+// requested composition leaves no villager slots and would produce a
+// roster shorter than the player count. StartGame must reject it.
 func TestVigilante_StackedOptionalRolesRejectedWhenNoVillagerSlot(t *testing.T) {
-	// With both optional roles on and the mafia count at its cap, the
-	// requested composition leaves no villager slots and would produce a
-	// roster shorter than the player count. StartGame must reject it.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 6, MaxPlayers: 6, MafiaCount: 3, Seed: 0,
@@ -207,13 +207,13 @@ func TestVigilante_DetectiveReadsVigilanteAsNotMafia(t *testing.T) {
 
 // --- one-shot enforcement -------------------------------------------------
 
+// Night 1: the vigilante shoots town1 (bullet spent). Night 2: with
+// the one bullet gone the vigilante has nothing to do, so his turn
+// runs as a phantom — he wakes for cadence/secrecy but the act window
+// is skipped (narrate → ponder), exactly like a dead role. He never
+// gets an act window to shoot from, and a bypassing submission is
+// rejected as "not your turn".
 func TestVigilante_OneShotSecondNightRejected(t *testing.T) {
-	// Night 1: the vigilante shoots town1 (bullet spent). Night 2: with
-	// the one bullet gone the vigilante has nothing to do, so his turn
-	// runs as a phantom — he wakes for cadence/secrecy but the act window
-	// is skipped (narrate → ponder), exactly like a dead role. He never
-	// gets an act window to shoot from, and a bypassing submission is
-	// rejected as "not your turn".
 	g := fixedRosterWithVigilante(t)
 	runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleVigilante: "town1",
@@ -255,10 +255,10 @@ func TestVigilante_CannotSelfTarget(t *testing.T) {
 
 // --- rule 2: mafia precedence ---------------------------------------------
 
+// Rule 2: mafia targets the vigilante, the vigilante targets the
+// mafia. The mafia kill resolves first, so the vigilante dies and his
+// shot never lands — the mafia member survives.
 func TestVigilante_MafiaKillTakesPrecedenceOverVigilante(t *testing.T) {
-	// Rule 2: mafia targets the vigilante, the vigilante targets the
-	// mafia. The mafia kill resolves first, so the vigilante dies and his
-	// shot never lands — the mafia member survives.
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "vig",
@@ -277,11 +277,11 @@ func TestVigilante_MafiaKillTakesPrecedenceOverVigilante(t *testing.T) {
 
 // --- rule 3: doctor saves the vigilante -----------------------------------
 
+// Rule 3: mafia targets the vigilante, the doctor saves the
+// vigilante, the vigilante targets the mafia. The save cancels the
+// mafia kill, so the vigilante lives and his shot lands — the mafia
+// dies (which here ends the game as a town win).
 func TestVigilante_DoctorSavesVigilanteSoShotLands(t *testing.T) {
-	// Rule 3: mafia targets the vigilante, the doctor saves the
-	// vigilante, the vigilante targets the mafia. The save cancels the
-	// mafia kill, so the vigilante lives and his shot lands — the mafia
-	// dies (which here ends the game as a town win).
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "vig",
@@ -304,10 +304,10 @@ func TestVigilante_DoctorSavesVigilanteSoShotLands(t *testing.T) {
 
 // --- rule 4: vigilante's target saved -> wasted bullet --------------------
 
+// Rule 4: the doctor saves the vigilante's target, so the shot does
+// not land — but the bullet is still spent. We verify both: no kill
+// this night, and a second shot the next night is rejected.
 func TestVigilante_TargetSavedWastesBulletButSpendsIt(t *testing.T) {
-	// Rule 4: the doctor saves the vigilante's target, so the shot does
-	// not land — but the bullet is still spent. We verify both: no kill
-	// this night, and a second shot the next night is rejected.
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleDoctor:    "town1",
@@ -360,9 +360,9 @@ func TestVigilante_TargetSavedWastesBulletButSpendsIt(t *testing.T) {
 
 // --- mafia + vigilante hit the same third player --------------------------
 
+// Both the mafia and the vigilante shoot town1. Only one death lands
+// (a single PlayerKilled), not a duplicate.
 func TestVigilante_SameTargetAsMafiaYieldsOneDeath(t *testing.T) {
-	// Both the mafia and the vigilante shoot town1. Only one death lands
-	// (a single PlayerKilled), not a duplicate.
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "town1",
@@ -391,12 +391,12 @@ func TestVigilante_SameTargetAsMafiaYieldsOneDeath(t *testing.T) {
 	require.ErrorIs(t, err, game.ErrNotYourTurn)
 }
 
+// The mafia and the vigilante both shoot town1 and the doctor saves
+// town1. The save cancels both shots silently, so nobody dies and no
+// event is emitted — resolveHit runs twice on the saved target (once
+// per killer) but each is a silent no-op. The vigilante's bullet is
+// still spent.
 func TestVigilante_SameTargetAsMafiaSavedByDoctorSpendsBullet(t *testing.T) {
-	// The mafia and the vigilante both shoot town1 and the doctor saves
-	// town1. The save cancels both shots silently, so nobody dies and no
-	// event is emitted — resolveHit runs twice on the saved target (once
-	// per killer) but each is a silent no-op. The vigilante's bullet is
-	// still spent.
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "town1",
@@ -425,11 +425,11 @@ func TestVigilante_SameTargetAsMafiaSavedByDoctorSpendsBullet(t *testing.T) {
 
 // --- mafia + vigilante hit two different players --------------------------
 
+// The mafia shoots town1 and the vigilante shoots town2 — two
+// distinct, living, un-saved players. resolveNight runs the mafia
+// kill first and the (still-alive) vigilante's shot second, each on
+// its own target, so exactly TWO deaths are recorded.
 func TestVigilante_DifferentTargetsYieldTwoDeaths(t *testing.T) {
-	// The mafia shoots town1 and the vigilante shoots town2 — two
-	// distinct, living, un-saved players. resolveNight runs the mafia
-	// kill first and the (still-alive) vigilante's shot second, each on
-	// its own target, so exactly TWO deaths are recorded.
 	g := fixedRosterWithVigilante(t)
 	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "town1",
@@ -478,10 +478,10 @@ func fixedRosterWithConsortAndVigilante(t *testing.T) *game.Game {
 	})
 }
 
+// Rule 1: the consort blocks the vigilante. His turn is phantom (no
+// act window), so nothing is recorded — no kill lands AND the bullet
+// is preserved, letting him fire on a later night.
 func TestVigilante_BlockedByConsortDoesNotSpendBullet(t *testing.T) {
-	// Rule 1: the consort blocks the vigilante. His turn is phantom (no
-	// act window), so nothing is recorded — no kill lands AND the bullet
-	// is preserved, letting him fire on a later night.
 	g := fixedRosterWithConsortAndVigilante(t)
 
 	// Mafia idles; consort blocks the vigilante.
@@ -518,13 +518,13 @@ func TestVigilante_BlockedByConsortDoesNotSpendBullet(t *testing.T) {
 	require.Equal(t, game.PlayerID("town1"), rec.Target)
 }
 
+// Regression: the vigilante can kill a mafioso at night, so the cabal
+// can reach zero during NIGHT resolution — not only via a lynch. When
+// that happens with a living consort she must be promoted on the night
+// path, exactly like the lynch path, or the takeover silently fails
+// (the RoleMafia turn would go phantom forever and no one inherits the
+// kill). The town must NOT be handed a premature win either.
 func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
-	// Regression: the vigilante can kill a mafioso at night, so the cabal
-	// can reach zero during NIGHT resolution — not only via a lynch. When
-	// that happens with a living consort she must be promoted on the night
-	// path, exactly like the lynch path, or the takeover silently fails
-	// (the RoleMafia turn would go phantom forever and no one inherits the
-	// kill). The town must NOT be handed a premature win either.
 	g := fixedRosterWithConsortAndVigilante(t)
 
 	// Quiet night except the vigilante shoots the lone mafioso.
@@ -587,11 +587,11 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 
 // --- hold fire (NightPass) ------------------------------------------------
 
+// The vigilante may decline to act ("hold fire"). NightPass ends his
+// act window early — advancing straight to ponder, exactly like a fast
+// timeout — WITHOUT recording a shot or spending the bullet, so he can
+// still fire on a later night.
 func TestVigilante_HoldFireEndsTurnWithoutSpendingBullet(t *testing.T) {
-	// The vigilante may decline to act ("hold fire"). NightPass ends his
-	// act window early — advancing straight to ponder, exactly like a fast
-	// timeout — WITHOUT recording a shot or spending the bullet, so he can
-	// still fire on a later night.
 	g := fixedRosterWithVigilante(t)
 	walkRestOfTurn(t, g) // mafia -> detective
 	walkRestOfTurn(t, g) // detective -> vigilante
@@ -638,9 +638,9 @@ func TestVigilante_HoldFireEndsTurnWithoutSpendingBullet(t *testing.T) {
 	require.Equal(t, game.PlayerID("town1"), rec.Target)
 }
 
+// Holding fire is only valid during the vigilante's OWN act window.
+// On another role's turn it's rejected as wrong-time.
 func TestVigilante_HoldFireRejectedWhenNotHisTurn(t *testing.T) {
-	// Holding fire is only valid during the vigilante's OWN act window.
-	// On another role's turn it's rejected as wrong-time.
 	g := fixedRosterWithVigilante(t)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
@@ -649,10 +649,10 @@ func TestVigilante_HoldFireRejectedWhenNotHisTurn(t *testing.T) {
 		"the vigilante cannot hold fire during another role's turn")
 }
 
+// NightPass is opt-in per role (AllowPass). Only the vigilante exposes
+// it today; every other role — including those WITH a night action —
+// rejects it with ErrNotYourAction, even during their own act window.
 func TestNightPass_RejectedForRolesWithoutAllowPass(t *testing.T) {
-	// NightPass is opt-in per role (AllowPass). Only the vigilante exposes
-	// it today; every other role — including those WITH a night action —
-	// rejects it with ErrNotYourAction, even during their own act window.
 	g := fixedRosterWithVigilante(t)
 
 	// Mafia's act window: mafia has a night action but no pass affordance.
@@ -739,10 +739,10 @@ func driveToTwoMafiaParity(t *testing.T) *game.Game {
 	return g
 }
 
+// Exact parity with two (or more) mafia is NOT an instant mafia win:
+// the town may still hold a winning line, so the game plays on rather
+// than short-circuiting. Here the board is 2 mafia vs {doc, loaded vig}.
 func TestWin_TwoMafiaParityDoesNotEnd(t *testing.T) {
-	// Exact parity with two (or more) mafia is NOT an instant mafia win:
-	// the town may still hold a winning line, so the game plays on rather
-	// than short-circuiting. Here the board is 2 mafia vs {doc, loaded vig}.
 	g := driveToTwoMafiaParity(t)
 
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase(),
@@ -752,11 +752,11 @@ func TestWin_TwoMafiaParityDoesNotEnd(t *testing.T) {
 	require.True(t, livingByID(g, "doc") && livingByID(g, "vig"))
 }
 
+// The payoff that justifies playing a two-mafia parity on: from 2 mafia
+// vs {doctor, loaded vigilante} the doctor shields the vigilante from the
+// mafia kill and the vigilante spends his bullet on a mafioso, dropping
+// the mafia below parity. The town then out-votes the lone survivor.
 func TestWin_LoadedVigilanteAndDoctorConvertParityToTownWin(t *testing.T) {
-	// The payoff that justifies playing a two-mafia parity on: from 2 mafia
-	// vs {doctor, loaded vigilante} the doctor shields the vigilante from the
-	// mafia kill and the vigilante spends his bullet on a mafioso, dropping
-	// the mafia below parity. The town then out-votes the lone survivor.
 	g := driveToTwoMafiaParity(t)
 
 	noLynchDay(t, g)

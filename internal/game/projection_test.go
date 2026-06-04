@@ -257,12 +257,12 @@ func TestProjection_VoteSecrecyAndReveal(t *testing.T) {
 	})
 }
 
+// The whole point of the consort's separate faction: she is mafia-
+// aligned for winning but must NOT see mafia coordination, and the
+// mafia must not learn she exists. The mafia roster reveal is the
+// canonical mafia-only event — it must reach the mafia and never the
+// consort.
 func TestProjection_ConsortMafiaMutualIgnorance(t *testing.T) {
-	// The whole point of the consort's separate faction: she is mafia-
-	// aligned for winning but must NOT see mafia coordination, and the
-	// mafia must not learn she exists. The mafia roster reveal is the
-	// canonical mafia-only event — it must reach the mafia and never the
-	// consort.
 	g := fixedRosterWithConsort(t)
 	events := []game.Event{
 		game.MafiaRosterRevealed{Members: []game.PlayerID{"mafia1"}},
@@ -299,9 +299,9 @@ func TestProjection_ConsortMafiaMutualIgnorance(t *testing.T) {
 	})
 }
 
+// The Blocked notice is private to the blocked player; the room must
+// never learn who the consort targeted.
 func TestProjection_BlockedNoticeIsPrivateToTarget(t *testing.T) {
-	// The Blocked notice is private to the blocked player; the room must
-	// never learn who the consort targeted.
 	g := fixedRosterWithConsort(t)
 	events := []game.Event{game.Blocked{PlayerID: "doc"}}
 
@@ -317,9 +317,9 @@ func TestProjection_BlockedNoticeIsPrivateToTarget(t *testing.T) {
 	})
 }
 
+// Promotion is a secret takeover: only the promoted consort learns
+// it. The accompanying roster reveal is mafia-only and now lists her.
 func TestProjection_ConsortPromotedIsPrivateToPromotee(t *testing.T) {
-	// Promotion is a secret takeover: only the promoted consort learns
-	// it. The accompanying roster reveal is mafia-only and now lists her.
 	g := fixedRosterWithConsort(t)
 	events := []game.Event{game.ConsortPromoted{PlayerID: "consort"}}
 
@@ -345,11 +345,11 @@ func TestProjection_UnknownViewerSeesOnlyPublic(t *testing.T) {
 	}
 }
 
+// RosterRevealed is the graveyard's window into the full roster:
+// every DEAD player must see it, while the living — and any unknown
+// viewer — must not. A leak here would hand a still-playing town
+// every secret role at once, so this is a security-critical assertion.
 func TestProjection_RosterRevealedReachesOnlyTheDead(t *testing.T) {
-	// RosterRevealed is the graveyard's window into the full roster:
-	// every DEAD player must see it, while the living — and any unknown
-	// viewer — must not. A leak here would hand a still-playing town
-	// every secret role at once, so this is a security-critical assertion.
 	g := fixedRoster(t)
 	playNight(t, g, map[game.Role]game.PlayerID{game.RoleMafia: "town2"})
 	require.False(t, livingByID(g, "town2"), "town2 should be dead after the night")

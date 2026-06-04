@@ -226,11 +226,11 @@ func toNextNight(t *testing.T, g *game.Game, lynchTarget game.PlayerID) {
 
 // --- Night opening + turn-order plumbing ---------------------------------
 
+// BeginNight should emit PhaseChanged{To: Night} then
+// NightOpeningStarted — NOT a NightNarrationStarted for the
+// mafia. The opening is a one-shot "City, go to sleep." beat
+// before any role's narration.
 func TestNight_OpeningEmittedAfterPhaseChange(t *testing.T) {
-	// BeginNight should emit PhaseChanged{To: Night} then
-	// NightOpeningStarted — NOT a NightNarrationStarted for the
-	// mafia. The opening is a one-shot "City, go to sleep." beat
-	// before any role's narration.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
@@ -257,9 +257,9 @@ func TestNight_OpeningEmittedAfterPhaseChange(t *testing.T) {
 		"currentNightRole must be empty during opening")
 }
 
+// One AdvancePhase during NightSubOpening transitions into the
+// first role's NightSubNarrate.
 func TestNight_OpeningElapsesIntoMafiaNarrate(t *testing.T) {
-	// One AdvancePhase during NightSubOpening transitions into the
-	// first role's NightSubNarrate.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
@@ -290,12 +290,12 @@ func TestNight_FirstActWindowIsMafia(t *testing.T) {
 		"the first act window must be the mafia's")
 }
 
+// Walk one full real turn and verify the exact sub-phase event
+// sequence: narrate → act → ponder → sleep → settle → next role's
+// narrate. We start from fixedRoster (already past mafia's
+// narrate); submit; then step through each remaining sub-phase
+// one AdvancePhase at a time.
 func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
-	// Walk one full real turn and verify the exact sub-phase event
-	// sequence: narrate → act → ponder → sleep → settle → next role's
-	// narrate. We start from fixedRoster (already past mafia's
-	// narrate); submit; then step through each remaining sub-phase
-	// one AdvancePhase at a time.
 	g := fixedRoster(t)
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
@@ -328,12 +328,12 @@ func TestNight_RoleTurnSubPhaseSequence(t *testing.T) {
 	require.Equal(t, game.NightSubNarrate, g.State().CurrentNightSubPhase())
 }
 
+// Reaching AdvancePhase during NightSubAct (the actor never
+// submitted) is the timeout branch. It transitions through
+// NightSubPonder — same as the submit branch — so the audio
+// cadence is uniform across submit/timeout and observers can't
+// distinguish them.
 func TestNight_TimeoutPassesThroughPonderToSleep(t *testing.T) {
-	// Reaching AdvancePhase during NightSubAct (the actor never
-	// submitted) is the timeout branch. It transitions through
-	// NightSubPonder — same as the submit branch — so the audio
-	// cadence is uniform across submit/timeout and observers can't
-	// distinguish them.
 	g := fixedRoster(t)
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 
@@ -403,13 +403,13 @@ func TestNight_SkippedRolesGetTimeoutAdvance(t *testing.T) {
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 }
 
+// Phantom turns exist to hide info leakage: the room must not
+// be able to deduce that a role is dead just from missing audio
+// cues. So on subsequent nights we always queue Mafia →
+// Detective → Doctor; turns whose role has no living holder
+// substitute NightSubPonder (with randomized room-side duration)
+// for the act window — narrate and sleep still fire identically.
 func TestNight_DeadRoleEmitsPhantomTurn(t *testing.T) {
-	// Phantom turns exist to hide info leakage: the room must not
-	// be able to deduce that a role is dead just from missing audio
-	// cues. So on subsequent nights we always queue Mafia →
-	// Detective → Doctor; turns whose role has no living holder
-	// substitute NightSubPonder (with randomized room-side duration)
-	// for the act window — narrate and sleep still fire identically.
 	g := fixedRoster(t)
 
 	playNight(t, g, map[game.Role]game.PlayerID{
@@ -443,10 +443,10 @@ func TestNight_DeadRoleEmitsPhantomTurn(t *testing.T) {
 	require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase())
 }
 
+// NightNarrationStarted and NightPonderStarted carry Phantom=true
+// for phantom turns so the room can size durations (narrate is
+// still a role's narrate; ponder gets the random phantom window).
 func TestNight_PhantomTurnEmitsPhantomFlagOnEvents(t *testing.T) {
-	// NightNarrationStarted and NightPonderStarted carry Phantom=true
-	// for phantom turns so the room can size durations (narrate is
-	// still a role's narrate; ponder gets the random phantom window).
 	g := fixedRoster(t)
 
 	playNight(t, g, map[game.Role]game.PlayerID{
@@ -732,9 +732,9 @@ func TestDayVote_StateTable(t *testing.T) {
 
 // --- Vote resolution (host-driven) ---------------------------------------
 
+// Roster has 5 living players entering the vote (doctor saved the
+// mafia's target), so a strict majority is 3 votes (3*2 > 5).
 func TestVoteResolution(t *testing.T) {
-	// Roster has 5 living players entering the vote (doctor saved the
-	// mafia's target), so a strict majority is 3 votes (3*2 > 5).
 
 	t.Run("strict majority: FinalizeVotes lynches target", func(t *testing.T) {
 		g := intoDayVote(t)

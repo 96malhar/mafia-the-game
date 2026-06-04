@@ -88,8 +88,8 @@ func TestConsort_SetConsortToggle(t *testing.T) {
 	require.False(t, g.State().ConsortEnabled())
 }
 
+// Once StartGame has dealt roles the toggle is locked.
 func TestConsort_SetConsortLockedAfterDeal(t *testing.T) {
-	// Once StartGame has dealt roles the toggle is locked.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 6, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
@@ -104,9 +104,9 @@ func TestConsort_SetConsortLockedAfterDeal(t *testing.T) {
 		"the consort toggle is locked once roles are dealt")
 }
 
+// Enabling the consort deals exactly one RoleConsort, taking the
+// slot of a villager, and the mafia roster lists only true mafia.
 func TestConsort_RosterComposition(t *testing.T) {
-	// Enabling the consort deals exactly one RoleConsort, taking the
-	// slot of a villager, and the mafia roster lists only true mafia.
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 6, MaxPlayers: 20, MafiaCount: 1, Seed: 0,
@@ -170,9 +170,9 @@ func TestConsort_NightTurnOrderIsMafiaConsortDetectiveDoctor(t *testing.T) {
 
 // --- block resolution -----------------------------------------------------
 
+// Mafia kills town1; consort blocks the doctor. The blocked doctor's
+// turn is a phantom (no act window), so the kill lands and town1 dies.
 func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
-	// Mafia kills town1; consort blocks the doctor. The blocked doctor's
-	// turn is a phantom (no act window), so the kill lands and town1 dies.
 	g := fixedRosterWithConsort(t)
 
 	nightAction(t, g, "mafia1", "town1") // kill town1
@@ -200,12 +200,12 @@ func TestConsort_BlockedDoctorCannotSaveAndVictimDies(t *testing.T) {
 	require.False(t, livingByID(g, "town1"), "town1 should be dead (save blocked)")
 }
 
+// The reflexive case: the mafia targets the CONSORT, and the consort
+// — acting earlier in the same night, while still alive (deaths only
+// resolve at night's end) — blocks the very doctor who would save
+// her. Her own block defeats her rescue: the doctor's save of the
+// consort is rejected, so the kill lands and she dies.
 func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testing.T) {
-	// The reflexive case: the mafia targets the CONSORT, and the consort
-	// — acting earlier in the same night, while still alive (deaths only
-	// resolve at night's end) — blocks the very doctor who would save
-	// her. Her own block defeats her rescue: the doctor's save of the
-	// consort is rejected, so the kill lands and she dies.
 	g := fixedRosterWithConsort(t)
 
 	nightAction(t, g, "mafia1", "consort") // mafia targets the consort
@@ -233,9 +233,9 @@ func TestConsort_BlockedDoctorCannotSaveTheConsortVictimAndConsortDies(t *testin
 	require.False(t, livingByID(g, "consort"), "the consort should be dead (her own block voided the save)")
 }
 
+// Control for the block test: with the consort blocking someone else
+// (the detective), the doctor's save of the mafia target succeeds.
 func TestConsort_UnblockedDoctorSaveStillWorks(t *testing.T) {
-	// Control for the block test: with the consort blocking someone else
-	// (the detective), the doctor's save of the mafia target succeeds.
 	g := fixedRosterWithConsort(t)
 	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:   "town1",
@@ -248,11 +248,11 @@ func TestConsort_UnblockedDoctorSaveStillWorks(t *testing.T) {
 	require.True(t, livingByID(g, "town1"), "the protected target survives")
 }
 
+// The blocked town role learns they're blocked just AFTER their own
+// narrate cue, via a private Blocked event. A blocked actor's turn is
+// phantom (narrate -> ponder, no act window), and the notice rides the
+// batch that opens the doctor's cannot-act ponder.
 func TestConsort_BlockNoticeArrivesAfterNarrate(t *testing.T) {
-	// The blocked town role learns they're blocked just AFTER their own
-	// narrate cue, via a private Blocked event. A blocked actor's turn is
-	// phantom (narrate -> ponder, no act window), and the notice rides the
-	// batch that opens the doctor's cannot-act ponder.
 	g := fixedRosterWithConsort(t)
 
 	// Mafia acts; consort blocks the doctor.
@@ -288,11 +288,11 @@ func TestConsort_BlockNoticeArrivesAfterNarrate(t *testing.T) {
 		"the block notice is private to the blocked player; the room must not learn the target")
 }
 
+// A blocked detective's turn is phantom (no act window): he's notified
+// after his narrate, and a client that bypasses the hidden picker and
+// submits is rejected with ErrNotYourTurn (there's no act window), so
+// he never receives a DetectiveResult.
 func TestConsort_BlockedDetectiveCannotAct(t *testing.T) {
-	// A blocked detective's turn is phantom (no act window): he's notified
-	// after his narrate, and a client that bypasses the hidden picker and
-	// submits is rejected with ErrNotYourTurn (there's no act window), so
-	// he never receives a DetectiveResult.
 	g := fixedRosterWithConsort(t)
 
 	nightAction(t, g, "mafia1", "town1")
@@ -316,9 +316,9 @@ func TestConsort_BlockedDetectiveCannotAct(t *testing.T) {
 	require.False(t, hasResult, "a blocked detective learns nothing")
 }
 
+// The consort may target a mafioso, but it's wasted: the kill still
+// lands and no Blocked notice is sent to the mafia.
 func TestConsort_BlockOnMafiaHasNoEffect(t *testing.T) {
-	// The consort may target a mafioso, but it's wasted: the kill still
-	// lands and no Blocked notice is sent to the mafia.
 	g := fixedRosterWithConsort(t)
 	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:   "town1",
@@ -337,12 +337,12 @@ func TestConsort_BlockOnMafiaHasNoEffect(t *testing.T) {
 	}
 }
 
+// A villager has no night turn and no action, so distracting one is a
+// wasted block: the Blocked notice fires only at a night-role holder's
+// turn (a villager is never such a holder), so the villager is NEVER
+// told. A toast here would leak to the villager that they were targeted,
+// so this asserts no Blocked event is produced for them at all.
 func TestConsort_BlockOnVillagerEmitsNoNotice(t *testing.T) {
-	// A villager has no night turn and no action, so distracting one is a
-	// wasted block: the Blocked notice fires only at a night-role holder's
-	// turn (a villager is never such a holder), so the villager is NEVER
-	// told. A toast here would leak to the villager that they were targeted,
-	// so this asserts no Blocked event is produced for them at all.
 	g := fixedRosterWithConsort(t)
 	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:   "town2", // kill an unrelated villager so the night resolves normally
@@ -357,12 +357,12 @@ func TestConsort_BlockOnVillagerEmitsNoNotice(t *testing.T) {
 	}
 }
 
+// A blocked non-mafia actor's turn runs as a phantom (narrate ->
+// ponder, no act window), which is what makes it timing- and
+// audio-indistinguishable from a dead role. Unblocked roles (mafia,
+// the consort herself, an un-targeted town role) still get a real act
+// window.
 func TestConsort_BlockedActorTurnIsPhantom(t *testing.T) {
-	// A blocked non-mafia actor's turn runs as a phantom (narrate ->
-	// ponder, no act window), which is what makes it timing- and
-	// audio-indistinguishable from a dead role. Unblocked roles (mafia,
-	// the consort herself, an un-targeted town role) still get a real act
-	// window.
 	g := fixedRosterWithConsort(t)
 
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
@@ -405,12 +405,12 @@ func TestConsort_DetectiveReadsUnpromotedConsortAsNotMafia(t *testing.T) {
 		"an un-promoted consort reads as NOT mafia (she's FactionConsort)")
 }
 
+// What the detective reads is the consort's FACTION, and promotion
+// rewrites it. Night 1: the detective investigates the un-promoted
+// consort and gets a clean "not mafia". The town then lynches the
+// only original mafia, promoting the living consort to RoleMafia.
+// Night 2: the very same investigation now returns "mafia".
 func TestConsort_DetectiveReadsConsortAsMafiaOnlyAfterPromotion(t *testing.T) {
-	// What the detective reads is the consort's FACTION, and promotion
-	// rewrites it. Night 1: the detective investigates the un-promoted
-	// consort and gets a clean "not mafia". The town then lynches the
-	// only original mafia, promoting the living consort to RoleMafia.
-	// Night 2: the very same investigation now returns "mafia".
 	g := fixedRosterWithConsort(t)
 
 	// Night 1 — detective investigates the consort; everyone else idles.
@@ -509,10 +509,10 @@ func TestConsort_PromotedConsortKeepsPhantomTurn(t *testing.T) {
 
 // --- promotion + win conditions -------------------------------------------
 
+// A quiet night, then the town lynches the only mafia. With the
+// consort still alive she's promoted to RoleMafia (private notice),
+// and the game continues — the town has NOT won.
 func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
-	// A quiet night, then the town lynches the only mafia. With the
-	// consort still alive she's promoted to RoleMafia (private notice),
-	// and the game continues — the town has NOT won.
 	g := fixedRosterWithConsort(t)
 	runConsortNightToDay(t, g, nil) // everyone idle
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
@@ -562,8 +562,8 @@ func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
 	)
 }
 
+// Lynch a villager: the mafia is still alive, so no promotion fires.
 func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
-	// Lynch a villager: the mafia is still alive, so no promotion fires.
 	g := fixedRosterWithConsort(t)
 	runConsortNightToDay(t, g, nil)
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
@@ -575,11 +575,11 @@ func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {
 		"consort stays a consort while a mafia survives")
 }
 
+// The parity win counts ONLY the strict mafia, never a living consort:
+// she has no kill and the town doesn't know her, so 1 mafia + consort
+// does NOT reach parity with 2 town. The mafia must shoot the town down
+// to the strict-mafia count to win.
 func TestConsort_DoesNotCountTowardMafiaParityWin(t *testing.T) {
-	// The parity win counts ONLY the strict mafia, never a living consort:
-	// she has no kill and the town doesn't know her, so 1 mafia + consort
-	// does NOT reach parity with 2 town. The mafia must shoot the town down
-	// to the strict-mafia count to win.
 	g := fixedRosterWithConsort(t) // mafia1, consort, det, doc, town1, town2
 
 	// Night 1: mafia kills town1. Living: mafia1, consort, det, doc, town2

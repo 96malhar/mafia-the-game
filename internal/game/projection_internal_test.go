@@ -26,8 +26,8 @@ func (fakeUnknownAudienceEvent) Visibility() Visibility {
 	return Visibility{Audience: "definitely-not-a-real-audience"}
 }
 
+// State details don't matter for this test — only the audience tag.
 func TestProjection_DefaultsDenyUnknownAudience(t *testing.T) {
-	// State details don't matter for this test — only the audience tag.
 	state := newState()
 	events := []Event{fakeUnknownAudienceEvent{}}
 

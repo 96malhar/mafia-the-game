@@ -139,17 +139,17 @@ func connect(t *testing.T, r *Room, name string) (*Subscriber, OutJoined) {
 
 // --- Join projection includes GameCreated --------------------------------
 
+// Regression: newRoom calls r.g.Apply(CreateGame{...}) at room
+// construction time. The resulting GameCreated event must be
+// appended to r.events so it shows up in the projection sent in
+// OutJoined.Events to the first (and every subsequent) joiner.
+//
+// Without it, the web client has no way to learn the lobby's
+// MinPlayers / MaxPlayers / MafiaCount — which used to be masked
+// by the client hardcoding the same defaults, but breaks the
+// moment the client trusts the server as the single source of
+// truth.
 func TestRoom_FirstJoinerSeesGameCreated(t *testing.T) {
-	// Regression: newRoom calls r.g.Apply(CreateGame{...}) at room
-	// construction time. The resulting GameCreated event must be
-	// appended to r.events so it shows up in the projection sent in
-	// OutJoined.Events to the first (and every subsequent) joiner.
-	//
-	// Without it, the web client has no way to learn the lobby's
-	// MinPlayers / MaxPlayers / MafiaCount — which used to be masked
-	// by the client hardcoding the same defaults, but breaks the
-	// moment the client trusts the server as the single source of
-	// truth.
 	_, r := newTestRoom(t)
 	_, ack := connect(t, r, "Alice")
 
@@ -169,10 +169,10 @@ func TestRoom_FirstJoinerSeesGameCreated(t *testing.T) {
 	require.GreaterOrEqual(t, gc.MafiaCount, 1)
 }
 
+// Same invariant for a non-first joiner — they hit the same
+// projection path, so this is mostly belt-and-braces. If the
+// first joiner stops seeing it, so does everyone else.
 func TestRoom_LateJoinerSeesGameCreated(t *testing.T) {
-	// Same invariant for a non-first joiner — they hit the same
-	// projection path, so this is mostly belt-and-braces. If the
-	// first joiner stops seeing it, so does everyone else.
 	_, r := newTestRoom(t)
 	_, _ = connect(t, r, "Alice")
 	_, ackB := connect(t, r, "Bob")
@@ -189,12 +189,12 @@ func TestRoom_LateJoinerSeesGameCreated(t *testing.T) {
 
 // --- Host visibility -----------------------------------------------------
 
+// When the first player joins, the room sets r.host to their pid
+// and must emit a HostChanged event so every observer (including
+// the host themselves) learns who the host is. Without this, only
+// the host's own OutJoined.IsHost flag carries the info, and
+// other players can't render a Host badge.
 func TestRoom_HostChangedBroadcastOnFirstJoin(t *testing.T) {
-	// When the first player joins, the room sets r.host to their pid
-	// and must emit a HostChanged event so every observer (including
-	// the host themselves) learns who the host is. Without this, only
-	// the host's own OutJoined.IsHost flag carries the info, and
-	// other players can't render a Host badge.
 	_, r := newTestRoom(t)
 	subA, ackA := connect(t, r, "Alice")
 
@@ -213,10 +213,10 @@ func TestRoom_HostChangedBroadcastOnFirstJoin(t *testing.T) {
 		"HostChanged.PlayerID must match the first joiner's pid")
 }
 
+// HostChanged fires exactly once — when the host slot is
+// assigned, which is "first joiner ever". Subsequent joins
+// must NOT emit HostChanged (the host hasn't changed).
 func TestRoom_HostChangedNotReemittedOnSecondJoin(t *testing.T) {
-	// HostChanged fires exactly once — when the host slot is
-	// assigned, which is "first joiner ever". Subsequent joins
-	// must NOT emit HostChanged (the host hasn't changed).
 	_, r := newTestRoom(t)
 	subA, _ := connect(t, r, "Alice")
 	_ = drain(subA, 50*time.Millisecond)
@@ -230,11 +230,11 @@ func TestRoom_HostChangedNotReemittedOnSecondJoin(t *testing.T) {
 		"no HostChanged should fire on a non-first join")
 }
 
+// Bob joins after Alice. Bob's OutJoined.Events replay must
+// include the HostChanged event that fired on Alice's join, so
+// Bob's client can render the Host badge next to Alice without
+// guessing from event order.
 func TestRoom_LateJoinerReplayIncludesHostChanged(t *testing.T) {
-	// Bob joins after Alice. Bob's OutJoined.Events replay must
-	// include the HostChanged event that fired on Alice's join, so
-	// Bob's client can render the Host badge next to Alice without
-	// guessing from event order.
 	_, r := newTestRoom(t)
 	_, ackA := connect(t, r, "Alice")
 	_, ackB := connect(t, r, "Bob")
@@ -555,13 +555,13 @@ func TestRoom_HandleJoinStoresEngineTrimmedName(t *testing.T) {
 
 // --- Error code mapping --------------------------------------------------
 
+// Hand-enumerated so adding a sentinel without listing it here is
+// a test failure, not a silent fallthrough to ErrCodeInternal.
+// We assert both directions of the mapping: every sentinel
+// produces the expected wire code, and conversely
+// TestErrorCodes_Registry below asserts every wire code has a
+// sentinel.
 func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
-	// Hand-enumerated so adding a sentinel without listing it here is
-	// a test failure, not a silent fallthrough to ErrCodeInternal.
-	// We assert both directions of the mapping: every sentinel
-	// produces the expected wire code, and conversely
-	// TestErrorCodes_Registry below asserts every wire code has a
-	// sentinel.
 	cases := []struct {
 		err  error
 		code wire.ErrorCode
@@ -597,21 +597,21 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 	}
 }
 
+// Genuinely unknown errors (e.g. an unwrapped fmt.Errorf from
+// some future code path) must not panic or lose the message;
+// they collapse onto ErrCodeInternal and surface the raw text.
 func TestRoom_ErrorForUnknownErrorFallsBackToInternal(t *testing.T) {
-	// Genuinely unknown errors (e.g. an unwrapped fmt.Errorf from
-	// some future code path) must not panic or lose the message;
-	// they collapse onto ErrCodeInternal and surface the raw text.
 	got := errorFor(io.EOF)
 	require.Equal(t, wire.ErrCodeInternal, got.Code)
 	require.Equal(t, io.EOF.Error(), got.Message)
 }
 
+// Whole-package drift guard: every constant in wire.ErrorCodes
+// must have a matching entry in room.sentinelCodes (and thus a
+// known sentinel that produces it). If this fails, someone
+// added a wire.ErrCode* without wiring it up — fix by extending
+// sentinelCodes (and the corresponding sentinel package).
 func TestErrorCodes_Registry(t *testing.T) {
-	// Whole-package drift guard: every constant in wire.ErrorCodes
-	// must have a matching entry in room.sentinelCodes (and thus a
-	// known sentinel that produces it). If this fails, someone
-	// added a wire.ErrCode* without wiring it up — fix by extending
-	// sentinelCodes (and the corresponding sentinel package).
 	produced := make(map[wire.ErrorCode]bool, len(sentinelCodes))
 	for _, m := range sentinelCodes {
 		produced[m.code] = true
@@ -629,11 +629,11 @@ func TestErrorCodes_Registry(t *testing.T) {
 	}
 }
 
+// The Code is the wire contract; that must not change. The
+// Message is what the player sees and SHOULD be friendlier for
+// the three "this room can't accept you" cases that show up
+// during a join handshake.
 func TestRoom_JoinErrorForRewritesLobbyClosedMessages(t *testing.T) {
-	// The Code is the wire contract; that must not change. The
-	// Message is what the player sees and SHOULD be friendlier for
-	// the three "this room can't accept you" cases that show up
-	// during a join handshake.
 	cases := []struct {
 		name        string
 		err         error
@@ -674,10 +674,10 @@ func TestRoom_JoinErrorForRewritesLobbyClosedMessages(t *testing.T) {
 	}
 }
 
+// joinErrorFor must not touch codes it doesn't recognize. If a
+// new engine sentinel ever fires during a join, we'd rather show
+// the raw text than silently swallow it.
 func TestRoom_JoinErrorForPassesUnrelatedCodesThrough(t *testing.T) {
-	// joinErrorFor must not touch codes it doesn't recognize. If a
-	// new engine sentinel ever fires during a join, we'd rather show
-	// the raw text than silently swallow it.
 	got := joinErrorFor(game.ErrDuplicatePlayer)
 	require.Equal(t, wire.ErrCodeDuplicatePlayer, got.Code)
 	require.Equal(t, game.ErrDuplicatePlayer.Error(), got.Message)
@@ -837,10 +837,10 @@ func TestManager_CreateRoom_AtCapacity(t *testing.T) {
 
 // --- Rejected join/rejoin closes the subscriber channel -------------------
 
+// A failed join (here: duplicate name) must send the error AND
+// close the subscriber's outbound channel, so the transport's
+// write pump unwinds instead of parking on an empty channel.
 func TestRoom_RejectedJoinClosesChannel(t *testing.T) {
-	// A failed join (here: duplicate name) must send the error AND
-	// close the subscriber's outbound channel, so the transport's
-	// write pump unwinds instead of parking on an empty channel.
 	_, r := newTestRoom(t)
 	_, _ = connect(t, r, "alice")
 
@@ -880,10 +880,10 @@ func TestRoom_RejectedRejoinClosesChannel(t *testing.T) {
 
 // --- Host migration -------------------------------------------------------
 
+// When the host's connection drops and doesn't return within the
+// grace window, the room promotes the oldest connected player and
+// broadcasts HostChanged so the game stays progressable.
 func TestRoom_HostMigratesAfterGrace(t *testing.T) {
-	// When the host's connection drops and doesn't return within the
-	// grace window, the room promotes the oldest connected player and
-	// broadcasts HostChanged so the game stays progressable.
 	m := newTestManager(t)
 	r, err := m.CreateRoom(Config{
 		Logger:          silentLogger(),
@@ -925,9 +925,9 @@ func TestRoom_HostMigratesAfterGrace(t *testing.T) {
 	}
 }
 
+// A host tab refresh (leave then rejoin within the grace window)
+// must NOT trigger migration: the host badge stays put.
 func TestRoom_HostRejoinWithinGraceKeepsHost(t *testing.T) {
-	// A host tab refresh (leave then rejoin within the grace window)
-	// must NOT trigger migration: the host badge stays put.
 	m := newTestManager(t)
 	r, err := m.CreateRoom(Config{
 		Logger:          silentLogger(),

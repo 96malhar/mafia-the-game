@@ -137,9 +137,9 @@ func TestDecodeClientMessage_Rejects(t *testing.T) {
 
 // --- Outbound (server -> client) encoding --------------------------------
 
+// A late joiner's ack carries the prior events so the new client
+// can reconstruct existing roster state.
 func TestEncodeOutbound_Joined(t *testing.T) {
-	// A late joiner's ack carries the prior events so the new client
-	// can reconstruct existing roster state.
 	priorEvents := []game.Event{
 		game.PlayerJoined{PlayerID: "p1", Name: "Alice"},
 	}
@@ -205,10 +205,10 @@ func TestEncodeOutbound_Rejoined_IncludesEvents(t *testing.T) {
 	require.Equal(t, wire.EventPhaseChanged, data.Events[2].Type)
 }
 
+// One representative event of each engine kind. If a new event is
+// added to the engine, this test fails until codec.go is updated —
+// the desired forcing function.
 func TestEncodeOutbound_AllEventTypes(t *testing.T) {
-	// One representative event of each engine kind. If a new event is
-	// added to the engine, this test fails until codec.go is updated —
-	// the desired forcing function.
 	all := []game.Event{
 		game.GameCreated{GameID: "g", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1, Seed: 1},
 		game.MafiaCountChanged{From: 1, To: 2},
@@ -258,9 +258,9 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 	}
 }
 
+// The reveal event must carry the full voter→target tally as a
+// string→string object under "tally", plus the day.
 func TestEncodeOutbound_VotesRevealed(t *testing.T) {
-	// The reveal event must carry the full voter→target tally as a
-	// string→string object under "tally", plus the day.
 	ev := game.VotesRevealed{
 		Day:   2,
 		Tally: map[game.PlayerID]game.PlayerID{"p1": "p3", "p2": "p3"},
@@ -285,9 +285,9 @@ func TestEncodeOutbound_VotesRevealed(t *testing.T) {
 	require.Equal(t, map[string]string{"p1": "p3", "p2": "p3"}, data.Tally)
 }
 
+// The graveyard roster must carry the full player→role map as a
+// string→string object under "roles".
 func TestEncodeOutbound_RosterRevealed(t *testing.T) {
-	// The graveyard roster must carry the full player→role map as a
-	// string→string object under "roles".
 	ev := game.RosterRevealed{
 		Roles: map[game.PlayerID]game.Role{"p1": game.RoleMafia, "p2": game.RoleVillager},
 	}
@@ -309,11 +309,11 @@ func TestEncodeOutbound_RosterRevealed(t *testing.T) {
 	require.Equal(t, map[string]string{"p1": "mafia", "p2": "villager"}, data.Roles)
 }
 
+// Producer side uses the typed wire.ErrorCode; wire-format side
+// (serverErrorData.Code) is a plain JSON string. The codec is the
+// only place that bridges the two, so we verify both directions
+// here: typed code in, raw string out.
 func TestEncodeOutbound_Error(t *testing.T) {
-	// Producer side uses the typed wire.ErrorCode; wire-format side
-	// (serverErrorData.Code) is a plain JSON string. The codec is the
-	// only place that bridges the two, so we verify both directions
-	// here: typed code in, raw string out.
 	raw, ok, err := encodeOutbound(room.OutError{Code: wire.ErrCodeBadMessage, Message: "nope"})
 	require.NoError(t, err)
 	require.True(t, ok)

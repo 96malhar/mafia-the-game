@@ -84,11 +84,11 @@ func TestGraveyard_GameEndingBatchEmitsNoRoster(t *testing.T) {
 	require.False(t, ok, "the terminal batch relies on public FinalRoles, not a graveyard roster")
 }
 
+// The consort is the one role that changes after StartGame: when the
+// cabal is wiped she is promoted to mafia. A player who died BEFORE
+// the promotion must still see her CURRENT identity — so the roster
+// is re-revealed to the graveyard after the takeover.
 func TestGraveyard_ConsortPromotionRefreshesDeadRoster(t *testing.T) {
-	// The consort is the one role that changes after StartGame: when the
-	// cabal is wiped she is promoted to mafia. A player who died BEFORE
-	// the promotion must still see her CURRENT identity — so the roster
-	// is re-revealed to the graveyard after the takeover.
 	g := fixedRosterWithConsort(t)
 
 	// Night 1: the mafia kills town2, who joins the graveyard and sees a

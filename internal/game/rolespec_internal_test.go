@@ -13,11 +13,11 @@ import (
 // to that arrangement (e.g. someone re-introducing a hand-listed
 // switch that drifts).
 
+// Every Role const declared in role.go must have an entry in
+// roleSpecs. We hand-enumerate the constants here (the one place
+// it's appropriate) so adding a const without a spec entry is a
+// hard test failure, not a silent "unknown role" at runtime.
 func TestRegistry_RoleConstantsHaveSpecs(t *testing.T) {
-	// Every Role const declared in role.go must have an entry in
-	// roleSpecs. We hand-enumerate the constants here (the one place
-	// it's appropriate) so adding a const without a spec entry is a
-	// hard test failure, not a silent "unknown role" at runtime.
 	roles := []Role{RoleVillager, RoleMafia, RoleDetective, RoleDoctor, RoleConsort, RoleVigilante, RoleYakuza}
 	for _, r := range roles {
 		_, ok := roleSpecs[r]
@@ -25,11 +25,11 @@ func TestRegistry_RoleConstantsHaveSpecs(t *testing.T) {
 	}
 }
 
+// Role.Faction() reads roleSpecs, so this is mostly a tautology
+// today — but the test will catch any future "fast path" in
+// Faction() that hardcodes a value and forgets to update the
+// registry.
 func TestRegistry_FactionMatchesSpec(t *testing.T) {
-	// Role.Faction() reads roleSpecs, so this is mostly a tautology
-	// today — but the test will catch any future "fast path" in
-	// Faction() that hardcodes a value and forgets to update the
-	// registry.
 	for r, spec := range roleSpecs {
 		require.Equal(t, spec.Faction, r.Faction(),
 			"roleSpecs[%q].Faction (%q) disagrees with %q.Faction() (%q)",

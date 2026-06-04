@@ -55,9 +55,9 @@ func TestDetective_Reads(t *testing.T) {
 	}
 }
 
+// The result rides the very batch that records the action (immediate
+// feedback), and it is visible ONLY to the detective.
 func TestDetective_ResultIsImmediateAndPrivate(t *testing.T) {
-	// The result rides the very batch that records the action (immediate
-	// feedback), and it is visible ONLY to the detective.
 	g := fixedRoster(t)
 	toDetectiveAct(t, g)
 
@@ -79,10 +79,10 @@ func TestDetective_CannotInvestigateSelf(t *testing.T) {
 		"the detective cannot investigate themselves")
 }
 
+// The detective has no one-shot limit: they investigate every night.
+// Night 1 reads the mafia (true); after a quiet day, night 2 reads
+// the same mafia again (still true).
 func TestDetective_ReinvestigatesAcrossNights(t *testing.T) {
-	// The detective has no one-shot limit: they investigate every night.
-	// Night 1 reads the mafia (true); after a quiet day, night 2 reads
-	// the same mafia again (still true).
 	g := fixedRoster(t)
 	evts1 := playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleDetective: "mafia1",
@@ -102,9 +102,9 @@ func TestDetective_ReinvestigatesAcrossNights(t *testing.T) {
 	require.True(t, res2.IsMafia)
 }
 
+// Night 1: the mafia kills town1 (unsaved). Night 2: investigating the
+// now-dead town1 is rejected.
 func TestDetective_DeadTargetRejected(t *testing.T) {
-	// Night 1: the mafia kills town1 (unsaved). Night 2: investigating the
-	// now-dead town1 is rejected.
 	g := fixedRoster(t)
 	playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia: "town1",

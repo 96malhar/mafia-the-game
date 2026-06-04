@@ -21,10 +21,10 @@ func TestMafia_FactionIsMafiaAligned(t *testing.T) {
 		"the mafia faction is mafia-aligned for win conditions")
 }
 
+// StartGame emits a single MafiaRosterRevealed that names every
+// mafioso and is scoped to the mafia faction (never public, never
+// to town).
 func TestMafia_RosterRevealedToFactionListsEveryMafia(t *testing.T) {
-	// StartGame emits a single MafiaRosterRevealed that names every
-	// mafioso and is scoped to the mafia faction (never public, never
-	// to town).
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
 		GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2, Seed: 7,
@@ -67,9 +67,9 @@ func TestMafia_UnsavedKillVictimDies(t *testing.T) {
 	require.False(t, livingByID(g, "town1"), "the victim is dead")
 }
 
+// A mafioso targeting another mafioso is rejected — the faction
+// never kills its own.
 func TestMafia_CannotKillFellowMafia(t *testing.T) {
-	// A mafioso targeting another mafioso is rejected — the faction
-	// never kills its own.
 	g := fixedRoster2Mafia(t)
 	require.Equal(t, game.RoleMafia, g.State().CurrentNightRole())
 
@@ -78,11 +78,11 @@ func TestMafia_CannotKillFellowMafia(t *testing.T) {
 		"the mafia cannot target one of their own")
 }
 
+// The kill is a faction-collective action: whichever mafioso submits
+// first decides the target and closes the act window for the whole
+// faction. A second mafioso's submission is rejected as wrong-turn
+// (the window is now in ponder).
 func TestMafia_OneKillPerNightAcrossTheFaction(t *testing.T) {
-	// The kill is a faction-collective action: whichever mafioso submits
-	// first decides the target and closes the act window for the whole
-	// faction. A second mafioso's submission is rejected as wrong-turn
-	// (the window is now in ponder).
 	g := fixedRoster2Mafia(t)
 
 	_, err := g.Apply(game.NightAction{Actor: "mafia1", Target: "town1"})
@@ -93,12 +93,12 @@ func TestMafia_OneKillPerNightAcrossTheFaction(t *testing.T) {
 		"only one mafia kill per night — the second submission is too late")
 }
 
+// 5 players, 2 mafia. The mafia win only once they strictly OUTNUMBER
+// the town (mafia > town) — exact parity (2 vs 2) is not enough on its
+// own, since the town may still hold a winning line, so the game plays
+// on there. Night 1 drops the town 3 -> 2 (parity, no win yet); Night 2
+// drops it to 1, so 2 mafia > 1 town and the mafia win at resolution.
 func TestMafia_OutnumbersTownAndWins(t *testing.T) {
-	// 5 players, 2 mafia. The mafia win only once they strictly OUTNUMBER
-	// the town (mafia > town) — exact parity (2 vs 2) is not enough on its
-	// own, since the town may still hold a winning line, so the game plays
-	// on there. Night 1 drops the town 3 -> 2 (parity, no win yet); Night 2
-	// drops it to 1, so 2 mafia > 1 town and the mafia win at resolution.
 	g := fixedRoster2Mafia(t)
 
 	evts1 := playNight(t, g, map[game.Role]game.PlayerID{
@@ -120,12 +120,12 @@ func TestMafia_OutnumbersTownAndWins(t *testing.T) {
 	require.Equal(t, game.PhaseEnded, g.State().Phase())
 }
 
+// Drive the board down to {mafia1, doctor, villager} — 1 mafia vs 2
+// town — and then hold the deciding vote. The doctor MISREADS the
+// alignment and joins the mafia in voting out the villager: with the
+// villager lynched the board is 1 mafia vs 1 doctor, the 1-vs-1 endgame
+// the lone townsperson can never convert, so the mafia win.
 func TestMafia_LynchingTheVillagerAtThreeWinsItForTheMafia(t *testing.T) {
-	// Drive the board down to {mafia1, doctor, villager} — 1 mafia vs 2
-	// town — and then hold the deciding vote. The doctor MISREADS the
-	// alignment and joins the mafia in voting out the villager: with the
-	// villager lynched the board is 1 mafia vs 1 doctor, the 1-vs-1 endgame
-	// the lone townsperson can never convert, so the mafia win.
 	g := fixedRoster(t) // mafia1, det, doc, town1, town2 (1 mafia)
 
 	// Night 1: the mafia kill the detective (unsaved). -> 1 mafia vs 3 town.
@@ -160,10 +160,10 @@ func TestMafia_LynchingTheVillagerAtThreeWinsItForTheMafia(t *testing.T) {
 	require.Equal(t, game.PhaseEnded, g.State().Phase())
 }
 
+// There is no night action that targets the mafia — the only way a
+// mafioso dies is a daytime lynch. Here the detective and doctor act
+// but neither can remove a mafioso, and the mafia survive the night.
 func TestMafia_CannotBeKilledAtNight(t *testing.T) {
-	// There is no night action that targets the mafia — the only way a
-	// mafioso dies is a daytime lynch. Here the detective and doctor act
-	// but neither can remove a mafioso, and the mafia survive the night.
 	g := fixedRoster(t)
 	playNight(t, g, map[game.Role]game.PlayerID{
 		game.RoleMafia:     "town1",

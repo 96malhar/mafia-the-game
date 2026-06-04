@@ -521,6 +521,22 @@ func TestConsort_PromotedWhenLastMafiaLynched(t *testing.T) {
 
 	require.Equal(t, game.RoleMafia, roleByID(g, "consort"),
 		"the consort now holds RoleMafia")
+
+	// Pin the intra-batch ORDERING of the lynch-resolution pipeline
+	// (resolveDeathsAndMaybeEnd), mirroring the night path in
+	// TestVigilante_KillingLastMafiaAtNightPromotesConsort: the lynch
+	// resolves, THEN the consort is promoted (with her fresh mafia roster),
+	// THEN the graveyard roster refreshes, and only THEN does the day close
+	// back to DayDiscussion. A reorder of this promote-before-reveal /
+	// promote-before-transition sequence would slip past the presence-only
+	// checks above.
+	requireEventOrder(t,
+		orderedEvent{"PlayerLynched", indexOfEvent[game.PlayerLynched](evts)},
+		orderedEvent{"ConsortPromoted", indexOfEvent[game.ConsortPromoted](evts)},
+		orderedEvent{"MafiaRosterRevealed", indexOfEvent[game.MafiaRosterRevealed](evts)},
+		orderedEvent{"RosterRevealed (graveyard)", indexOfEvent[game.RosterRevealed](evts)},
+		orderedEvent{"PhaseChanged→DayDiscussion", indexOfEvent[game.PhaseChanged](evts)},
+	)
 }
 
 func TestConsort_NoPromotionWhenMafiaSurvives(t *testing.T) {

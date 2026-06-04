@@ -539,51 +539,21 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 	require.Equal(t, game.RoleMafia, roleByID(g, "consort"), "the consort inherits RoleMafia")
 
 	// Pin the intra-batch ORDERING of the night-resolution pipeline
-	// (resolveDeathsAndMaybeEnd): the kill must resolve, THEN the consort
-	// is promoted (and her fresh mafia roster issued), THEN the graveyard
+	// (resolveDeathsAndMaybeEnd): the kill resolves, THEN the consort is
+	// promoted (and her fresh mafia roster issued), THEN the graveyard
 	// roster is refreshed so the dead see her new faction, and only THEN
-	// does the phase flip to DayDiscussion — all emitted before any voting
-	// can open. A reorder would silently break the promote-before-reveal /
-	// promote-before-transition invariant the engine relies on, which
-	// presence-only assertions above would not catch.
-	killedAt, promotedAt, mafiaRosterAt, graveyardAt, phaseAt := -1, -1, -1, -1, -1
-	for i, e := range evts {
-		switch ev := e.(type) {
-		case game.PlayerKilled:
-			if killedAt == -1 {
-				killedAt = i
-			}
-		case game.ConsortPromoted:
-			if promotedAt == -1 {
-				promotedAt = i
-			}
-		case game.MafiaRosterRevealed:
-			if mafiaRosterAt == -1 {
-				mafiaRosterAt = i
-			}
-		case game.RosterRevealed:
-			if graveyardAt == -1 {
-				graveyardAt = i
-			}
-		case game.PhaseChanged:
-			if ev.To == game.PhaseDayDiscussion && phaseAt == -1 {
-				phaseAt = i
-			}
-		}
-	}
-	require.NotEqual(t, -1, killedAt, "resolution batch must carry PlayerKilled")
-	require.NotEqual(t, -1, promotedAt, "resolution batch must carry ConsortPromoted")
-	require.NotEqual(t, -1, mafiaRosterAt, "resolution batch must carry MafiaRosterRevealed")
-	require.NotEqual(t, -1, graveyardAt, "resolution batch must carry the graveyard RosterRevealed")
-	require.NotEqual(t, -1, phaseAt, "resolution batch must carry the Night→DayDiscussion PhaseChanged")
-	require.Less(t, killedAt, promotedAt,
-		"the mafioso's death must resolve before the consort is promoted")
-	require.Less(t, promotedAt, mafiaRosterAt,
-		"the refreshed mafia roster rides immediately after the promotion")
-	require.Less(t, mafiaRosterAt, graveyardAt,
-		"the promotion (and its roster) must precede the graveyard refresh so the dead see her as mafia")
-	require.Less(t, graveyardAt, phaseAt,
-		"the DayDiscussion transition is the final beat of the resolution batch — promotion lands before voting can open")
+	// does the phase flip to DayDiscussion — all before any voting can
+	// open. A reorder would silently break the promote-before-reveal /
+	// promote-before-transition invariant that presence-only checks miss.
+	// (The lone PhaseChanged in this batch is the Night→DayDiscussion
+	// transition; g.State().Phase() above pins its destination.)
+	requireEventOrder(t,
+		orderedEvent{"PlayerKilled", indexOfEvent[game.PlayerKilled](evts)},
+		orderedEvent{"ConsortPromoted", indexOfEvent[game.ConsortPromoted](evts)},
+		orderedEvent{"MafiaRosterRevealed", indexOfEvent[game.MafiaRosterRevealed](evts)},
+		orderedEvent{"RosterRevealed (graveyard)", indexOfEvent[game.RosterRevealed](evts)},
+		orderedEvent{"PhaseChanged→DayDiscussion", indexOfEvent[game.PhaseChanged](evts)},
+	)
 
 	// And the takeover is real: next night the promoted consort carries
 	// the faction kill from the RoleMafia act window.

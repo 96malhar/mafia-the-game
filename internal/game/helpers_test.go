@@ -340,3 +340,38 @@ func findAllEvents[T game.Event](events []game.Event) []T {
 	}
 	return out
 }
+
+// indexOfEvent returns the position of the first event of concrete type T
+// in events, or -1 if none is present. Pairs with requireEventOrder to pin
+// the relative emission order of a batch (e.g. a death-resolution batch).
+func indexOfEvent[T game.Event](events []game.Event) int {
+	for i, e := range events {
+		if _, ok := e.(T); ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// orderedEvent pairs a human-readable label with the index returned by
+// indexOfEvent, so requireEventOrder can name the offender on a failure.
+type orderedEvent struct {
+	label string
+	at    int
+}
+
+// requireEventOrder asserts that every listed event is present in its batch
+// (index >= 0) AND that the events appear in exactly the given order
+// (strictly increasing indices). Use it with indexOfEvent to lock down an
+// emission sequence that presence-only checks (findEvent) would miss — e.g.
+// kill → promote → reveal → phase-transition in a resolution batch.
+func requireEventOrder(t *testing.T, events ...orderedEvent) {
+	t.Helper()
+	for _, e := range events {
+		require.NotEqualf(t, -1, e.at, "batch must contain %s", e.label)
+	}
+	for i := 1; i < len(events); i++ {
+		require.Lessf(t, events[i-1].at, events[i].at,
+			"%s must appear before %s", events[i-1].label, events[i].label)
+	}
+}

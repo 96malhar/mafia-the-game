@@ -1,0 +1,12 @@
+{
+  "name": "mafia-the-game-frontend-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only frontend tests (node:test + jsdom). Not part of the served, no-build-step app.",
+  "scripts": {
+    "test": "node --test \"test/web/*.test.mjs\""
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}

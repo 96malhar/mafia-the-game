@@ -42,6 +42,18 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Node + jsdom back the frontend tests that run inside `task ci`
+      # (task check -> task test:web). Without this step test:web skips
+      # itself; with it the frontend suite gates alongside the Go tests.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend test deps
+        run: npm ci
+
       # goimports / golangci-lint / govulncheck — required by the lint
       # and vuln steps inside `task ci`.
       - name: Install dev tools

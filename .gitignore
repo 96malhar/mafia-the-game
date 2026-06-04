@@ -43,3 +43,6 @@ tmp/
 
 # Task runner local cache
 .task/
+
+# Node (frontend dev test deps only — runtime frontend stays no-build)
+node_modules/

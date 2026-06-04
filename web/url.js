@@ -26,6 +26,40 @@
         setStatus(note, "text-amber-400");
       }
 
+      // showUnjoinableRoom pivots the lobby to "create a new room" when a
+      // join attempt against a SPECIFIC room can't ever succeed — the room
+      // doesn't exist, a game is already in progress, the lobby is full, or
+      // the game has ended. Re-attempting the same room would just fail
+      // again, so instead of stranding the visitor on a dead "Join room XYZ"
+      // screen we surface the reason and make "Create new room" the obvious
+      // next step, carrying over the name they already typed (createRoom
+      // reads it from the same #name input). Distinct from recoverToLobby,
+      // which is for transient/rejoin failures where retrying the same room
+      // is the right move.
+      function showUnjoinableRoom(code, reason) {
+        // Same teardown as recoverToLobby: stop any reconnect loop, drop the
+        // banner, and surface the lobby over the in-game view.
+        cancelReconnect();
+        reconnectAttempts = 0;
+        showReconnectingBanner(false);
+        $("game").classList.add("hidden");
+        $("lobby").classList.remove("hidden");
+        // Clear the URL: the room it points at is unjoinable, so a reload
+        // should land on a clean lobby rather than silently re-running the
+        // doomed join. (createRoom will repoint it at the new room's code.)
+        history.replaceState(null, "", "/");
+        // Override applyURLState's framing directly — we don't call it here
+        // because it keys purely off the (now-cleared) URL and would show the
+        // generic "Start a game" copy, dropping the reason. Hide Join (the
+        // target room can't accept us) and surface Create in its place.
+        $("lobby-title").textContent = code ? `Room ${code} unavailable` : "Room unavailable";
+        $("lobby-subtitle").textContent = reason;
+        $("join").classList.add("hidden");
+        $("create").classList.remove("hidden");
+        refreshLobbyButtons();
+        setStatus(code ? `room ${code} unavailable` : "room unavailable", "text-rose-400");
+      }
+
       // tryAutoRejoin runs at page load. If the URL carries a room
       // code AND credStore has matching rejoin credentials, we
       // open a WebSocket immediately and let the server replay the

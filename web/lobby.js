@@ -50,8 +50,11 @@
           try {
             const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`);
             if (res.status === 404) {
-              setStatus(`room ${code} not found`, "text-rose-400");
-              showError(`Room ${code} doesn't exist. Check the code or ask the host for a new invite link.`);
+              // The room in the link doesn't exist (typo'd code, or the
+              // host's room was reaped). Offer to create a fresh one with
+              // the name they already typed rather than leaving them stuck
+              // on a join screen for a room that isn't there.
+              showUnjoinableRoom(code, `Room ${code} doesn't exist. Create a new room with your name, or join another by code.`);
               return;
             }
           } catch {

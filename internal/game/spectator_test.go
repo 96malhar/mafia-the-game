@@ -106,3 +106,53 @@ func TestSpectator_PrivateRoleResultsNotLeakedToTheDead(t *testing.T) {
 			"the detective sees their own investigation result")
 	})
 }
+
+// TestSpectator_ConsortBlockNotLeakedToTheDead is the consort-block analogue:
+// it drives a REAL night where the consort distracts the doctor while the
+// mafia kills a villager. A dead spectator watches the consort's distract via
+// the feed (SpectatorNightAction), but must NOT receive the private Blocked
+// notice that only the distracted doctor learns. Real-flow, so it also
+// exercises that the engine emits Blocked with PrivateTo visibility.
+func TestSpectator_ConsortBlockNotLeakedToTheDead(t *testing.T) {
+	g := fixedRosterWithConsort(t)
+	// The consort distracts the doctor (a real roleblock → Blocked{doc}); the
+	// mafia kills town2. With the doctor blocked, no save lands and town2
+	// dies, giving us a dead spectator.
+	evts := runConsortNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:   "town2",
+		game.RoleConsort: "doc",
+	})
+	require.False(t, livingByID(g, "town2"), "town2 should be dead after the night")
+
+	// Sanity (non-vacuous): the consort genuinely distracted the doctor,
+	// producing both a private Blocked notice and a spectator action.
+	blocked, ok := findEvent[game.Blocked](evts)
+	require.True(t, ok, "the consort actually distracted the doctor this night")
+	require.Equal(t, game.PlayerID("doc"), blocked.PlayerID)
+	sawConsortInBatch := false
+	for _, sa := range findAllEvents[game.SpectatorNightAction](evts) {
+		if sa.ActorRole == game.RoleConsort && sa.Target == "doc" {
+			sawConsortInBatch = true
+		}
+	}
+	require.True(t, sawConsortInBatch, "the consort's distract reached the spectator feed")
+
+	t.Run("a dead spectator sees the consort's distract but not the Blocked notice", func(t *testing.T) {
+		out := game.Project("town2", evts, g.State())
+		sawConsortDistract := false
+		for _, sa := range findAllEvents[game.SpectatorNightAction](out) {
+			if sa.ActorRole == game.RoleConsort && sa.Target == "doc" {
+				sawConsortDistract = true
+			}
+		}
+		require.True(t, sawConsortDistract, "the dead see the consort distract the doctor")
+		require.Empty(t, findAllEvents[game.Blocked](out),
+			"the dead must NOT receive the doctor's private roleblock notice")
+	})
+
+	t.Run("the distracted doctor still receives their own notice", func(t *testing.T) {
+		out := game.Project("doc", evts, g.State())
+		require.NotEmpty(t, findAllEvents[game.Blocked](out),
+			"the doctor sees their own Blocked notice")
+	})
+}

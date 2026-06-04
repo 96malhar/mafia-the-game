@@ -57,16 +57,34 @@
         if (phase === "night" && currentNightRole) {
           banner.classList.remove("hidden");
           const display = capitalize(currentNightRole);
+          // The yakuza acts within the Mafia turn (no turn of its own), so it
+          // is "playing" when the mafia is up. myNightTurnActive() captures
+          // that exception.
           const youArePlayingThisRole =
-            currentNightRole === myRole && !!(me && me.alive);
+            myNightTurnActive() && !!(me && me.alive);
           if (youArePlayingThisRole) {
             const pickPhrase =
               myRole === "consort"
                 ? "Pick someone to distract"
                 : myRole === "vigilante"
                   ? "Pick someone to eliminate"
-                  : "Pick a target";
-            if (iAmBlocked) {
+                  : myRole === "yakuza"
+                    ? "Pick someone to kill, or Recruit them"
+                    : "Pick a target";
+            if (mafiaRecruitTarget) {
+              // A recruit is locked — the faction kills no one tonight. The
+              // recruiting Yakuza sees it as its own action; co-mafia see who
+              // the Yakuza is converting.
+              bannerText.textContent =
+                myRole === "yakuza"
+                  ? `Your turn — ${display}. Recruit locked on ${nameOf(mafiaRecruitTarget)}.`
+                  : `Your turn — ${display}. The Yakuza is recruiting ${nameOf(mafiaRecruitTarget)} — no kill tonight.`;
+            } else if (iAmRecruited) {
+              // The Yakuza recruited us: power suppressed this night.
+              // Checked before iAmBlocked (a recruit overrides a block).
+              bannerText.textContent =
+                `Your turn — ${display}. The Yakuza recruited you — your power is gone tonight.`;
+            } else if (iAmBlocked) {
               // Roleblocked tonight: the server runs this as a phantom
               // turn (no act window), so the notice stands for the whole
               // turn. Checked before the spent-vigilante branch so a
@@ -138,11 +156,14 @@
             //        opens at parity would hand the mafia an instant Night-1
             //        win. Only the Consort is a mafia-aligned optional.)
             const optionalRoles =
-              (consortEnabled ? 1 : 0) + (vigilanteEnabled ? 1 : 0);
-            // Only the Consort is mafia-aligned among the optionals (the
-            // Vigilante is town), so she's the only one that shrinks the town
-            // count in the parity test.
-            const mafiaAlignedOptionals = consortEnabled ? 1 : 0;
+              (consortEnabled ? 1 : 0) +
+              (vigilanteEnabled ? 1 : 0) +
+              (yakuzaEnabled ? 1 : 0);
+            // The Consort and the Yakuza are the mafia-aligned optionals (the
+            // Vigilante is town), so they shrink the town count in the parity
+            // test. Keep in sync with applyStartGame's parity guard.
+            const mafiaAlignedOptionals =
+              (consortEnabled ? 1 : 0) + (yakuzaEnabled ? 1 : 0);
             // Det + Doc + every optional + at least one plain villager.
             const slotCap = total - 3 - optionalRoles;
             // 2*mafia + mafiaAlignedOptionals < total
@@ -192,6 +213,7 @@
               if (mafiaPicker) extras.appendChild(mafiaPicker);
               extras.appendChild(renderConsortToggle());
               extras.appendChild(renderVigilanteToggle());
+              extras.appendChild(renderYakuzaToggle());
             }
 
             if (myIsHost) {
@@ -241,7 +263,11 @@
               // (e.g. a doctor saving themselves) collapses to "… saved
               // themselves" instead of repeating the name on both sides.
               for (const a of spectatorNightActions) {
-                const verb = (ROLE_VERBS[a.actorRole]?.past ?? "Targeted").toLowerCase();
+                // A Yakuza recruit reads "recruited" regardless of the actor's
+                // verb table entry (its kill and recruit share the role tag).
+                const verb = a.recruit
+                  ? "recruited"
+                  : (ROLE_VERBS[a.actorRole]?.past ?? "Targeted").toLowerCase();
                 const actorLabel = `${nameOf(a.actor)} (${a.actorRole})`;
                 const objectLabel =
                   a.actor === a.target
@@ -258,14 +284,32 @@
             // still (eyes closed, in the in-person flow).
             if (!currentNightRole) {
               hint.textContent = "Eyes closed. Waiting for the moderator audio…";
-            } else if (currentNightRole === myRole) {
-              if (myAction) {
+            } else if (myNightTurnActive()) {
+              if (mafiaRecruitTarget) {
+                // A recruit is locked, so the faction kills no one tonight.
+                // The recruiting Yakuza sees it as its own action (and will
+                // sacrifice itself at daybreak); co-mafia see who the Yakuza
+                // is converting. Either way a chip names the target.
+                if (myRole === "yakuza") {
+                  hint.textContent = "Recruit locked. The family kills no one tonight.";
+                } else {
+                  hint.textContent =
+                    "The Yakuza is recruiting — the family kills no one tonight.";
+                }
+                extras.appendChild(noteChip(`Recruit: ${nameOf(mafiaRecruitTarget)}`, "bg-amber-700/60"));
+              } else if (myAction) {
                 hint.textContent = "Submitted. The next role will be summoned shortly.";
                 // Past-tense verb from the shared ROLE_VERBS table (keeps
                 // the chip in lockstep with the row button); unknown roles
                 // fall back to the generic "Targeted".
                 const verb = ROLE_VERBS[myRole]?.past ?? "Targeted";
                 extras.appendChild(noteChip(`${verb}: ${nameOf(myAction)}`, "bg-amber-700/60"));
+              } else if (iAmRecruited) {
+                // The Yakuza recruited us: our turn is phantom and our power
+                // is suppressed tonight (we flip to mafia at daybreak).
+                // Checked before iAmBlocked since a recruit overrides a block.
+                hint.textContent =
+                  "The Yakuza recruited you — your power is gone tonight. Sit tight.";
               } else if (iAmBlocked) {
                 // Roleblocked tonight: the turn is phantom (no act
                 // window), so we show this regardless of sub-phase.
@@ -286,9 +330,10 @@
                 // from firing on the night the shot was actually taken.
                 hint.textContent =
                   "Your bullet is spent. Stay still until the moderator moves on.";
-              } else if (myRole === "mafia" && mafiaKillTarget) {
+              } else if (iAmMafiaFaction() && mafiaKillTarget) {
                 // A co-mafioso locked the kill before us (the first
                 // submission ends the act window for the whole faction).
+                // The Yakuza shares this turn, so it sees the locked kill too.
                 // Show the team's target so we're not left staring at a
                 // dead picker wondering what happened.
                 hint.textContent = "A teammate locked in the kill for the family.";
@@ -313,7 +358,9 @@
                     ? "Pick someone to distract on the Players panel below."
                     : myRole === "vigilante"
                       ? "Pick a target below — or hold your fire to save your bullet."
-                      : "Pick your target on the Players panel below.";
+                      : myRole === "yakuza"
+                        ? "Pick someone to kill — or Recruit them into the family (you'll sacrifice yourself)."
+                        : "Pick your target on the Players panel below.";
                 if (myRole === "vigilante") {
                   // Explicit "decline to act" affordance. Holding fire
                   // keeps the one bullet AND ends the 60s act window early
@@ -607,6 +654,10 @@
 
       function renderVigilanteToggle() {
         return renderOptionalRoleToggle("Vigilante", vigilanteEnabled, "setVigilante");
+      }
+
+      function renderYakuzaToggle() {
+        return renderOptionalRoleToggle("Yakuza", yakuzaEnabled, "setYakuza");
       }
 
       function disabledNote(text) {

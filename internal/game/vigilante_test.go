@@ -373,6 +373,22 @@ func TestVigilante_SameTargetAsMafiaYieldsOneDeath(t *testing.T) {
 	require.Len(t, kills, 1, "two shots at the same target produce exactly one death")
 	require.Equal(t, game.PlayerID("town1"), kills[0].PlayerID)
 	require.False(t, livingByID(g, "town1"))
+
+	// The mafia kill resolves first, so the vigilante's shot lands on an
+	// already-dead target (resolveHit no-ops on the corpse) — but the bullet
+	// is still SPENT. Next night the vigilante's turn is phantom (no act
+	// window) and a bypassing submit is rejected.
+	require.True(t, g.State().VigilanteShotUsed(),
+		"a shot duplicating the mafia's kill still spends the bullet")
+	noLynchDay(t, g)
+	beginNightToMafiaAct(t, g)
+	walkRestOfTurn(t, g) // mafia -> detective
+	walkRestOfTurn(t, g) // detective -> vigilante (now phantom)
+	require.Equal(t, game.RoleVigilante, g.State().CurrentNightRole())
+	require.Equal(t, game.NightSubPonder, g.State().CurrentNightSubPhase(),
+		"the spent bullet leaves no act window on a later night")
+	_, err := g.Apply(game.NightAction{Actor: "vig", Target: "town2"})
+	require.ErrorIs(t, err, game.ErrNotYourTurn)
 }
 
 func TestVigilante_SameTargetAsMafiaSavedByDoctorSpendsBullet(t *testing.T) {
@@ -529,8 +545,9 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 		"promotion stays private — the town must not learn a sleeper took over")
 
 	roster, ok := findEvent[game.MafiaRosterRevealed](evts)
-	require.True(t, ok, "promotion re-issues the mafia roster (now just her)")
-	require.Equal(t, []game.PlayerID{"consort"}, roster.Members)
+	require.True(t, ok, "promotion re-issues the mafia roster (the full cabal)")
+	require.ElementsMatch(t, []game.PlayerID{"mafia1", "consort"}, roster.Members)
+	require.Equal(t, game.PlayerID(""), roster.Yakuza)
 
 	// No premature town win, and the consort now holds RoleMafia.
 	_, ended := findEvent[game.GameEnded](evts)

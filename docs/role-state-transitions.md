@@ -2,7 +2,7 @@
 
 This document describes how each role moves through a night turn, including every branch the engine can take: an action submitted within the timer, an action **not** submitted (timeout), an action **blocked** by the Consort, a one-shot ability that is already **spent**, a **dead** role, and the validation rejections that can occur.
 
-A unifying idea runs through all of this: **any turn whose holder cannot take an effective action is a _phantom_ turn** — it narrates and then goes straight to a ponder, skipping the act window entirely. "Cannot act" covers three cases that the engine treats identically: the role has **no living holder** (dead), a one-shot ability is **spent** (an out-of-bullets Vigilante), or the holder was **roleblocked** by the Consort this night. Because the phantom ponder is a single randomized 5–10s beat, an observer can't tell *which* of those reasons applies — so a block is no longer a timing tell. See `roleTurnIsPhantom` in [`state.go`](../internal/game/state.go).
+A unifying idea runs through all of this: **any turn whose holder cannot take an effective action is a _phantom_ turn** — it narrates and then goes straight to a ponder, skipping the act window entirely. "Cannot act" covers four cases that the engine treats identically: the role has **no living holder** (dead), a one-shot ability is **spent** (an out-of-bullets Vigilante), the holder was **roleblocked** by the Consort this night, or the holder was **recruited** by the Yakuza this night (their power is suppressed the night they are converted). Because the phantom ponder is a single randomized 5–10s beat, an observer can't tell *which* of those reasons applies — so a block (or a recruit) is no longer a timing tell. See `roleTurnIsPhantom` in [`state.go`](../internal/game/state.go).
 
 The engine itself is **timeless** — it only knows sub-phase *order*. All wall-clock durations are owned by the room layer ([`internal/room/config.go`](../internal/room/config.go)); the values quoted here come from the `Default*` constants there. The night state machine lives in [`internal/game/rules_phase.go`](../internal/game/rules_phase.go) and [`internal/game/rules_night.go`](../internal/game/rules_night.go); per-role behaviour lives in [`internal/game/rolespec.go`](../internal/game/rolespec.go).
 
@@ -17,6 +17,7 @@ The engine itself is **timeless** — it only knows sub-phase *order*. All wall-
 - [Doctor](#doctor)
 - [Consort (optional)](#consort-optional)
 - [Vigilante (optional)](#vigilante-optional)
+- [Yakuza (optional)](#yakuza-optional)
 - [Villager](#villager)
 - [Night resolution order](#night-resolution-order)
 
@@ -29,6 +30,8 @@ A night is a fixed **opening** beat followed by one turn per role in the wake qu
 > Mafia → [Consort] → Detective → [Vigilante] → Doctor
 
 `[Consort]` and `[Vigilante]` are **optional** roles (host toggles before the game starts); when enabled they each take a villager slot. The queue is built from the *dealt-time* toggles, not the live roster, so a dead (or spent, or promoted) role's turn still runs — as a **phantom** — to keep the moderator's audio cadence and to avoid leaking who is still alive.
+
+The optional **Yakuza** does **not** add a queue entry: it is a full mafia member that acts *within the Mafia turn* (see [Yakuza](#yakuza-optional)), so the wake order above is unchanged when it is enabled.
 
 The flow:
 
@@ -112,7 +115,7 @@ A separate command, **`NightPass`**, lets a holder end their act window *early* 
 
 - **Faction:** Mafia. **Always first** in the queue and **never phantom** — the game ends the instant living mafia hits zero, so a night never begins without a living mafioso.
 - **Immune to the Consort block.**
-- **Faction-collective:** any living mafioso may submit during the act window; the **first** submission locks the kill target and closes the window for the whole faction.
+- **Faction-collective:** any living **`FactionMafia`** member — a mafioso **or the Yakuza** — may submit during the act window; the **first** submission locks the action and closes the window for the whole faction. (The Yakuza may submit the kill, or instead a one-shot `Recruit`; see [Yakuza](#yakuza-optional).) The turn opens whenever *any* living `FactionMafia` member exists, so it stays real even if only the Yakuza remains.
 
 **Turn transitions:** `narrate → act` (the 60s window always opens, since the mafia is never phantom). `act → ponder` either when a mafioso submits a kill or when the 60s timer expires with no kill that night. Then `ponder → sleep → settle`.
 
@@ -221,6 +224,29 @@ The one-shot flag (`vigilanteShotUsed`) is set during resolution **only if a sho
 
 ---
 
+## Yakuza (optional)
+
+- **Faction:** Mafia. A **full mafia member**: in the roster, counts toward the parity win, and reads as mafia to the detective. The faction's roster reveal carries a `Yakuza` field (`MafiaRosterRevealed.Yakuza`) naming which member is the Yakuza, so co-mafia can tell it apart from a plain mafioso (the client badges it "Yakuza"). The Consort is promoted only once **every** `FactionMafia` member — the mafia *and* the Yakuza — is dead.
+- **No turn of its own.** It acts during the **Mafia turn**: it may submit the ordinary faction kill like any mafioso, **or** a one-shot `Recruit` (a separate command, the client's "Recruit" button). Kill and recruit are **mutually exclusive** — whichever is submitted first closes the act window for the whole faction.
+- **Recruit is a self-sacrifice.** At night resolution the target is converted to full `RoleMafia`, the **Yakuza dies** (unpreventable — the doctor cannot save it), and **no faction kill happens** that night. To the town it looks like an ordinary single night death.
+- **Legal recruit targets:** any living non-`RoleMafia` player, the **Consort included**. Recruiting a mafioso (`ErrNotYourAction`) or oneself (`ErrSelfTarget`) is rejected.
+
+**Recruit also suppresses the target's power this night** (recruit = a roleblock on the target plus a conversion). Because every active role wakes *after* the Mafia turn, the target's own turn becomes a **phantom**:
+
+- An **active-role** target (Consort / Detective / Doctor / Vigilante) is told at their (now phantom) turn via a private `Recruited` event — mirroring the Consort's `Blocked` timing — and their power does not resolve (a recruited Vigilante's bullet is *preserved*, not spent). If the Consort **also** distracted that same role this night, the **recruit takes precedence**: the player sees only the `Recruited` notice at their turn and never a `Blocked` one (the conversion subsumes the distract). Exactly one `Recruited` per convert.
+- A **villager** target has no turn, so the `Recruited` notice is delivered at **night resolution** instead. Either way the role formally flips to `RoleMafia` at resolution (`RoleAssigned`, private), with a re-issued `MafiaRosterRevealed` to the faction.
+
+The re-issued roster (on a recruit, and likewise on a Consort promotion) lists the **full cabal** — every `FactionMafia` member, living *and* dead (`allMafiaFactionIDs`), with the `Yakuza` field set — so a new member (the convert, or a promoted Consort) sees all its predecessors (dead mafia and the dead Yakuza) as well as any living teammates. It stays `FactionOnly(FactionMafia)`, so living town never receives it; and because faction visibility is evaluated at the viewer's *current* faction, a rejoining member replays the same history, keeping the live and reconnected views identical.
+
+**Detective reads** (computed from the in-flight recruit, which is locked during the earlier Mafia turn):
+
+- The Yakuza reads as **mafia** *before* it has recruited this night, and as **NOT mafia** *after* it has recruited (having committed its sacrifice, it "leaves").
+- The Yakuza's **recruit target** reads as **mafia** immediately, even the same night (before the role flip resolves).
+
+**On resolution:** a recruit resolves **after** the kill/save reconciliation (so a vigilante shot on the convert is honored — the convert dies as town, the conversion wasted — and the doctor never gets to save the self-sacrificing Yakuza). If a **Vigilante shoots the Yakuza** on a night it already recruited, the shot **does not land** (the sacrifice is what kills it) **but the bullet is still spent** — exactly like firing at a target the mafia already killed: `resolveHit` no-ops on the corpse, yet the one shot is gone.
+
+---
+
 ## Villager
 
 - **Faction:** Town. **No night action** and **never in the night queue.**
@@ -238,8 +264,9 @@ After the last role's `settle`, `resolveNight` reconciles every scheduled intent
 3. **Resolve** — reconcile the intents into at most one death per target:
    1. The **mafia kill** resolves first; the target dies unless the doctor saved it.
    2. The **vigilante shot** resolves second, and only if the shooter is still alive; a doctor save on its target wastes the shot.
-4. **Reveal** (`nightPhaseReveal`) — info roles (the detective) read the resolved state.
-5. **Spend bullet** — `vigilanteShotUsed` is set if a shot was actually recorded this night.
+4. **Recruit** — a pending Yakuza recruit applies after the kill/save resolution: the target is converted to `RoleMafia` (if still alive), the Yakuza dies (unpreventable), and the roster is re-issued. A villager target's `Recruited` notice is emitted here.
+5. **Reveal** (`nightPhaseReveal`) — info roles (the detective) read the resolved state.
+6. **Spend bullet** — `vigilanteShotUsed` is set if the Vigilante fired this night. A shot fired at a self-sacrificing Yakuza schedules no hit (the sacrifice does the killing) but still marks the bullet **spent**, consistent with a shot wasted on a target the mafia already killed.
 
 **Events emitted during the night (by visibility):**
 
@@ -249,7 +276,10 @@ After the last role's `settle`, `resolveNight` reconciles every scheduled intent
 | `NightActionRecorded` | faction-only **for the mafia**; **private to the actor** for solo roles (detective / doctor / vigilante / consort) | an actor submits within the act window |
 | `DetectiveResult` | private (detective) | at the detective's submit time |
 | `Blocked` | private (blocked actor) | as the blocked actor's cannot-act ponder begins (just after their narrate) |
-| `PlayerKilled` | public | a kill lands during resolution |
+| `RecruitRecorded` | faction-only (mafia) | the Yakuza locks a recruit during the Mafia turn (co-mafia learn no kill is coming) |
+| `Recruited` | private (recruited target) | active role: as their cannot-act ponder begins; villager: at night resolution |
+| `RoleAssigned` | private (convert) | at resolution — the recruit target flips to `RoleMafia` |
+| `PlayerKilled` | public | a kill (or a Yakuza self-sacrifice) lands during resolution |
 | `PhaseChanged` | public | night resolves into Day Discussion |
 
 > `NightActionRecorded` is scoped to `FactionMafia` only for the mafia (co-mafia must see the locked kill to coordinate). Solo town/consort roles share a faction with non-actors, so scoping their ack to the faction would leak the hidden role — they get a private self-ack instead.

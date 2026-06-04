@@ -38,6 +38,15 @@
       // Lets the mafia see their teammates in the UI at all times.
       let mafiaPeers = new Set();
 
+      // yakuzaId is the PlayerID of the faction's Yakuza, learned from the
+      // mafiaRoster event's "yakuza" field (only the mafia faction ever
+      // receives it). Lets the mafia (and the Yakuza itself) badge that one
+      // teammate "Yakuza" instead of the generic "Mafia". Null until the
+      // roster names a Yakuza; persists for the rest of the game (it is not
+      // cleared by the re-issued rosters that omit the field), so the Yakuza
+      // stays distinctly badged even after it sacrifices itself.
+      let yakuzaId = null;
+
       // hostId is the PlayerID of the room's host, as announced by
       // the server's HostChanged event. The server is the single
       // source of truth — myIsHost is derived (hostId === myId) but
@@ -68,6 +77,29 @@
         return p ? p.name : id;
       };
 
+      // myNightTurnActive reports whether it is currently the local player's
+      // turn to submit a night action. The base case is currentNightRole ===
+      // myRole; the Yakuza is the exception — it has no turn of its own and
+      // acts during the MAFIA turn, so its window is open when the mafia is
+      // up. Mirrors the engine's isActorsTurn. Both render.js (button gating)
+      // and actions.js (hint text) call this so they can't drift.
+      function myNightTurnActive() {
+        return (
+          currentNightRole === myRole ||
+          (currentNightRole === "mafia" && myRole === "yakuza")
+        );
+      }
+
+      // iAmMafiaFaction reports whether the LOCAL player shares the mafia
+      // faction's collective views (the locked kill target, the recruit
+      // target, the fellow-mafia "no target" rule). The Yakuza has no turn of
+      // its own — it acts within the Mafia turn and is a full faction member —
+      // so the predicate is "mafia OR yakuza", not just "mafia". Centralized
+      // so a future mafia-aligned acting role is a one-line change.
+      function iAmMafiaFaction() {
+        return myRole === "mafia" || myRole === "yakuza";
+      }
+
       // ROLE_VERBS is the single source of truth for each acting role's
       // action verb in its three on-screen forms: the imperative button
       // label (base), the locked-in button label (gerund), and the
@@ -86,6 +118,10 @@
         detective: { base: "Investigate", gerund: "Investigating", past: "Investigated" },
         vigilante: { base: "Eliminate",   gerund: "Eliminating",   past: "Eliminated" },
         doctor:    { base: "Save",        gerund: "Saving",        past: "Saved" },
+        // The Yakuza's PRIMARY action is the faction kill (it acts during the
+        // Mafia turn). Its recruit is a separate "Recruit" button with its own
+        // fixed copy at the call site, so it isn't a verb-table entry.
+        yakuza:    { base: "Kill",        gerund: "Killing",       past: "Killed" },
       };
 
       // Per-phase state. All of these are reset on phaseChanged so a
@@ -160,6 +196,11 @@
       // (replayed on join), defaulting to false until the first event.
       let vigilanteEnabled = false;
 
+      // yakuzaEnabled mirrors the engine's optional-Yakuza toggle for the
+      // upcoming game. Event-sourced from yakuzaChanged (replayed on join),
+      // defaulting to false until the first event.
+      let yakuzaEnabled = false;
+
       // vigilanteFired tracks whether the LOCAL vigilante has already
       // spent his single bullet (set when our own nightActionRecorded
       // arrives). Used to hide the target picker on subsequent nights —
@@ -200,6 +241,21 @@
       // start of our own act window. It suppresses the target picker for
       // the turn and is cleared at the start of each night.
       let iAmBlocked = false;
+      // iAmRecruited is set true when the server tells us (privately) that
+      // the Yakuza recruited us into the mafia — delivered at the start of
+      // our (now phantom) turn for an active role. Like iAmBlocked it
+      // suppresses the target picker for the turn (our original power is
+      // gone), and is cleared at the start of each night/turn.
+      let iAmRecruited = false;
+      // mafiaRecruitTarget is the faction's locked recruit target for THIS
+      // night, set from the faction-scoped recruitRecorded event on EVERY
+      // living mafia member (the recruiting Yakuza AND co-mafia) — the recruit
+      // analogue of mafiaKillTarget. It drives the recruiting Yakuza's
+      // "Recruited: X" confirmation, a co-mafioso's "the Yakuza is recruiting
+      // X — no kill tonight" notice, and a "Recruit" row badge for the whole
+      // faction. Null until a recruit is locked; reset every night. Town never
+      // receives recruitRecorded, so it stays null for them.
+      let mafiaRecruitTarget = null;
       // currentNightSubPhase mirrors the engine's NightSubPhase value.
       // Drives the audio cue selection (narrate/sleep speak; act/ponder/
       // settle/opening are silent or already-spoken) and the visibility
@@ -452,6 +508,21 @@
           "The mafia have been wiped out — you are now the Mafia. You'll choose the kill from the next night on.",
           MODAL_ROSE,
           "You've been promoted"
+        );
+      }
+
+      // showRecruitedToast tells a player the Yakuza recruited them into the
+      // mafia. Like the promotion announcement (and unlike the transient
+      // Distracted notice) it does NOT auto-dismiss: a recruit is a permanent
+      // role change, so the convert must tap "Got it" to acknowledge it. This
+      // also keeps the two delivery paths consistent — an active role learns
+      // at their (suppressed) turn, a villager at resolution (no turn, so no
+      // sleep cue would ever auto-clear it anyway).
+      function showRecruitedToast() {
+        showModalCard(
+          "The Yakuza recruited you — you are now the Mafia. Your old power is gone; you'll act with the family from the next night on.",
+          MODAL_ROSE,
+          "You've been recruited"
         );
       }
 

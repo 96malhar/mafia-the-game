@@ -40,6 +40,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.VigilanteChanged:
 		tag = wire.EventVigilanteChanged
 		data = kv{"enabled": v.Enabled}
+	case game.YakuzaChanged:
+		tag = wire.EventYakuzaChanged
+		data = kv{"enabled": v.Enabled}
 	case game.PlayerJoined:
 		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
@@ -54,10 +57,16 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 		data = kv{"playerId": string(v.PlayerID), "role": string(v.Role)}
 	case game.MafiaRosterRevealed:
 		tag = wire.EventMafiaRoster
-		data = kv{"members": playerIDsToStrings(v.Members)}
+		data = kv{"members": playerIDsToStrings(v.Members), "yakuza": string(v.Yakuza)}
 	case game.Blocked:
 		tag = wire.EventBlocked
 		data = kv{"playerId": string(v.PlayerID)}
+	case game.Recruited:
+		tag = wire.EventRecruited
+		data = kv{"playerId": string(v.PlayerID)}
+	case game.RecruitRecorded:
+		tag = wire.EventRecruitRecorded
+		data = kv{"yakuza": string(v.Yakuza), "target": string(v.Target)}
 	case game.ConsortPromoted:
 		tag = wire.EventConsortPromoted
 		data = kv{"playerId": string(v.PlayerID)}
@@ -110,6 +119,7 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 		data = kv{
 			"actor": string(v.Actor), "actorRole": string(v.ActorRole),
 			"target": string(v.Target), "targetRole": string(v.TargetRole),
+			"recruit": v.Recruit,
 		}
 	case game.PlayerKilled:
 		tag = wire.EventPlayerKilled
@@ -162,9 +172,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 	switch m := msg.(type) {
 	case room.OutJoined:
-		evs, errs := encodeEventsBatch(m.Events)
-		if len(errs) > 0 {
-			return nil, true, errs[0]
+		evs, err := encodeEventsBatch(m.Events)
+		if err != nil {
+			return nil, true, err
 		}
 		raw, err := marshalEnvelope(string(serverMsgJoined), serverJoinedData{
 			PlayerID: string(m.PlayerID),
@@ -177,9 +187,9 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 		return raw, true, err
 
 	case room.OutRejoined:
-		evs, errs := encodeEventsBatch(m.Events)
-		if len(errs) > 0 {
-			return nil, true, errs[0]
+		evs, err := encodeEventsBatch(m.Events)
+		if err != nil {
+			return nil, true, err
 		}
 		raw, err := marshalEnvelope(string(serverMsgRejoined), serverRejoinedData{
 			PlayerID: string(m.PlayerID),
@@ -254,6 +264,10 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		return decodePayload[clientSetConsortData](tag, env.Data)
 	case clientMsgSetVigilante:
 		return decodePayload[clientSetVigilanteData](tag, env.Data)
+	case clientMsgSetYakuza:
+		return decodePayload[clientSetYakuzaData](tag, env.Data)
+	case clientMsgRecruit:
+		return decodePayload[clientRecruitData](tag, env.Data)
 
 	// Payload-less commands: identity/timing fields are filled in
 	// server-side, so the data block (if any) is ignored. NightPass
@@ -322,6 +336,12 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgSetVigilante:
 		d := data.(clientSetVigilanteData)
 		return game.SetVigilante{Enabled: d.Enabled}, true
+	case clientMsgSetYakuza:
+		d := data.(clientSetYakuzaData)
+		return game.SetYakuza{Enabled: d.Enabled}, true
+	case clientMsgRecruit:
+		d := data.(clientRecruitData)
+		return game.Recruit{Target: game.PlayerID(d.Target)}, true
 	case clientMsgStartGame:
 		return game.StartGame{}, true
 	case clientMsgBeginNight:
@@ -365,18 +385,19 @@ func stringKeyValMap[K ~string, V ~string](m map[K]V) map[string]string {
 	return out
 }
 
-// encodeEventsBatch is used by serverRejoinedData payload assembly.
-// Errors are logged and the offending event is omitted, not fatal.
-func encodeEventsBatch(events []game.Event) ([]eventEnvelope, []error) {
+// encodeEventsBatch encodes the event backlog carried by the join/rejoin
+// acks (serverJoinedData and serverRejoinedData). The first encode error
+// aborts the whole frame: a join/rejoin payload with a partially encoded
+// backlog would leave the client with an inconsistent view, so we return
+// no events and let the caller fail the frame rather than silently drop one.
+func encodeEventsBatch(events []game.Event) ([]eventEnvelope, error) {
 	out := make([]eventEnvelope, 0, len(events))
-	var errs []error
 	for _, e := range events {
 		env, err := encodeEvent(e)
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return nil, err
 		}
 		out = append(out, env)
 	}
-	return out, errs
+	return out, nil
 }

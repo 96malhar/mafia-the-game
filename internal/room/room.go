@@ -592,7 +592,8 @@ func isHostOnly(cmd game.Command) bool {
 		game.FinalizeVotes,
 		game.SetMafiaCount,
 		game.SetConsort,
-		game.SetVigilante:
+		game.SetVigilante,
+		game.SetYakuza:
 		return true
 	}
 	return false
@@ -614,6 +615,9 @@ func rewriteActor(cmd game.Command, pid game.PlayerID) game.Command {
 		c.Actor = pid
 		return c
 	case game.NightPass:
+		c.Actor = pid
+		return c
+	case game.Recruit:
 		c.Actor = pid
 		return c
 	case game.DayVote:

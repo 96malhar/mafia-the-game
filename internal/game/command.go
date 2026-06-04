@@ -78,6 +78,19 @@ type SetVigilante struct {
 
 func (SetVigilante) isCommand() {}
 
+// SetYakuza toggles the optional Yakuza role for the upcoming game. Valid
+// only in PhaseLobby (before roles are dealt). Setting it to its current
+// value is a no-op (ErrNoChange). When enabled, StartGame deals exactly one
+// RoleYakuza, taking the slot of a villager — so the same 1 ≤ mafia ≤
+// playerCount-3 envelope still applies, and because the Yakuza is mafia-
+// aligned it counts toward the StartGame parity guard like a mafioso.
+// Host-only at the transport layer.
+type SetYakuza struct {
+	Enabled bool
+}
+
+func (SetYakuza) isCommand() {}
+
 // AddPlayer joins a player to the lobby. Only valid in PhaseLobby.
 type AddPlayer struct {
 	PlayerID PlayerID
@@ -183,6 +196,25 @@ type NightPass struct {
 }
 
 func (NightPass) isCommand() {}
+
+// Recruit is the Yakuza's one-shot conversion, submitted during the Mafia
+// turn's act window as an alternative to the faction kill. Target is the
+// player to recruit into the mafia; Actor is filled in server-side from the
+// authenticated connection (clients never set it), like NightAction.
+//
+// On success the act window closes (so the faction cannot also kill this
+// night). At night resolution: Target is converted to full RoleMafia, the
+// Yakuza dies (a self-sacrifice the doctor cannot prevent), and the Target's
+// own night power is suppressed for the night. Only a living RoleYakuza may
+// issue it, only during the Mafia turn's act sub-phase, and only against a
+// living non-RoleMafia player (the Consort included). Any other actor,
+// phase, or target is rejected.
+type Recruit struct {
+	Actor  PlayerID
+	Target PlayerID
+}
+
+func (Recruit) isCommand() {}
 
 // DayVote is a public vote during PhaseDayVote. Votes are MUTABLE — a
 // player may change or retract their vote any number of times until the

@@ -38,18 +38,3 @@ const (
 	// further commands (except inspection) are accepted.
 	PhaseEnded Phase = "ended"
 )
-
-// Valid reports whether p is a known phase.
-func (p Phase) Valid() bool {
-	switch p {
-	case PhaseLobby, PhaseNight, PhaseDayDiscussion, PhaseDayVote, PhaseEnded:
-		return true
-	}
-	return false
-}
-
-// IsDay reports whether p is one of the day sub-phases. Useful for rules
-// that apply to "the day" without caring which half.
-func (p Phase) IsDay() bool {
-	return p == PhaseDayDiscussion || p == PhaseDayVote
-}

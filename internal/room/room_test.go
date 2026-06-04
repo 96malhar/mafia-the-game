@@ -1027,3 +1027,31 @@ func TestRoom_HostSetVigilanteBroadcastsVigilanteChanged(t *testing.T) {
 		require.True(t, vc.Enabled, "every subscriber should see VigilanteChanged{Enabled:true}")
 	}
 }
+
+// --- SetYakuza host gating -----------------------------------------------
+
+func TestRoom_SetYakuzaIsClassifiedHostOnly(t *testing.T) {
+	// Unit guard: the yakuza toggle must be on the host-only list so a
+	// non-host can't reconfigure the roster.
+	require.True(t, isHostOnly(game.SetYakuza{Enabled: true}),
+		"SetYakuza must be host-only")
+}
+
+func TestRoom_HostSetYakuzaBroadcastsYakuzaChanged(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")
+	other, _ := connect(t, r, "Player2")
+	_ = drain(host, 50*time.Millisecond)
+	_ = drain(other, 50*time.Millisecond)
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: host, Cmd: game.SetYakuza{Enabled: true},
+	}))
+
+	// Both the host and the other player receive the public toggle.
+	for _, sub := range []*Subscriber{host, other} {
+		yc, found := drainFirstEvent[game.YakuzaChanged](sub, 200*time.Millisecond)
+		require.True(t, found, "every subscriber should see a YakuzaChanged")
+		require.True(t, yc.Enabled, "every subscriber should see YakuzaChanged{Enabled:true}")
+	}
+}

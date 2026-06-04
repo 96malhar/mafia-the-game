@@ -80,6 +80,7 @@ const (
 	EventNightSleepStarted     = "nightSleepStarted"
 	EventNightSettleStarted    = "nightSettleStarted"
 	EventNightActionRecorded   = "nightActionRecorded"
+	EventSpectatorNightAction  = "spectatorNightAction"
 	EventPlayerKilled          = "playerKilled"
 	EventDetectiveResult       = "detectiveResult"
 	EventVoteCast              = "voteCast"

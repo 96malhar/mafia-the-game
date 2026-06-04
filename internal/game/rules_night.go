@@ -110,6 +110,16 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 			Target:  c.Target,
 			Faction: actor.role.Faction(),
 		},
+		// Mirror the action to the graveyard so dead spectators can watch
+		// the night unfold. Graveyard-scoped, so it never reaches a living
+		// player; it carries both roles since the dead already know the
+		// full roster anyway. See SpectatorNightAction.
+		SpectatorNightAction{
+			Actor:      actor.id,
+			ActorRole:  actor.role,
+			Target:     target.id,
+			TargetRole: target.role,
+		},
 	}
 
 	// Detective gets immediate private feedback ("X IS / is NOT a

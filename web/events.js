@@ -240,6 +240,9 @@
               // lastNightVictims stays empty and the chip stays
               // hidden, which is correct.
               lastNightVictims = [];
+              // A fresh night starts the spectator feed over: the dead
+              // watch THIS night's actions, not last night's.
+              spectatorNightActions = [];
             }
             renderAll();
 
@@ -415,6 +418,22 @@
               renderActionPanel();
               renderPlayers();
             }
+            break;
+
+          case "spectatorNightAction":
+            // Graveyard-only: the server projects this exclusively to DEAD
+            // players, so simply receiving it means we're spectating. Append
+            // to the live feed (in turn order) and repaint the night banner.
+            // Applied on EVERY path including replay, so a dead player who
+            // refreshes mid-night rebuilds the whole feed; the feed is
+            // cleared at the start of each night (see phaseChanged → night).
+            spectatorNightActions.push({
+              actor: env.data.actor,
+              actorRole: env.data.actorRole,
+              target: env.data.target,
+              targetRole: env.data.targetRole,
+            });
+            renderActionPanel();
             break;
 
           case "detectiveResult": {

@@ -229,6 +229,24 @@
             headline.textContent = "Night falls";
             if (!iAmAlive) {
               hint.textContent = "You're out. Watch the night unfold.";
+              // Spectator feed: the dead receive a graveyard-only
+              // SpectatorNightAction for each submitted action, so render
+              // them in turn order with the actor's ROLE-SPECIFIC verb —
+              // "Bob (mafia) killed Diana (villager)", "Hannah (consort)
+              // distracted Fiona (detective)", "George (doctor) saved …".
+              // The past-tense verb comes from the shared ROLE_VERBS table
+              // (lowercased mid-sentence); an unknown role falls back to
+              // "targeted". Empty until the first role acts; cleared at the
+              // start of each night (see spectatorNightActions).
+              for (const a of spectatorNightActions) {
+                const verb = (ROLE_VERBS[a.actorRole]?.past ?? "Targeted").toLowerCase();
+                extras.appendChild(
+                  noteChip(
+                    `${nameOf(a.actor)} (${a.actorRole}) ${verb} ${nameOf(a.target)} (${a.targetRole})`,
+                    "bg-indigo-800/60",
+                  ),
+                );
+              }
               break;
             }
             // Hint text is driven by the strict turn order: only act

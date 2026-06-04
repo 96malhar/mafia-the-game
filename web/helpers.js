@@ -270,6 +270,14 @@
       // has to give.
       let lastNightVictims = [];
 
+      // spectatorNightActions is the dead player's live feed of the current
+      // night's submitted actions, in turn order — each entry is
+      // { actor, actorRole, target, targetRole } from a SpectatorNightAction
+      // event (graveyard-only, so the living never receive it). Reset at the
+      // start of every night so the feed reflects only tonight, and rebuilt
+      // from the replay on (re)join. Living players never populate it.
+      let spectatorNightActions = [];
+
       // formatVictimList renders a list of victim ids into a grammatical
       // name string: "Alice", "Alice and Bob", or "Alice, Bob, and Cara"
       // (resolving each id to its current player name). Used by both the

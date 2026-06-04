@@ -127,6 +127,31 @@ func awaitNightSub(t *testing.T, watcher *Subscriber, role game.Role, sub game.N
 	}
 }
 
+// awaitPhaseChanged reads watcher's stream until a PhaseChanged{from→to}
+// arrives, discarding intervening messages. Lets a test sequence past a
+// whole self-advancing night without spelling out every sub-phase. The
+// watcher MUST be a player that receives no private night events.
+func awaitPhaseChanged(t *testing.T, watcher *Subscriber, from, to game.Phase) {
+	t.Helper()
+	// Fake-clock budget: a full self-advancing night (two 60s act-window
+	// timeouts plus every beat) far exceeds 30s of virtual time, so use a
+	// generous budget — it costs no real wall-clock under synctest.
+	deadline := time.After(30 * time.Minute)
+	for {
+		select {
+		case msg, ok := <-watcher.Outbound():
+			require.Truef(t, ok, "watcher channel closed before PhaseChanged %s→%s", from, to)
+			if ev, isEv := msg.(OutEvent); isEv {
+				if pc, ok := ev.Event.(game.PhaseChanged); ok && pc.From == from && pc.To == to {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for PhaseChanged %s→%s", from, to)
+		}
+	}
+}
+
 // awaitError reads s until an OutError arrives, returning it. Buffered
 // OutEvents are discarded (the caller has already sequenced past them
 // via the watcher).

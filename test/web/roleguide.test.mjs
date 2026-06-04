@@ -42,7 +42,9 @@ test("the guide surfaces the key role gotchas", () => {
   assert.match(text, /not mafia/i, "the Consort/Yakuza-reads-clean gotcha");
   assert.match(text, /silent/i, "the doctor's silent save");
   assert.match(text, /hold fire/i, "the vigilante can hold fire");
+  assert.match(text, /spends the bullet/i, "a saved vigilante shot still spends the bullet");
   assert.match(text, /forgoing the kill/i, "recruit forgoes the kill");
+  assert.match(text, /can't be prevented/i, "the Yakuza sacrifice can't be stopped by the doctor");
 });
 
 test("it stays visible in the roles-dealt window (after Start game, before Begin night)", () => {

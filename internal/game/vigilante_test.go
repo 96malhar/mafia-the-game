@@ -538,6 +538,23 @@ func TestVigilante_KillingLastMafiaAtNightPromotesConsort(t *testing.T) {
 	require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
 	require.Equal(t, game.RoleMafia, roleByID(g, "consort"), "the consort inherits RoleMafia")
 
+	// Pin the intra-batch ORDERING of the night-resolution pipeline
+	// (resolveDeathsAndMaybeEnd): the kill resolves, THEN the consort is
+	// promoted (and her fresh mafia roster issued), THEN the graveyard
+	// roster is refreshed so the dead see her new faction, and only THEN
+	// does the phase flip to DayDiscussion — all before any voting can
+	// open. A reorder would silently break the promote-before-reveal /
+	// promote-before-transition invariant that presence-only checks miss.
+	// (The lone PhaseChanged in this batch is the Night→DayDiscussion
+	// transition; g.State().Phase() above pins its destination.)
+	requireEventOrder(t,
+		orderedEvent{"PlayerKilled", indexOfEvent[game.PlayerKilled](evts)},
+		orderedEvent{"ConsortPromoted", indexOfEvent[game.ConsortPromoted](evts)},
+		orderedEvent{"MafiaRosterRevealed", indexOfEvent[game.MafiaRosterRevealed](evts)},
+		orderedEvent{"RosterRevealed (graveyard)", indexOfEvent[game.RosterRevealed](evts)},
+		orderedEvent{"PhaseChanged→DayDiscussion", indexOfEvent[game.PhaseChanged](evts)},
+	)
+
 	// And the takeover is real: next night the promoted consort carries
 	// the faction kill from the RoleMafia act window.
 	noLynchDay(t, g)

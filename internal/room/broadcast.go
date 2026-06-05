@@ -170,9 +170,6 @@ func (r *Room) disconnectSlow(sub *Subscriber) {
 		slot.sub = nil
 	}
 	r.detachSubscriber(sub)
-	// A dropped host (slow connection) also triggers the migration
-	// countdown, same as a clean leave.
-	r.maybeArmHostGrace()
 }
 
 // attachSubscriber adds a subscriber to r.subs. Helper exists for

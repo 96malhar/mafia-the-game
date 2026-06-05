@@ -55,13 +55,6 @@ type Room struct {
 	// when no phase-timeout is active (lobby, ended, or untimed phases).
 	phaseTimer *time.Timer
 
-	// hostGraceTimer fires cfg.HostGracePeriod after the host's
-	// connection drops; on fire the run loop promotes another
-	// connected player to host (see handleHostGrace). nil when the
-	// host is connected or migration is disabled. Lives alongside
-	// phaseTimer as a second, independent run-loop timer.
-	hostGraceTimer *time.Timer
-
 	// createdAt is the wall-clock moment newRoom returned. Combined
 	// with cfg.MaxLifetime it determines when the manager's sweeper
 	// reaps this room. Immutable after construction; read-only from
@@ -235,19 +228,14 @@ func (r *Room) Run() {
 	defer close(r.done)
 	defer r.shutdownSubscribers()
 	defer r.stopPhaseTimer()
-	defer r.stopHostGrace()
 
 	for {
-		// Each timer channel may be nil (timer inactive); a nil-channel
+		// The timer channel may be nil (timer inactive); a nil-channel
 		// arm in a select blocks forever, which is what we want — it
 		// disables the arm cleanly.
 		var timerC <-chan time.Time
 		if r.phaseTimer != nil {
 			timerC = r.phaseTimer.C
-		}
-		var hostGraceC <-chan time.Time
-		if r.hostGraceTimer != nil {
-			hostGraceC = r.hostGraceTimer.C
 		}
 
 		select {
@@ -260,8 +248,6 @@ func (r *Room) Run() {
 			r.dispatch(msg)
 		case <-timerC:
 			r.handlePhaseTimer()
-		case <-hostGraceC:
-			r.handleHostGrace()
 		}
 	}
 }
@@ -398,13 +384,6 @@ func (r *Room) handleRejoin(m inRejoin) {
 	r.attachSubscriber(m.From)
 	m.From.setPlayerID(m.PlayerID)
 
-	// If the host just reconnected, cancel any pending migration so
-	// the badge stays put. A refresh (leave → rejoin within the grace
-	// window) is the common case this protects.
-	if m.PlayerID == r.host {
-		r.stopHostGrace()
-	}
-
 	r.sendOne(m.From, OutRejoined{
 		PlayerID: m.PlayerID,
 		Name:     slot.name,
@@ -426,9 +405,6 @@ func (r *Room) handleLeave(m inLeave) {
 		slot.sub = nil
 	}
 	r.detachSubscriber(m.From)
-	// If that was the host's last connection, start the migration
-	// countdown so the game doesn't freeze if they don't come back.
-	r.maybeArmHostGrace()
 }
 
 // handleLifetimeCheck evaluates whether the room has exceeded its
@@ -454,79 +430,6 @@ func (r *Room) handleLifetimeCheck() {
 		"created_at", r.createdAt,
 		"max_lifetime", r.cfg.MaxLifetime)
 	r.cancel()
-}
-
-// maybeArmHostGrace starts the host-migration countdown if the host's
-// connection is currently down and the timer isn't already running.
-// Called from every path that can leave the host disconnected
-// (handleLeave, disconnectSlow). No-op when migration is disabled
-// (HostGracePeriod <= 0), when there's no host yet, or when the host
-// is connected.
-func (r *Room) maybeArmHostGrace() {
-	if r.cfg.HostGracePeriod <= 0 || r.host == "" {
-		return
-	}
-	if slot, ok := r.players[r.host]; ok && slot.sub != nil {
-		return // host still connected — nothing to migrate
-	}
-	if r.hostGraceTimer != nil {
-		return // already counting down
-	}
-	r.hostGraceTimer = time.NewTimer(r.cfg.HostGracePeriod)
-}
-
-// stopHostGrace cancels a pending host-migration countdown. Safe to
-// call repeatedly. Called when the host reconnects (migration no
-// longer needed) and on room shutdown.
-func (r *Room) stopHostGrace() {
-	if r.hostGraceTimer == nil {
-		return
-	}
-	r.hostGraceTimer.Stop()
-	r.hostGraceTimer = nil
-}
-
-// handleHostGrace fires when the host-grace countdown elapses. If the
-// host is still disconnected, it promotes the oldest connected player
-// to host and broadcasts a HostChanged so every client moves the badge
-// and unlocks the host controls. If the host reconnected in the
-// meantime, or nobody is connected to promote to, it does nothing.
-//
-// Migration keeps the game progressable: all day-phase transitions
-// (BeginNight / OpenVoting / FinalizeVotes) are host-only, so a room
-// whose host vanished would otherwise be frozen until MaxLifetime.
-func (r *Room) handleHostGrace() {
-	r.hostGraceTimer = nil
-
-	if slot, ok := r.players[r.host]; ok && slot.sub != nil {
-		return // host came back during the grace window
-	}
-	newHost := r.oldestConnectedPlayer()
-	if newHost == "" || newHost == r.host {
-		// No connected candidate (everyone's gone — the room will be
-		// reaped at MaxLifetime), or somehow already the host.
-		return
-	}
-
-	prev := r.host
-	r.host = newHost
-	r.log.Info("host migrated", "from", prev, "to", newHost)
-	// HostChanged is Public, so it reaches every viewer and also lands
-	// in the replayed log for future (re)joiners.
-	r.appendAndBroadcast([]game.Event{game.HostChanged{PlayerID: newHost}})
-}
-
-// oldestConnectedPlayer returns the PlayerID of the earliest-joined
-// player with a live subscriber, or "" if none are connected. Join
-// order comes from the engine's player slice (stable, deterministic),
-// so promotion is predictable rather than map-iteration-random.
-func (r *Room) oldestConnectedPlayer() game.PlayerID {
-	for _, p := range r.g.State().Players() {
-		if slot, ok := r.players[p.ID()]; ok && slot.sub != nil {
-			return p.ID()
-		}
-	}
-	return ""
 }
 
 // handleCommand applies an engine command, rewriting any actor-identity

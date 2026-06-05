@@ -46,7 +46,7 @@ jobs:
       # (task check -> task test:web). Without this step test:web skips
       # itself; with it the frontend suite gates alongside the Go tests.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm

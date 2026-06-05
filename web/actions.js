@@ -26,7 +26,10 @@
           "rounded border p-4 transition-colors duration-300 " +
           (PHASE_THEMES[phase] || PHASE_THEMES.lobby);
 
+        // Hide the eyebrow in the lobby: its headline is just "Lobby" too,
+        // so showing the phase name above it reads as a redundant repeat.
         label.textContent = phase.replace("_", " ");
+        label.classList.toggle("hidden", phase === "lobby");
         dayEl.textContent = phase === "lobby" || phase === "ended" ? "" : `Day ${day}`;
         extras.innerHTML = "";
 

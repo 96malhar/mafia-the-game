@@ -8,10 +8,18 @@ package game
 // out of the source files (state.go).
 //
 // Accessors that production OR a cross-package test depends on stay in
-// state.go instead: GameState.Players and HasLivingRole, and Player.ID.
+// state.go instead: GameState.HasLivingRole and Player.ID.
 
 // ID returns the game identifier.
 func (s *GameState) ID() GameID { return s.id }
+
+// Players returns a copy of the player list in join order. The copy keeps
+// callers from accidentally mutating the engine's slice.
+func (s *GameState) Players() []Player {
+	out := make([]Player, len(s.players))
+	copy(out, s.players)
+	return out
+}
 
 // Phase returns the current phase.
 func (s *GameState) Phase() Phase { return s.phase }

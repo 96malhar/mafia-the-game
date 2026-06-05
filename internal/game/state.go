@@ -226,15 +226,6 @@ func newState() *GameState {
 // inspection getters are test-only and defined in export_test.go, so they
 // stay out of production builds.
 
-// Players returns a copy of the player list in join order. The copy keeps
-// callers from accidentally mutating the engine's slice. Used by the room
-// layer (oldestConnectedPlayer) to promote a new host in join order.
-func (s *GameState) Players() []Player {
-	out := make([]Player, len(s.players))
-	copy(out, s.players)
-	return out
-}
-
 // HasLivingRole reports whether at least one living player holds the
 // given role. Used internally by roleTurnIsPhantom to decide whether a
 // night turn has an actionable holder.

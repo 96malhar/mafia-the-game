@@ -39,18 +39,6 @@ type Config struct {
 	// deployments).
 	MaxLifetime time.Duration
 
-	// HostGracePeriod is how long the room waits, after the host's
-	// connection drops, before promoting another connected player to
-	// host. The grace window absorbs the common case — a host tab
-	// refresh or brief network blip — without bouncing the host
-	// badge; only a host who's gone for longer triggers migration.
-	// Without this, a host who pockets their phone would freeze the
-	// game, since all day-phase advancement is host-only.
-	//
-	// Default DefaultHostGracePeriod. Zero or negative disables host
-	// migration entirely (the original behavior).
-	HostGracePeriod time.Duration
-
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -140,13 +128,6 @@ const DefaultMafiaNarrateDayN = 1500 * time.Millisecond
 // on a long-running server.
 const DefaultMaxLifetime = 5 * time.Hour
 
-// DefaultHostGracePeriod is how long a room tolerates a disconnected
-// host before migrating the role to another connected player. Sized to
-// comfortably cover a tab refresh or a short network hiccup (which
-// reconnect within a second or two) while still recovering a genuinely-
-// departed host fast enough that the table isn't left waiting.
-const DefaultHostGracePeriod = 45 * time.Second
-
 // defaultSubPhaseDuration returns the built-in wall-clock duration for
 // a night sub-phase. These values are the single source of timing
 // truth (the engine is timeless).
@@ -232,9 +213,6 @@ func (c *Config) applyDefaults() {
 	// per-field wiring.
 	if c.MaxLifetime == 0 {
 		c.MaxLifetime = DefaultMaxLifetime
-	}
-	if c.HostGracePeriod == 0 {
-		c.HostGracePeriod = DefaultHostGracePeriod
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()

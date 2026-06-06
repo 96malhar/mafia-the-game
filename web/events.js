@@ -474,21 +474,22 @@
 
           case "detectiveResult": {
             // Server-side projection (PrivateTo) guarantees only the
-            // detective ever receives this event. We deliberately
-            // suppress the modal on REPLAY: the modal is a one-shot
+            // detective ever receives this event. The modal is a one-shot
             // pacing signal tied to the live moment of investigation
-            // (read → "Got it" → night continues). Re-showing it on
-            // every refresh turns it into a persistent reminder
-            // the detective can't dismiss for the rest of the game.
+            // (read → "Got it" → night continues), so we don't want it
+            // re-popping on every ordinary refresh. But a detective whose
+            // phone was locked when the result fired never saw it at all,
+            // so blanket replay-suppression would silently swallow their
+            // finding. We split the difference on acknowledgement: show
+            // live, and on replay only if this specific result hasn't been
+            // dismissed yet. The id is per investigation (day + target),
+            // since the detective investigates once per night.
             //
-            // The detective is expected to remember (or note down)
-            // their finding the first time. We don't currently
-            // surface investigation history anywhere — if that
-            // turns out to be needed, it should be its own
-            // explicit "Past investigations" UI, not a modal that
-            // pops up every refresh.
-            if (!replaying) {
-              showDetectiveToast(nameOf(env.data.target), !!env.data.isMafia);
+            // (day is correct at this point on both paths: the night's
+            // PhaseChanged, which sets it, is replayed before this event.)
+            const detAckId = `det:${day}:${env.data.target}`;
+            if (!replaying || !hasAckedNotice(detAckId)) {
+              showDetectiveToast(nameOf(env.data.target), !!env.data.isMafia, detAckId);
             }
             break;
           }
@@ -515,9 +516,15 @@
             //     at our turn and "recruited" at resolution;
             //   - villager (no turn): at resolution.
             // Set the flag on EVERY path so the picker stays hidden after a
-            // refresh; toast only live. Our role flips via roleAssigned.
+            // refresh; our role flips via roleAssigned. Show the toast live,
+            // and on replay only if we haven't acknowledged it yet — so a
+            // convert whose phone was locked when the recruit fired during
+            // the night still learns about it when they reconnect, while an
+            // ordinary refresh after they've tapped "Got it" stays quiet.
+            // There's exactly one recruit per convert per game, so a single
+            // "recruited" id suffices.
             iAmRecruited = true;
-            if (!replaying) showRecruitedToast();
+            if (!replaying || !hasAckedNotice("recruited")) showRecruitedToast("recruited");
             renderActionPanel();
             renderPlayers();
             break;
@@ -541,7 +548,11 @@
             // mafia because the cabal was wiped out. Apply the role
             // change on EVERY path (including replay) so a reconnecting
             // promoted consort knows their new faction and gets the
-            // mafia night turn; only pop the announcement modal live.
+            // mafia night turn. Pop the announcement modal live, and on
+            // replay only if we haven't acknowledged it — so a consort
+            // whose phone was locked when the promotion fired still gets
+            // the notice on reconnect, while an ordinary refresh after
+            // dismissal stays quiet. One promotion per game → one id.
             // The mafiaRoster event that follows badges us as Mafia.
             myRole = "mafia";
             $("my-role").textContent = "mafia";
@@ -551,7 +562,7 @@
             // Yakuza — so a promoted consort sees them badged. We do NOT reset
             // mafiaPeers here: faction knowledge only widens, and the merge in
             // the mafiaRoster handler keeps live and rejoin consistent.
-            if (!replaying) showPromotedToast();
+            if (!replaying || !hasAckedNotice("promoted")) showPromotedToast("promoted");
             renderAll();
             break;
 
@@ -658,6 +669,12 @@
             // this event re-establishes it (and myIsHost). It also clears
             // myRole and the "you are mafia" display.
             resetGameState();
+            // Drop one-shot notice acks from the previous game: the new
+            // game reuses this room code and player id, and its notice ids
+            // (recruited / promoted / det:<day>:<target>) can collide with
+            // the old game's, so a stale ack would wrongly suppress a fresh
+            // notice on replay.
+            clearAckedNotices();
             lobbyMinPlayers = env.data.minPlayers;
             lobbyMaxPlayers = env.data.maxPlayers;
             mafiaCount = env.data.mafiaCount;

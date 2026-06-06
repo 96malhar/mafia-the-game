@@ -26,15 +26,18 @@
       });
 
       // Notice modal dismissal: the button, clicking the dimmed
-      // overlay (but not the card), and Escape all close it.
-      $("notice-modal-dismiss").addEventListener("click", hideModalCard);
+      // overlay (but not the card), and Escape all close it. These are all
+      // USER-driven, so they go through dismissModalCard, which records the
+      // acknowledgement for one-shot notices (recruit / promotion /
+      // detective result) so they aren't re-popped on a later replay.
+      $("notice-modal-dismiss").addEventListener("click", dismissModalCard);
       $("notice-modal").addEventListener("click", (e) => {
-        if (e.target.id === "notice-modal") hideModalCard();
+        if (e.target.id === "notice-modal") dismissModalCard();
       });
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           const m = $("notice-modal");
-          if (m && !m.classList.contains("hidden")) hideModalCard();
+          if (m && !m.classList.contains("hidden")) dismissModalCard();
         }
       });
 

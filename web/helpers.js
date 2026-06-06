@@ -22,6 +22,71 @@
         ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(location.hostname);
       const credStore = isLocalhost ? sessionStorage : localStorage;
 
+      // One-shot, manually-dismissed notices (the Yakuza recruit, the
+      // consort promotion, and each individual detective result) are
+      // remembered once the player ACKNOWLEDGES them, persisted per
+      // room+player. This lets the replay path re-pop a notice the player
+      // genuinely missed — e.g. their phone was locked when it fired during
+      // the night — while still suppressing one they've already seen and
+      // dismissed on an ordinary refresh. The distinction is purely "did
+      // they tap Got it?", not "is this live vs replay", so a reconnecting
+      // convert finally learns they were recruited.
+      //
+      // Keyed mafia.ack.<code>.<playerId> in the SAME store as credentials:
+      // sessionStorage on localhost (per-tab, matching the per-tab seats the
+      // multi-tab test loop relies on), localStorage in prod (survives a
+      // refresh / tab close, like the rejoin creds). The value is a JSON
+      // array of opaque notice ids.
+      const ackStorageKey = (code, playerId) => `mafia.ack.${code}.${playerId}`;
+
+      // loadAckedNotices reads the current player's acknowledged-notice set.
+      // Returns an empty set if we don't yet have an identity, or if the
+      // stored value is missing/corrupt — a bad blob must never wedge the
+      // notice path, only (at worst) re-show a card.
+      function loadAckedNotices() {
+        if (!currentRoomCode || !myId) return new Set();
+        try {
+          const raw = credStore.getItem(ackStorageKey(currentRoomCode, myId));
+          return new Set(raw ? JSON.parse(raw) : []);
+        } catch {
+          return new Set();
+        }
+      }
+
+      function hasAckedNotice(id) {
+        return loadAckedNotices().has(id);
+      }
+
+      // markNoticeAcked records that the player dismissed the notice with
+      // this id, so no later replay re-pops it. Read-modify-write the whole
+      // set each call: these fire at most a handful of times per game, so
+      // simplicity beats caching.
+      function markNoticeAcked(id) {
+        if (!currentRoomCode || !myId) return;
+        const acked = loadAckedNotices();
+        if (acked.has(id)) return;
+        acked.add(id);
+        try {
+          credStore.setItem(
+            ackStorageKey(currentRoomCode, myId),
+            JSON.stringify([...acked]),
+          );
+        } catch {}
+      }
+
+      // clearAckedNotices drops the whole set for this room+player. Called
+      // when the host starts a NEW game in the same room (gameReset): the
+      // next game reuses the same room code and player id, and its notice
+      // ids (recruit, promotion, det:<day>:<target>) can collide with the
+      // previous game's, so a stale ack would wrongly suppress a fresh
+      // notice on replay.
+      function clearAckedNotices() {
+        if (!currentRoomCode || !myId) return;
+        try {
+          credStore.removeItem(ackStorageKey(currentRoomCode, myId));
+        } catch {}
+      }
+
       const status = $("status");
       const errorPanel = $("errors");
 
@@ -467,12 +532,26 @@
       // leave this false: they must NOT vanish on a timer.
       let modalAutoDismisses = false;
 
-      function showModalCard(text, palette, eyebrow = "Investigation result", autoDismiss = false) {
+      // pendingNoticeAckId names the one-shot, manually-dismissed notice
+      // currently on screen (a recruit / promotion / a specific detective
+      // result), or null for transient or no-ack modals. When the player
+      // ACTIVELY dismisses the modal (dismissModalCard) we persist this id so
+      // the notice is never re-popped on a later replay. A programmatic hide
+      // (reconnect teardown via resetGameState, or the Blocked auto-dismiss)
+      // discards it WITHOUT marking, so a card the player never actually
+      // acknowledged still re-pops on the next replay.
+      let pendingNoticeAckId = null;
+
+      function showModalCard(text, palette, eyebrow = "Investigation result", autoDismiss = false, ackId = null) {
         const modal = $("notice-modal");
         const card = $("notice-modal-card");
         const body = $("notice-modal-body");
         if (!modal || !card || !body) return;
         modalAutoDismisses = autoDismiss;
+        // Every show resets the pending ack: a card with an ackId is
+        // dismiss-to-remember, one without (block notice, future modals)
+        // is not, and a fresh modal must never inherit the prior card's id.
+        pendingNoticeAckId = ackId;
         // The eyebrow is the small uppercase heading above the body. It
         // defaults to the detective's label, so block/promotion notices
         // must pass their own — otherwise they'd misleadingly read
@@ -489,12 +568,15 @@
         modal.style.display = "flex";
       }
 
-      function showDetectiveToast(targetName, isMafia) {
+      function showDetectiveToast(targetName, isMafia, ackId) {
         showModalCard(
           isMafia
             ? `${targetName} IS a mafia member.`
             : `${targetName} is NOT a mafia member.`,
-          isMafia ? MODAL_ROSE : MODAL_EMERALD
+          isMafia ? MODAL_ROSE : MODAL_EMERALD,
+          "Investigation result",
+          false,
+          ackId
         );
       }
 
@@ -511,11 +593,13 @@
 
       // showPromotedToast announces a consort's promotion to full mafia
       // (the cabal was wiped out and she's taken over the kill).
-      function showPromotedToast() {
+      function showPromotedToast(ackId) {
         showModalCard(
           "The mafia have been wiped out — you are now the Mafia. You'll choose the kill from the next night on.",
           MODAL_ROSE,
-          "You've been promoted"
+          "You've been promoted",
+          false,
+          ackId
         );
       }
 
@@ -526,14 +610,21 @@
       // also keeps the two delivery paths consistent — an active role learns
       // at their (suppressed) turn, a villager at resolution (no turn, so no
       // sleep cue would ever auto-clear it anyway).
-      function showRecruitedToast() {
+      function showRecruitedToast(ackId) {
         showModalCard(
           "The Yakuza recruited you — you are now the Mafia. Your old power is gone; you'll act with the family from the next night on.",
           MODAL_ROSE,
-          "You've been recruited"
+          "You've been recruited",
+          false,
+          ackId
         );
       }
 
+      // hideModalCard is the PROGRAMMATIC hide: it tears the card down
+      // without acknowledging it (reconnect teardown via resetGameState, the
+      // Blocked auto-dismiss). Dropping pendingNoticeAckId unmarked means a
+      // one-shot notice the player never tapped through re-pops on the next
+      // replay. User-driven dismissal goes through dismissModalCard.
       function hideModalCard() {
         const modal = $("notice-modal");
         if (!modal) return;
@@ -542,6 +633,15 @@
         const body = $("notice-modal-body");
         if (body) body.textContent = "";
         modalAutoDismisses = false;
+        pendingNoticeAckId = null;
+      }
+
+      // dismissModalCard is the USER-driven dismissal (Got it / backdrop /
+      // Escape). If the card carried an ack id, record it first so the
+      // notice is never re-shown on a later replay, then hide.
+      function dismissModalCard() {
+        if (pendingNoticeAckId) markNoticeAcked(pendingNoticeAckId);
+        hideModalCard();
       }
 
       // --- Night countdown bar -----------------------------------------

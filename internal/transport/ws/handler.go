@@ -94,7 +94,18 @@ func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
 // It deliberately mirrors Connect's lookup (raw code, no normalization)
 // so the two always agree on what "exists" means.
 //
-// Response: 200 { "code": "ABCD" } if the room exists, 404 otherwise.
+// Beyond mere existence it reports JOINABILITY: a room that exists but has
+// already started, filled up, or ended can't accept a new player, and a share
+// link to it should flip straight to "create a new room" rather than strand
+// the visitor on a join screen that's doomed to fail. The response carries a
+// `joinable` flag plus, when false, a wire `reason` code and a player-facing
+// `message` (the same text the live join handshake would return).
+//
+// Response (always 200 when the room exists; 404 when it doesn't):
+//
+//	{ "code": "ABCD", "joinable": true }
+//	{ "code": "ABCD", "joinable": false, "reason": "wrong_phase",
+//	  "message": "This game is already in progress. Create a new room to play." }
 func (h *Handler) CheckRoom(w http.ResponseWriter, req *http.Request) {
 	code := chi.URLParam(req, "code")
 	r, err := h.mgr.Get(code)
@@ -102,8 +113,40 @@ func (h *Handler) CheckRoom(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "room not found", http.StatusNotFound)
 		return
 	}
+
+	// Default to joinable. JoinStatus round-trips through the room goroutine;
+	// bound it so a jammed room can't hang this probe (it sits on the user's
+	// join critical path). On ANY query error — timeout, cancellation, a room
+	// shutting down — we keep the optimistic default and let the WebSocket
+	// attempt surface the precise rejection, which is exactly the behaviour
+	// before this endpoint reported joinability.
+	resp := checkRoomResponse{Code: r.Code(), Joinable: true}
+	ctx, cancel := context.WithTimeout(req.Context(), checkRoomTimeout)
+	defer cancel()
+	if js, qerr := r.JoinStatus(ctx); qerr == nil && !js.Joinable {
+		resp.Joinable = false
+		resp.Reason = string(js.Code)
+		resp.Message = js.Message
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": r.Code()})
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// checkRoomTimeout bounds the joinability round-trip CheckRoom makes into the
+// room goroutine. Short on purpose: the room loop answers a read-only query
+// near-instantly unless badly backed up, and the probe is on the user's join
+// critical path — "assume joinable, let the WS sort it out" is the right
+// fallback if the room can't answer promptly.
+const checkRoomTimeout = 2 * time.Second
+
+// checkRoomResponse is the JSON body of GET /api/rooms/{code}. Reason and
+// Message are omitted when the room is joinable.
+type checkRoomResponse struct {
+	Code     string `json:"code"`
+	Joinable bool   `json:"joinable"`
+	Reason   string `json:"reason,omitempty"`
+	Message  string `json:"message,omitempty"`
 }
 
 // Connect handles GET /ws/{code}. It upgrades the connection and runs

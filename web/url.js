@@ -129,3 +129,35 @@
         return true;
       }
 
+      // maybeProbeRoomFromURL runs at page load for a plain share link
+      // (?room=CODE, no ?name=) once auto-rejoin has been ruled out. Rather
+      // than parking the visitor on a "Join room CODE" screen for a room
+      // that's gone or already in progress — only to fail after they type a
+      // name and click Join — it probes joinability UP FRONT and, the moment
+      // the room can't accept a join (reaped/never-created, in progress, full,
+      // or ended), flips straight to the "create a new room" view with the
+      // reason. A reachable, joinable room leaves the normal join view
+      // untouched; an unreachable probe also leaves it be (the Join click,
+      // with its own probe, will surface trouble later). Returns true if a
+      // probe was launched, so the caller knows the URL carried a room.
+      //
+      // It deliberately skips rooms we hold stored credentials for: those are
+      // tryAutoRejoin's job (it reconnects silently), and a probe there would
+      // be both redundant and wrong (a rejoin to an in-progress game is
+      // exactly what we WANT, but JoinBlockedReason would call it unjoinable).
+      async function maybeProbeRoomFromURL() {
+        const code = roomFromURL();
+        if (!code) return false;
+        if (credStore.getItem(storageKey(code))) return true;
+        setStatus(`checking room ${code}…`, "text-slate-300");
+        const probe = await probeRoom(code);
+        if (probe.state === "unjoinable") {
+          showUnjoinableRoom(code, probe.reason);
+        } else if (probe.state === "joinable") {
+          // Re-affirm the neutral join prompt; the "checking…" status was
+          // transient.
+          setStatus(`ready to join ${code}`, "text-slate-400");
+        }
+        return true;
+      }
+

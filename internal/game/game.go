@@ -23,6 +23,30 @@ func New() *Game {
 // through Apply.
 func (g *Game) State() *GameState { return g.state }
 
+// JoinBlockedReason reports why a fresh AddPlayer would be rejected in the
+// game's current state, or nil if a join would currently be accepted. It
+// mirrors applyAddPlayer's gate exactly — requireLobbyOpen (ErrWrongPhase for
+// a started/in-progress game, ErrGameEnded for a finished one) followed by the
+// capacity check (ErrLobbyFull) — so the probe and the live join can never
+// disagree on what "joinable" means.
+//
+// It is a pure, read-only query (no events, no state change), exposed so the
+// room/transport layer can answer a pre-join probe (see CheckRoom) and let the
+// lobby flip a share link to "create a new room" the instant the target can't
+// be joined, instead of waiting for a doomed join round-trip.
+//
+// Per-name dedup (ErrDuplicateName) is intentionally NOT checked here: it
+// depends on the joiner's chosen name, which a pre-join probe doesn't have.
+func (g *Game) JoinBlockedReason() error {
+	if err := g.requireLobbyOpen(); err != nil {
+		return err
+	}
+	if len(g.state.players) >= g.state.maxPlayers {
+		return ErrLobbyFull
+	}
+	return nil
+}
+
 // Apply attempts to execute cmd against the current state. On success it
 // returns the events produced by the command, in the order they were
 // generated, and mutates the state to reflect them. On failure no state

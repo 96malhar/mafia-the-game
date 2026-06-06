@@ -137,6 +137,56 @@ func connect(t *testing.T, r *Room, name string) (*Subscriber, OutJoined) {
 	return sub, ack
 }
 
+// --- JoinStatus (pre-join probe) ------------------------------------------
+
+// JoinStatus backs the CheckRoom HTTP probe: a read-only round-trip into the
+// run loop that reports whether a fresh join would be accepted, and if not,
+// the same wire code + player-facing message the live join handshake returns.
+func TestRoom_JoinStatus(t *testing.T) {
+	_, r := newTestRoom(t)
+
+	t.Run("open lobby is joinable", func(t *testing.T) {
+		js, err := r.JoinStatus(context.Background())
+		require.NoError(t, err)
+		require.True(t, js.Joinable)
+		require.Empty(t, js.Code, "joinable status carries no error code")
+		require.Empty(t, js.Message, "joinable status carries no message")
+	})
+
+	// Fill the lobby and start the game (the first joiner is the host).
+	subs := make([]*Subscriber, 5)
+	for i := range subs {
+		subs[i], _ = connect(t, r, string(rune('A'+i)))
+	}
+	for _, s := range subs {
+		_ = drain(s, 50*time.Millisecond)
+	}
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: subs[0], Cmd: game.StartGame{},
+	}))
+	for _, s := range subs {
+		_ = drain(s, 100*time.Millisecond)
+	}
+
+	t.Run("in-progress game is unjoinable", func(t *testing.T) {
+		// StartGame was enqueued before this query and the run loop is a
+		// single FIFO consumer, so the deal is already applied by the time
+		// the joinability query runs.
+		js, err := r.JoinStatus(context.Background())
+		require.NoError(t, err)
+		require.False(t, js.Joinable)
+		require.Equal(t, wire.ErrCodeWrongPhase, js.Code)
+		require.Contains(t, js.Message, "already in progress",
+			"message must be the player-facing text, not the raw sentinel")
+	})
+
+	t.Run("closed room returns ErrRoomClosed", func(t *testing.T) {
+		require.NoError(t, r.Close(context.Background()))
+		_, err := r.JoinStatus(context.Background())
+		require.ErrorIs(t, err, ErrRoomClosed)
+	})
+}
+
 // --- Join projection includes GameCreated --------------------------------
 
 // Regression: newRoom calls r.g.Apply(CreateGame{...}) at room

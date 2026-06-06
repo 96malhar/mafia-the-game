@@ -68,9 +68,14 @@
       // makes a tab refresh a no-op from the player's perspective.
       if (!tryAutoRejoin()) {
         applyURLState();
-        // A ?room=&name= link (the `task lobby` demo) auto-joins; a
-        // plain ?room= share link just shows the name-entry lobby.
-        maybeAutoJoinFromURL();
+        // A ?room=&name= link (the `task lobby` demo) auto-joins. A plain
+        // ?room= share link gets an up-front joinability probe so a room
+        // that's been reaped, never created, already in progress, full, or
+        // ended flips straight to "create a new room" with the reason —
+        // instead of stranding the visitor on a join screen doomed to fail.
+        if (!maybeAutoJoinFromURL()) {
+          maybeProbeRoomFromURL();
+        }
       }
 
       // Quick health probe to confirm the server is up before anyone clicks.

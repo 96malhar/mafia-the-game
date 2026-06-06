@@ -169,6 +169,30 @@ func (r *Room) SubmitCommand(ctx context.Context, sub *Subscriber, cmd game.Comm
 	return r.submit(ctx, inCommand{From: sub, Cmd: cmd})
 }
 
+// JoinStatus reports whether a fresh join would currently be accepted and, if
+// not, a wire-stable code plus a player-facing message (see the JoinStatus
+// type). It round-trips through the run loop so the engine read happens on the
+// owning goroutine — the room needs no locks.
+//
+// ctx bounds the wait. A closed room (ErrRoomClosed) or a cancelled/timed-out
+// ctx returns the error so the caller can fall back; CheckRoom treats any such
+// failure as "assume joinable" and lets the WebSocket attempt surface the real
+// rejection — no worse than before this probe reported joinability.
+func (r *Room) JoinStatus(ctx context.Context) (JoinStatus, error) {
+	// Buffered so handleJoinability's send never blocks the run loop even if
+	// this caller has already given up (ctx cancelled) and stopped reading.
+	reply := make(chan error, 1)
+	if err := r.submit(ctx, inJoinability{reply: reply}); err != nil {
+		return JoinStatus{}, err
+	}
+	select {
+	case <-ctx.Done():
+		return JoinStatus{}, ctx.Err()
+	case reason := <-reply:
+		return joinStatusFor(reason), nil
+	}
+}
+
 // requestLifetimeCheck non-blockingly asks the room to self-evaluate
 // its age against MaxLifetime. Used by Manager's sweeper goroutine.
 // If the inbox is full (a busy room can wait one tick), we
@@ -280,6 +304,8 @@ func (r *Room) dispatch(msg inbound) {
 		r.handleCommand(m)
 	case inLifetimeCheck:
 		r.handleLifetimeCheck()
+	case inJoinability:
+		r.handleJoinability(m)
 	default:
 		r.log.Warn("unknown inbound", "type", fmt.Sprintf("%T", msg))
 	}
@@ -441,6 +467,16 @@ func (r *Room) handleLifetimeCheck() {
 		"created_at", r.createdAt,
 		"max_lifetime", r.cfg.MaxLifetime)
 	r.cancel()
+}
+
+// handleJoinability answers a pre-join probe (inJoinability) with the
+// engine's current join-block reason — nil when a fresh join would be
+// accepted. It is read-only: it touches r.g only through the pure
+// JoinBlockedReason query and never appends events or broadcasts. The reply
+// channel is buffered by the caller (JoinStatus), so the send never blocks the
+// run loop.
+func (r *Room) handleJoinability(m inJoinability) {
+	m.reply <- r.g.JoinBlockedReason()
 }
 
 // handleCommand applies an engine command, rewriting any actor-identity

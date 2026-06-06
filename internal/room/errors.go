@@ -61,18 +61,26 @@ var sentinelCodes = []struct {
 // (whole-package) enforces that every wire.ErrorCode has a matching
 // sentinel here.
 func errorFor(err error) OutError {
-	out := OutError{Code: wire.ErrCodeInternal, Message: err.Error()}
-	for _, m := range sentinelCodes {
-		if errors.Is(err, m.err) {
-			out = OutError{Code: m.code, Message: err.Error()}
-			break
-		}
-	}
+	code := codeFor(err)
 	// Single chokepoint for every rejection: record it as a metric
 	// (labelled by code) instead of logging, so we get trends/alerting
 	// without flooding the logs with normal user errors.
-	recordCommandRejected(out.Code)
-	return out
+	recordCommandRejected(code)
+	return OutError{Code: code, Message: err.Error()}
+}
+
+// codeFor maps a known sentinel to its wire-stable ErrorCode, defaulting to
+// ErrCodeInternal for anything unrecognized. It is the pure lookup half of
+// errorFor — split out so read-only probes (JoinStatus) can classify an error
+// WITHOUT recording a command-rejected metric, which would otherwise count a
+// mere "can I join?" question as a failed command.
+func codeFor(err error) wire.ErrorCode {
+	for _, m := range sentinelCodes {
+		if errors.Is(err, m.err) {
+			return m.code
+		}
+	}
+	return wire.ErrCodeInternal
 }
 
 // errorWithMsg is errorFor with a per-call-site Message override. It keeps
@@ -100,23 +108,58 @@ func errorWithMsg(err error, msg string) OutError {
 // one place. Client code just renders OutError.Message as-is.
 func joinErrorFor(err error) OutError {
 	out := errorFor(err)
-	switch out.Code {
+	out.Message = joinBlockMessage(out.Code, out.Message)
+	return out
+}
+
+// joinBlockMessage maps a join-blocking wire code to player-facing English,
+// falling back to the raw sentinel text for any code that shouldn't block a
+// join. It is the single source of "what does this rejection mean to a would-
+// be joiner?" — shared by joinErrorFor (the live join handshake) and
+// JoinStatus (the pre-join CheckRoom probe) so the two always say the same
+// thing.
+func joinBlockMessage(code wire.ErrorCode, fallback string) string {
+	switch code {
 	case wire.ErrCodeWrongPhase:
 		// AddPlayer is only legal in PhaseLobby with no roles dealt.
 		// Both pre-StartGame phase mismatches and the
-		// "roles already dealt" check in applyAddPlayer surface
-		// here.
-		out.Message = "This game is already in progress. Create a new room to play."
+		// "roles already dealt" check in applyAddPlayer surface here.
+		return "This game is already in progress. Create a new room to play."
 	case wire.ErrCodeLobbyFull:
-		out.Message = "This room is full. Create a new room to play."
+		return "This room is full. Create a new room to play."
 	case wire.ErrCodeGameEnded:
-		out.Message = "This game has already ended. Create a new room to play."
+		return "This game has already ended. Create a new room to play."
 	case wire.ErrCodeDuplicateName:
-		// Engine rejects names that match (case-insensitively,
-		// after trim) someone already in the lobby. The client
-		// renders this in the join form so the user can pick a
-		// different name without losing the rest of the join flow.
-		out.Message = "That name is already taken. Pick a different name."
+		// Engine rejects names that match (case-insensitively, after
+		// trim) someone already in the lobby. The client renders this
+		// in the join form so the user can pick a different name
+		// without losing the rest of the join flow.
+		return "That name is already taken. Pick a different name."
+	default:
+		return fallback
 	}
-	return out
+}
+
+// JoinStatus is the result of a pre-join probe (Room.JoinStatus, surfaced by
+// the CheckRoom HTTP endpoint). Joinable is true when a fresh join would
+// currently be accepted; otherwise Code/Message explain why, using the SAME
+// player-facing text the live join handshake (joinErrorFor) would return.
+//
+// Unlike a real rejection, building a JoinStatus records NO command-rejected
+// metric — a probe is a question, not a failed command.
+type JoinStatus struct {
+	Joinable bool
+	Code     wire.ErrorCode // zero ("") when Joinable
+	Message  string         // player-facing; empty when Joinable
+}
+
+// joinStatusFor builds a JoinStatus from an engine join-block reason (nil =
+// joinable, per game.JoinBlockedReason). It reuses codeFor + joinBlockMessage
+// WITHOUT errorFor's rejection metric.
+func joinStatusFor(reason error) JoinStatus {
+	if reason == nil {
+		return JoinStatus{Joinable: true}
+	}
+	code := codeFor(reason)
+	return JoinStatus{Joinable: false, Code: code, Message: joinBlockMessage(code, reason.Error())}
 }

@@ -86,3 +86,15 @@ func (inCommand) isInbound() {}
 type inLifetimeCheck struct{}
 
 func (inLifetimeCheck) isInbound() {}
+
+// inJoinability asks the room, on its own goroutine, whether a fresh join
+// would currently be accepted. The room replies on the (buffered) reply
+// channel with the engine's join-block reason — nil when a join would
+// succeed. It backs the CheckRoom HTTP probe so the lobby can flip a share
+// link to "create a new room" the moment the target can't be joined, without
+// opening a doomed WebSocket. Read-only: it never mutates room state.
+type inJoinability struct {
+	reply chan error
+}
+
+func (inJoinability) isInbound() {}

@@ -93,16 +93,26 @@ func TestCheckRoom(t *testing.T) {
 	_ = resp.Body.Close()
 	require.NotEmpty(t, created.Code)
 
-	t.Run("existing room returns 200 with code", func(t *testing.T) {
+	t.Run("existing open room returns 200, joinable", func(t *testing.T) {
 		r, err := http.Get(ts.URL + "/api/rooms/" + created.Code)
 		require.NoError(t, err)
 		defer func() { _ = r.Body.Close() }()
 		require.Equal(t, http.StatusOK, r.StatusCode)
 		var got struct {
-			Code string `json:"code"`
+			Code     string `json:"code"`
+			Joinable bool   `json:"joinable"`
+			Reason   string `json:"reason"`
+			Message  string `json:"message"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 		require.Equal(t, created.Code, got.Code)
+		// A fresh room's lobby is open, so the probe reports it joinable
+		// with no reason/message (those are reserved for the unjoinable
+		// states — in progress / full / ended — covered by the room-layer
+		// TestRoom_JoinStatus).
+		require.True(t, got.Joinable)
+		require.Empty(t, got.Reason)
+		require.Empty(t, got.Message)
 	})
 
 	t.Run("missing room returns 404", func(t *testing.T) {

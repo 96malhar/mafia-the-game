@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"time"
@@ -78,6 +79,16 @@ type playerSlot struct {
 // caller (Manager) then calls Run in a goroutine.
 func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	cfg.applyDefaults()
+
+	// Default the shuffle seed to a fresh random value when the caller
+	// didn't specify one (Seed == 0). This makes unpredictable deals the
+	// room's own guarantee rather than relying on every caller to pass a
+	// seed — a forgotten seed yields a randomized game, not a deterministic
+	// one. Callers that DO set a non-zero seed (e.g. a future replay/debug
+	// path) keep full control.
+	if cfg.Seed == 0 {
+		cfg.Seed = seedOrFallback()
+	}
 
 	ctx, cancel := context.WithCancel(parent)
 	r := &Room{
@@ -473,6 +484,15 @@ func (r *Room) handleCommand(m inCommand) {
 		return
 	}
 
+	// ResetGame is host-only (gated above) but needs special fan-out: it
+	// rebaselines the event log instead of appending to it, and the room —
+	// not the client — supplies the fresh shuffle seed. Route it to its own
+	// handler rather than the generic append-and-broadcast path.
+	if _, isReset := m.Cmd.(game.ResetGame); isReset {
+		r.handleReset(m.From)
+		return
+	}
+
 	cmd := rewriteActor(m.Cmd, pid)
 	events, err := r.g.Apply(cmd)
 	if err != nil {
@@ -480,6 +500,47 @@ func (r *Room) handleCommand(m inCommand) {
 		return
 	}
 	r.appendAndBroadcast(events)
+}
+
+// handleReset returns a finished game to a fresh lobby in the same room
+// (the host-only ResetGame command). It differs from every other command
+// path in two ways, which is why it doesn't go through appendAndBroadcast:
+//
+//  1. The room — not the client — mints a fresh shuffle seed so replaying
+//     with the same roster doesn't redeal identical roles.
+//  2. The resulting GameReset is a self-contained lobby snapshot, so the
+//     room REPLACES its event log with it (plus a reaffirming HostChanged)
+//     rather than appending. The previous game's events are deliberately
+//     dropped — nothing from the finished game is replayed to future
+//     joiners or rejoiners.
+//
+// requester is the host's subscriber, used only to deliver an error if the
+// engine rejects the reset (e.g. the game isn't actually ended).
+func (r *Room) handleReset(requester *Subscriber) {
+	events, err := r.g.Apply(game.ResetGame{Seed: seedOrFallback()})
+	if err != nil {
+		r.sendOne(requester, errorFor(err))
+		return
+	}
+
+	// Reaffirm the host in the fresh baseline so clients (which reset their
+	// local host state on GameReset) re-learn it, and so a post-reset joiner
+	// reconstructing from the log alone knows who the host is. The host is a
+	// room-level concept and is unchanged by the reset.
+	if r.host != "" {
+		events = append(events, game.HostChanged{PlayerID: r.host})
+	}
+
+	// Any lingering night/phase timer from the finished game must not leak
+	// into the new lobby. (PhaseEnded carries no active timer today, but
+	// this keeps the invariant explicit and future-proof.)
+	r.resetPhaseTimer()
+
+	// Rebaseline the log: the GameReset snapshot is the new beginning of
+	// time for this room. broadcastToSubs then projects it to every
+	// connected subscriber (both events are Public, so all see them).
+	r.events = events
+	r.broadcastToSubs(events)
 }
 
 // isHostOnly reports whether the command requires the host privilege.
@@ -496,7 +557,8 @@ func isHostOnly(cmd game.Command) bool {
 		game.SetMafiaCount,
 		game.SetConsort,
 		game.SetVigilante,
-		game.SetYakuza:
+		game.SetYakuza,
+		game.ResetGame:
 		return true
 	}
 	return false
@@ -549,4 +611,28 @@ func newSecret() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// newSeed mints a fresh int64 shuffle seed from crypto/rand. The engine's
+// deal is deterministic in the seed, so a constant seed would redeal
+// identical roles to the same join positions every game; a fresh random
+// seed per game (at room creation and on every reset) keeps deals
+// unpredictable. crypto/rand is the source so a seed isn't guessable from
+// the room code or join order.
+func newSeed() (int64, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0, err
+	}
+	return int64(binary.LittleEndian.Uint64(buf[:])), nil
+}
+
+// seedOrFallback returns a fresh random seed, falling back to a time-based
+// value if the OS entropy source fails (near-impossible in practice, but we
+// never want room creation or a reset to hard-fail over a shuffle seed).
+func seedOrFallback() int64 {
+	if s, err := newSeed(); err == nil {
+		return s
+	}
+	return time.Now().UnixNano()
 }

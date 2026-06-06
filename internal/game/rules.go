@@ -343,6 +343,77 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	return events, nil
 }
 
+// applyResetGame returns a finished game to a fresh lobby in the same room,
+// retaining the player roster (id + name) but wiping every per-game artifact.
+// Valid only in PhaseEnded — the only terminal state a reset makes sense from.
+//
+// Unlike requireActiveGame-based handlers, this one deliberately ACCEPTS the
+// ended game (that's its precondition), so it checks the phase directly
+// rather than going through requirePhase (which rejects PhaseEnded).
+//
+// The emitted GameReset is a self-contained lobby snapshot: the room replaces
+// its whole event log with it, so nothing from the previous game is replayed
+// to future joiners. See the GameReset event doc.
+func (g *Game) applyResetGame(c ResetGame) ([]Event, error) {
+	if g.state.id == "" {
+		return nil, ErrWrongPhase
+	}
+	if g.state.phase != PhaseEnded {
+		// Not yet ended: a reset only makes sense once a game has finished.
+		// (A mid-game "abandon and restart" would be a different command.)
+		return nil, ErrWrongPhase
+	}
+
+	s := g.state
+
+	// Fresh shuffle seed for the next deal (supplied by the room) so the
+	// same roster doesn't redeal identical roles.
+	s.seed = c.Seed
+
+	// Reset config back to lobby defaults — the host re-tunes from scratch,
+	// exactly like a brand-new room. minPlayers/maxPlayers are room identity
+	// and stay; mafiaCount and every optional-role toggle reset.
+	s.mafiaCount = defaultMafiaCount(s.minPlayers)
+	s.consortEnabled = false
+	s.vigilanteEnabled = false
+	s.yakuzaEnabled = false
+
+	// Clear all per-game state. Roles are wiped and everyone is alive again;
+	// the lobby reopens (rolesDealt == false) so new players can join before
+	// the next deal.
+	for i := range s.players {
+		s.players[i].role = ""
+		s.players[i].alive = true
+	}
+	s.phase = PhaseLobby
+	s.day = 0
+	s.rolesDealt = false
+	s.vigilanteShotUsed = false
+	s.recruitPending = false
+	s.recruitYakuza = ""
+	s.recruitTarget = ""
+	s.pendingNight = nil
+	s.votes = nil
+	s.votesRevealed = false
+	s.dayLynchResolved = false
+	s.currentNightRole = ""
+	s.currentNightSubPhase = ""
+	s.nightTurnQueue = nil
+
+	// Snapshot the retained roster for the self-contained GameReset event.
+	retained := make([]ResetPlayer, len(s.players))
+	for i, p := range s.players {
+		retained[i] = ResetPlayer{ID: p.id, Name: p.name}
+	}
+
+	return []Event{GameReset{
+		Players:    retained,
+		MinPlayers: s.minPlayers,
+		MaxPlayers: s.maxPlayers,
+		MafiaCount: s.mafiaCount,
+	}}, nil
+}
+
 // optionalRole describes a host-toggleable role that takes a villager
 // slot at StartGame. The table is the single source of truth for the
 // optional roster: enabledOptionalRoles and composeRoster both read it,

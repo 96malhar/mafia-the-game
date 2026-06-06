@@ -64,6 +64,7 @@ const (
 	clientMsgSetVigilante  clientMsgType = wire.ClientMsgSetVigilante
 	clientMsgSetYakuza     clientMsgType = wire.ClientMsgSetYakuza
 	clientMsgRecruit       clientMsgType = wire.ClientMsgRecruit
+	clientMsgResetGame     clientMsgType = wire.ClientMsgResetGame
 )
 
 // clientJoinData is the payload of a "join" message. Rejoin is signalled

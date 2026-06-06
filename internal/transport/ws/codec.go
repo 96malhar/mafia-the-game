@@ -154,6 +154,14 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.GameEnded:
 		tag = wire.EventGameEnded
 		data = kv{"winner": string(v.Winner), "finalRoles": stringKeyValMap(v.FinalRoles)}
+	case game.GameReset:
+		tag = wire.EventGameReset
+		data = kv{
+			"players":    resetPlayersToWire(v.Players),
+			"minPlayers": v.MinPlayers,
+			"maxPlayers": v.MaxPlayers,
+			"mafiaCount": v.MafiaCount,
+		}
 	default:
 		return eventEnvelope{}, fmt.Errorf("ws: unknown event type %T", e)
 	}
@@ -279,6 +287,7 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		clientMsgRevealVotes,
 		clientMsgClearVotes,
 		clientMsgFinalizeVotes,
+		clientMsgResetGame,
 		clientMsgNightPass:
 		return tag, struct{}{}, nil
 
@@ -354,6 +363,10 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 		return game.ClearVotes{}, true
 	case clientMsgFinalizeVotes:
 		return game.FinalizeVotes{}, true
+	case clientMsgResetGame:
+		// Seed is filled in server-side by the room (a fresh shuffle seed
+		// per reset), so we leave it zero here.
+		return game.ResetGame{}, true
 	default:
 		return nil, false
 	}
@@ -369,6 +382,17 @@ func playerIDsToStrings(ids []game.PlayerID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, string(id))
+	}
+	return out
+}
+
+// resetPlayersToWire flattens the GameReset roster snapshot into a slice of
+// {playerId, name} objects for the wire. Always non-nil so the client
+// receives [] rather than null for an (impossible) empty roster.
+func resetPlayersToWire(players []game.ResetPlayer) []map[string]any {
+	out := make([]map[string]any, 0, len(players))
+	for _, p := range players {
+		out = append(out, map[string]any{"playerId": string(p.ID), "name": p.Name})
 	}
 	return out
 }

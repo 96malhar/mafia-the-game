@@ -305,3 +305,93 @@ func TestRoomSynctest_DeadSpectatorReceivesNightActionFeed(t *testing.T) {
 			"a living player must never receive the spectator night feed")
 	})
 }
+
+// TestRoomSynctest_ResetGameReturnsRoomToFreshLobby is the full-stack reset
+// test: it plays a 5-player game to a town win (lynch the lone mafioso),
+// then the host issues ResetGame and we assert the room-layer behavior that
+// the engine tests can't see —
+//
+//   - the event log is REBASELINED to exactly [GameReset, HostChanged]: the
+//     finished game's events are dropped, not carried into the new game; and
+//   - every connected subscriber receives the GameReset snapshot so each
+//     client drops back to the lobby.
+func TestRoomSynctest_ResetGameReturnsRoomToFreshLobby(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		r, err := newRoom(ctx, "RSET", Config{Logger: silentLogger(), MafiaCount: 1})
+		require.NoError(t, err)
+		go r.Run()
+		t.Cleanup(func() { _ = r.Close(ctx) })
+
+		// 5 players → 1 mafia + detective + doctor + 2 villagers.
+		subs := make([]*Subscriber, 5)
+		acks := make([]OutJoined, 5)
+		for i := range subs {
+			subs[i], acks[i] = connect(t, r, string(rune('A'+i)))
+		}
+		host := subs[0]
+		drainAll := func() {
+			for _, s := range subs {
+				_ = drain(s, time.Second)
+			}
+		}
+		drainAll()
+
+		// Start and discover the lone mafioso.
+		require.NoError(t, r.submit(ctx, inCommand{From: host, Cmd: game.StartGame{}}))
+		cast := discoverNightRoles(t, subs, acks)
+		mafiaSub := cast.subByRole[game.RoleMafia]
+		mafiaID := cast.idByRole[game.RoleMafia]
+		require.NotNil(t, mafiaSub)
+		require.NotEmpty(t, cast.villagerIDs, "need a town target for the mafia's own vote")
+
+		// --- Night 1: nobody acts; the night auto-resolves to day with
+		// everyone still alive (the mafia declines to kill). ---
+		require.NoError(t, r.submit(ctx, inCommand{From: host, Cmd: game.BeginNight{}}))
+		awaitPhaseChanged(t, host, game.PhaseNight, game.PhaseDayDiscussion)
+		drainAll()
+
+		// --- Day 1: the four townsfolk all vote the mafioso; the mafioso
+		// votes a townie. Plurality is the mafioso (4 votes), so finalizing
+		// lynches them — mafia-aligned living count hits 0 → town wins. ---
+		require.NoError(t, r.submit(ctx, inCommand{From: host, Cmd: game.OpenVoting{}}))
+		awaitPhaseChanged(t, host, game.PhaseDayDiscussion, game.PhaseDayVote)
+		drainAll()
+		for _, s := range subs {
+			target := mafiaID
+			if s == mafiaSub {
+				target = cast.villagerIDs[0] // mafia can't decline by voting itself
+			}
+			require.NoError(t, r.submit(ctx, inCommand{From: s, Cmd: game.DayVote{Target: target}}))
+		}
+		synctest.Wait() // all votes recorded before we finalize
+		require.NoError(t, r.submit(ctx, inCommand{From: host, Cmd: game.FinalizeVotes{}}))
+		awaitPhaseChanged(t, host, game.PhaseDayVote, game.PhaseEnded)
+		drainAll()
+
+		synctest.Wait()
+		require.Greater(t, len(r.events), 2, "a played-out game should have a long event log")
+
+		// --- The host starts a new game in the same room. ---
+		require.NoError(t, r.submit(ctx, inCommand{From: host, Cmd: game.ResetGame{}}))
+		synctest.Wait()
+
+		// The log is rebaselined to exactly [GameReset, HostChanged]: the
+		// finished game's events are gone, and the host is reaffirmed so a
+		// post-reset (re)joiner reconstructs the lobby from the log alone.
+		require.Len(t, r.events, 2, "reset must replace the log with a fresh baseline")
+		reset, ok := r.events[0].(game.GameReset)
+		require.True(t, ok, "first baseline event must be GameReset, got %T", r.events[0])
+		require.Len(t, reset.Players, 5)
+		hc, ok := r.events[1].(game.HostChanged)
+		require.True(t, ok, "second baseline event must be HostChanged, got %T", r.events[1])
+		require.Equal(t, acks[0].PlayerID, hc.PlayerID, "host must be reaffirmed as the original host")
+
+		// Every connected subscriber saw the GameReset snapshot.
+		for i, s := range subs {
+			ev, ok := drainFirstEvent[game.GameReset](s, time.Second)
+			require.Truef(t, ok, "subscriber %d never received GameReset", i)
+			require.Len(t, ev.Players, 5)
+		}
+	})
+}

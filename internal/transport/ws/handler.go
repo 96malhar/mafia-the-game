@@ -2,8 +2,6 @@ package ws
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -61,16 +59,14 @@ func NewHandler(mgr *room.Manager, logger *slog.Logger, cfg HandlerConfig) *Hand
 // CreateRoom handles POST /api/rooms. The body is currently empty; we
 // reserve it for future room-config knobs (custom roster, seed, etc.).
 //
-// Each room gets a fresh crypto-random shuffle seed here. This is the
-// production entrypoint, so it's the right place to inject entropy: the
-// engine and tests stay deterministic-by-seed (Config.Seed defaults to
-// 0), while real games shuffle roles independently. Without this every
-// game shared Seed=0, making role assignment a fixed function of join
-// order — predictable and exploitable.
+// We leave Config.Seed at its zero value: newRoom mints a fresh
+// crypto-random shuffle seed when none is supplied (see room.newRoom), so
+// every real game shuffles roles independently without this edge having to
+// inject entropy itself.
 //
 // Response: { "code": "ABCD" }
 func (h *Handler) CreateRoom(w http.ResponseWriter, _ *http.Request) {
-	r, err := h.mgr.CreateRoom(room.Config{Logger: h.logger, Seed: randSeed()})
+	r, err := h.mgr.CreateRoom(room.Config{Logger: h.logger})
 	if err != nil {
 		// At-capacity is an expected, transient condition (the server
 		// is full, not broken) — 503 lets clients/proxies treat it as
@@ -108,20 +104,6 @@ func (h *Handler) CheckRoom(w http.ResponseWriter, req *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": r.Code()})
-}
-
-// randSeed returns 8 bytes of OS entropy as an int64, used as the
-// per-room role-shuffle seed. crypto/rand is the source so seeds aren't
-// guessable from a known PRNG sequence. On the practically-impossible
-// event the OS RNG is unavailable it falls back to the wall clock —
-// far weaker, but a never-fail path matters more here than seed quality,
-// since failing room creation over a shuffle seed would be absurd.
-func randSeed() int64 {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return time.Now().UnixNano()
-	}
-	return int64(binary.BigEndian.Uint64(b[:]))
 }
 
 // Connect handles GET /ws/{code}. It upgrades the connection and runs

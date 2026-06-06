@@ -647,6 +647,30 @@
               );
             }
             break;
+
+          case "gameReset": {
+            // The host started a new game in the same room. GameReset is a
+            // self-contained lobby snapshot (the server has dropped the
+            // previous game's events), so we wipe ALL derived state and
+            // rebuild the lobby from this one event — exactly the join
+            // path's reset, minus the full replay. resetGameState() nulls
+            // hostId; the HostChanged that the server appends right after
+            // this event re-establishes it (and myIsHost). It also clears
+            // myRole and the "you are mafia" display.
+            resetGameState();
+            lobbyMinPlayers = env.data.minPlayers;
+            lobbyMaxPlayers = env.data.maxPlayers;
+            mafiaCount = env.data.mafiaCount;
+            for (const p of (env.data.players || [])) {
+              upsertPlayer(p.playerId, { name: p.name, alive: true });
+            }
+            if (!replaying) {
+              narrate("A new game is starting. Everyone back to the lobby.", {
+                pauseBefore: 300,
+              });
+            }
+            break;
+          }
         }
       }
 

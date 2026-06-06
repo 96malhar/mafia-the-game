@@ -34,6 +34,7 @@
         yakuzaEnabled = false;
         vigilanteFired = false;
         heldFireThisTurn = false;
+        yakuzaRecruitMode = false;
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
@@ -437,21 +438,26 @@
             return b;
           };
 
-          // The yakuza gets TWO buttons on every eligible row: the regular
-          // faction Kill and a Recruit (one-shot self-sacrifice conversion).
-          // We return a fragment so both land as direct children of the row's
-          // flex cluster and pick up its gap spacing.
+          // The yakuza gets a SINGLE button per row, just like a plain
+          // mafioso — but the banner's "Recruit mode" toggle
+          // (yakuzaRecruitMode) flips it between the faction Kill and a
+          // Recruit (one-shot self-sacrifice conversion). The two fire
+          // distinct engine commands; the toggle only chooses which.
           if (myRole === "yakuza") {
-            const frag = document.createDocumentFragment();
-            frag.appendChild(
-              mkBtn(submitted ? "Killing" : "Kill", submitted, () =>
-                send("nightAction", { target: p.id })
-              )
+            if (yakuzaRecruitMode) {
+              // A locked recruit is tracked faction-wide via
+              // mafiaRecruitTarget (from recruitRecorded), the recruit
+              // analogue of myAction for the kill.
+              const recruiting = mafiaRecruitTarget === p.id;
+              return mkBtn(
+                recruiting ? "Recruiting" : "Recruit",
+                recruiting,
+                () => send("recruit", { target: p.id })
+              );
+            }
+            return mkBtn(submitted ? "Killing" : "Kill", submitted, () =>
+              send("nightAction", { target: p.id })
             );
-            frag.appendChild(
-              mkBtn("Recruit", false, () => send("recruit", { target: p.id }))
-            );
-            return frag;
           }
 
           // Button label per acting role, sourced from ROLE_VERBS (the

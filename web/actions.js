@@ -57,6 +57,12 @@
         // even when they can't yet click.
         const countdownEl = $("night-banner-countdown");
         const barWrapEl = $("night-banner-bar-wrap");
+        // The Yakuza-only "Recruit mode" toggle lives on the banner. Clear it
+        // every render; the act-window branch below repopulates it when the
+        // Yakuza can actually choose between killing and recruiting.
+        const bannerActions = $("night-banner-actions");
+        bannerActions.innerHTML = "";
+        bannerActions.classList.add("hidden");
         if (phase === "night" && currentNightRole) {
           banner.classList.remove("hidden");
           const display = capitalize(currentNightRole);
@@ -72,7 +78,9 @@
                 : myRole === "vigilante"
                   ? "Pick someone to eliminate"
                   : myRole === "yakuza"
-                    ? "Pick someone to kill, or Recruit them"
+                    ? yakuzaRecruitMode
+                      ? "Pick someone to Recruit (you'll sacrifice yourself)"
+                      : "Pick someone to kill"
                     : "Pick a target";
             if (mafiaRecruitTarget) {
               // A recruit is locked — the faction kills no one tonight. The
@@ -114,6 +122,29 @@
                 currentNightSubPhase === "act"
                   ? `Your turn — ${display}. ${pickPhrase} on the Players panel below.`
                   : `Your turn — ${display}. Listen to the moderator…`;
+              // The Yakuza can switch the night's faction action between Kill
+              // (default) and Recruit. Surface the toggle only while the act
+              // window is genuinely open for it — same gate as the row picker
+              // (the earlier branches already handled blocked / recruited /
+              // recruit-locked, so reaching here means none apply).
+              if (
+                myRole === "yakuza" &&
+                currentNightSubPhase === "act" &&
+                !currentNightTurnPhantom
+              ) {
+                const on = yakuzaRecruitMode;
+                const toggle = document.createElement("button");
+                toggle.className = on
+                  ? "inline-flex h-9 items-center justify-center rounded bg-rose-700 px-3 text-sm font-semibold text-white hover:bg-rose-600"
+                  : "inline-flex h-9 items-center justify-center rounded bg-slate-600 px-3 text-sm font-semibold text-white hover:bg-slate-500";
+                toggle.textContent = on ? "Recruit mode: ON" : "Recruit mode: OFF";
+                toggle.addEventListener("click", () => {
+                  yakuzaRecruitMode = !yakuzaRecruitMode;
+                  renderAll();
+                });
+                bannerActions.appendChild(toggle);
+                bannerActions.classList.remove("hidden");
+              }
             }
           } else {
             bannerText.textContent = `${display} is choosing. Eyes closed.`;
@@ -362,7 +393,9 @@
                     : myRole === "vigilante"
                       ? "Pick a target below — or hold your fire to save your bullet."
                       : myRole === "yakuza"
-                        ? "Pick someone to kill — or Recruit them into the family (you'll sacrifice yourself)."
+                        ? yakuzaRecruitMode
+                          ? "Recruit mode is ON — pick someone to convert into the family (you'll sacrifice yourself), or switch back to kill above."
+                          : "Pick someone to kill — or flip on Recruit mode above to convert them into the family instead."
                         : "Pick your target on the Players panel below.";
                 if (myRole === "vigilante") {
                   // Explicit "decline to act" affordance. Holding fire

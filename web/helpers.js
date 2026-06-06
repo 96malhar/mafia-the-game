@@ -216,6 +216,14 @@
       // before the server's ponder event lands.
       let heldFireThisTurn = false;
 
+      // yakuzaRecruitMode is a LOCAL, client-only toggle: when true the
+      // Yakuza's per-row night button reads "Recruit" and fires the recruit
+      // command instead of the faction kill. It defaults to false so the
+      // Yakuza looks like any other mafioso (a single "Kill" button); the
+      // banner's "Recruit mode" toggle flips it. Never crosses the wire —
+      // kill vs recruit are already distinct engine commands.
+      let yakuzaRecruitMode = false;
+
       // --- Night turn state (mirrors the engine's per-role sub-phase) ---
       //
       // During PhaseNight each role flows through a five-step sub-phase

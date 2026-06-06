@@ -99,6 +99,11 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			wantTag: clientMsgFinalizeVotes,
 		},
 		{
+			name:    "abstain no data",
+			raw:     `{"type":"abstain"}`,
+			wantTag: clientMsgAbstain,
+		},
+		{
 			name:    "nightPass no data",
 			raw:     `{"type":"nightPass"}`,
 			wantTag: clientMsgNightPass,
@@ -248,6 +253,8 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.VoteCast{Voter: "p1", Target: "p2"},
 		game.VoteChanged{Voter: "p1", From: "p2", To: "p3"},
 		game.VoteRetracted{Voter: "p1", Was: "p2"},
+		game.VoteAbstained{Voter: "p1"},
+		game.VoteProgress{Day: 1, Cast: 2},
 		game.VotesRevealed{Day: 1, Tally: map[game.PlayerID]game.PlayerID{"p1": "p2"}},
 		game.VoteCleared{Day: 1},
 		game.PlayerLynched{PlayerID: "p2"},
@@ -391,6 +398,8 @@ func TestCommandFromClient(t *testing.T) {
 		// NightPass is payload-less; Actor is filled in server-side.
 		{"nightPass", clientMsgNightPass, struct{}{}, game.NightPass{}, true},
 		{"vote", clientMsgVote, clientVoteData{Target: ""}, game.DayVote{Target: ""}, true},
+		// abstain is payload-less; Voter is filled in server-side.
+		{"abstain", clientMsgAbstain, struct{}{}, game.DayAbstain{}, true},
 		{"setMafia", clientMsgSetMafia, clientSetMafiaData{Count: 3}, game.SetMafiaCount{Count: 3}, true},
 		{"setConsort", clientMsgSetConsort, clientSetConsortData{Enabled: true}, game.SetConsort{Enabled: true}, true},
 		{"setVigilante", clientMsgSetVigilante, clientSetVigilanteData{Enabled: true}, game.SetVigilante{Enabled: true}, true},

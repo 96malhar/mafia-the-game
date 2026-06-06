@@ -253,6 +253,16 @@ func TestProjection_VoteSecrecyAndReveal(t *testing.T) {
 		}
 	})
 
+	t.Run("the running progress count is public but carries no targets", func(t *testing.T) {
+		// The aggregate count crosses the secrecy boundary the individual
+		// votes do not: a non-voter sees how MANY have voted, never WHO for.
+		withProgress := append([]game.Event{game.VoteProgress{Day: 1, Cast: 2}}, events...)
+		out := game.Project("town2", withProgress, g.State())
+		vp, ok := findEvent[game.VoteProgress](out)
+		require.True(t, ok, "town2 sees the public progress count pre-reveal")
+		require.Equal(t, 2, vp.Cast)
+	})
+
 	t.Run("everyone — including the dead — sees the revealed tally", func(t *testing.T) {
 		// Build a state where town2 is dead, to prove the reveal reaches
 		// spectating/dead players too (requirement: reveal is public).

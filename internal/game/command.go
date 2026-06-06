@@ -255,11 +255,15 @@ func (Recruit) isCommand() {}
 // vote phase ends, and the most recent value is what counts toward the
 // final tally.
 //
-//   - Target == "" with an active prior vote   -> retract (VoteRetracted)
-//   - Target == "" with no prior vote          -> ErrNoChange
+//   - Target == "" with an active decision     -> retract (VoteRetracted)
+//   - Target == "" with no decision            -> ErrNoChange
 //   - Target == priorTarget                    -> ErrNoChange (no-op spam)
 //   - Target != priorTarget, no prior          -> VoteCast
 //   - Target != priorTarget, had prior         -> VoteChanged{From, To}
+//
+// "Decision" means an active vote OR an abstention (see DayAbstain): a
+// retract ("" target) clears either, and casting a real vote clears any
+// prior abstention so a voter is in exactly one state at a time.
 //
 // Self-voting is forbidden (ErrSelfTarget). Voter and Target (when set)
 // must be alive. Votes submitted in PhaseDayDiscussion are rejected with
@@ -276,6 +280,25 @@ type DayVote struct {
 }
 
 func (DayVote) isCommand() {}
+
+// DayAbstain records that a player explicitly declines to vote anyone in
+// the current PhaseDayVote. An abstention is a first-class DECISION: it
+// counts as a cast vote toward the reveal gate and the public progress
+// count (see VoteProgress / RevealVotes), but contributes to no target's
+// tally — so abstaining still works against any single target reaching a
+// strict majority, exactly as a silent non-vote always did.
+//
+//   - already abstaining          -> ErrNoChange
+//   - otherwise                   -> VoteAbstained (clears any prior vote)
+//
+// Voter must be alive, and abstaining is rejected outside PhaseDayVote and
+// after the tally is revealed, on the same terms as DayVote. To undo an
+// abstention, submit DayVote{Target: ""} (retract).
+type DayAbstain struct {
+	Voter PlayerID
+}
+
+func (DayAbstain) isCommand() {}
 
 // AdvancePhase forces the current PhaseNight's active role-turn to end
 // without an action (timeout semantics). It is INTERNAL: only the room

@@ -462,6 +462,14 @@
 
           case "day_vote": {
             headline.textContent = votesRevealed ? "Votes revealed" : "Vote";
+            // Living roster count (the "of M" denominator) and whether every
+            // living player has cast a vote. votesCastCount is the public
+            // server count; living is computed locally — the engine agrees
+            // during PhaseDayVote (no deaths mid-window). Both the progress
+            // chip and the host's reveal gate read these.
+            let living = 0;
+            for (const p of players.values()) if (p.alive) living++;
+            const allVoted = living > 0 && votesCastCount >= living;
             if (votesRevealed) {
               // Surface the finalize outcome to the WHOLE room (incl. the
               // dead) before the host commits: name who will be lynched,
@@ -480,19 +488,61 @@
               outcomeLine.className = `mt-1 block font-medium ${target ? "text-rose-300" : "text-slate-300"}`;
               outcomeLine.textContent = outcome;
               hint.appendChild(outcomeLine);
+              // Reveal is gated on every living player having decided, so any
+              // living player absent from the tally abstained. Name them so an
+              // abstention reads differently from "never voted".
+              const abstainers = [];
+              for (const p of players.values()) {
+                if (p.alive && !votes.has(p.id)) abstainers.push(p.name);
+              }
+              if (abstainers.length > 0) {
+                const line = document.createElement("span");
+                line.className = "mt-1 block text-slate-400";
+                line.textContent = `Abstained: ${abstainers.join(", ")}`;
+                hint.appendChild(line);
+              }
             } else if (!iAmAlive) {
               hint.textContent = "You're out. You may not vote.";
             } else {
               const myVote = votes.get(myId);
-              hint.textContent = myVote
-                ? "Vote locked in. Tap another player to change, or tap your current selection to retract. Counts stay hidden until the host reveals."
-                : "Pick a player to lynch on the Players panel below. Counts stay hidden until the host reveals.";
+              hint.textContent = iAbstained
+                ? "You abstained — tap Abstaining below to undo, or pick a player to vote instead. Counts stay hidden until the host reveals."
+                : myVote
+                  ? "Vote locked in. Tap another player to change, or tap your current selection to retract. Counts stay hidden until the host reveals."
+                  : "Pick a player to lynch on the Players panel below — or Abstain. Counts stay hidden until the host reveals.";
               if (myVote) {
                 // The "Your vote: X" chip stays as a one-glance
                 // summary; the retract action moved onto the
                 // selected player's row itself (tap-to-undo).
                 extras.appendChild(noteChip(`Your vote: ${nameOf(myVote)}`, "bg-rose-700/60"));
+              } else if (iAbstained) {
+                extras.appendChild(noteChip("You abstained", "bg-slate-600/70"));
               }
+              // Abstain control: a first-class "vote no one". Tapping it
+              // records an abstention (which counts toward the cast total and
+              // the reveal gate); while abstaining the same button retracts
+              // (a DayVote with an empty target). Voting any row also clears
+              // it server-side, so the three states stay exclusive.
+              extras.appendChild(actionButton(
+                iAbstained ? "Abstaining (tap to undo)" : "Abstain",
+                iAbstained ? "bg-slate-500 hover:bg-slate-400" : "bg-slate-700 hover:bg-slate-600",
+                () => (iAbstained ? send("vote", { target: "" }) : send("abstain")),
+              ));
+            }
+            // Public voting progress, shown to EVERYONE during the hidden
+            // window — voters, non-voters, and the dead alike. It surfaces
+            // only the COUNT (server-fed via voteProgress, since individual
+            // votes stay private until the reveal): "N of M voted", or
+            // "Voting completed" once every living player is in. The "of M"
+            // denominator is the living roster count, computed locally the
+            // same way the lynch preview does.
+            if (!votesRevealed && living > 0) {
+              extras.appendChild(
+                noteChip(
+                  allVoted ? "Voting completed" : `${votesCastCount} of ${living} voted`,
+                  allVoted ? "bg-emerald-700/70" : "bg-slate-700/60",
+                ),
+              );
             }
             // Host-only vote-management buttons. The flow is two-step:
             // while hidden the host only gets "Reveal votes"; once
@@ -502,10 +552,15 @@
             // (wipes the board and reopens hidden voting).
             if (myIsHost) {
               if (!votesRevealed) {
+                // Reveal is blocked until every living player has voted, so
+                // the host can't open the box on a partial tally. The button
+                // stays visible (so the host sees the action exists) but is
+                // disabled — and labeled with why — until allVoted.
                 extras.appendChild(actionButton(
-                  "Reveal votes",
-                  "bg-rose-600 hover:bg-rose-500",
+                  allVoted ? "Reveal votes" : "Reveal votes — waiting on all votes",
+                  "bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed",
                   () => send("revealVotes"),
+                  !allVoted,
                 ));
               } else {
                 extras.appendChild(actionButton(
@@ -554,11 +609,15 @@
       // Guidelines minimum tap target. Tailwind doesn't ship a 44px
       // utility out of the box; the arbitrary value works fine and
       // is more honest about the constraint than rounding to 40px.
-      function actionButton(label, klass, onClick) {
+      function actionButton(label, klass, onClick, disabled = false) {
         const b = document.createElement("button");
         b.className = `inline-flex min-h-[44px] items-center justify-center rounded px-4 py-2 text-sm font-medium text-white ${klass}`;
         b.textContent = label;
-        b.addEventListener("click", onClick);
+        // A disabled button skips the click wiring entirely (rather than
+        // relying on the DOM `disabled` attribute alone) so a stale handler
+        // can't fire; the `disabled:*` utility classes style the dimmed state.
+        b.disabled = disabled;
+        if (!disabled) b.addEventListener("click", onClick);
         return b;
       }
 

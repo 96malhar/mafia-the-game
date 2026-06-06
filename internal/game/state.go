@@ -98,6 +98,14 @@ type GameState struct {
 	// or deleted as players change or retract their vote.
 	votes map[PlayerID]PlayerID
 
+	// abstentions is the set of voters who explicitly chose to abstain in
+	// the current PhaseDayVote (DayAbstain). An abstention counts as a CAST
+	// decision (toward the reveal gate and the public progress count) but
+	// contributes to no target's tally. A voter is in AT MOST ONE of
+	// {votes, abstentions}; the apply handlers keep them mutually exclusive.
+	// Reset alongside votes wherever the tally is cleared.
+	abstentions map[PlayerID]bool
+
 	// votesRevealed records whether the host has revealed the current
 	// PhaseDayVote tally (RevealVotes). While false the tally is hidden
 	// — each voter sees only their own vote. Once true the full tally is
@@ -437,6 +445,29 @@ func (s *GameState) firstPlayer(pred func(*Player) bool) (*Player, bool) {
 // living players to agree on a single target).
 func (s *GameState) livingCount() int {
 	return s.countPlayers(func(p *Player) bool { return p.alive })
+}
+
+// votesCastCount returns how many LIVING players have made a decision in
+// the current day vote — either a real vote OR an abstention. It backs both
+// the public VoteProgress count and the RevealVotes gate (reveal is allowed
+// only once this equals livingCount). A voter is in at most one of the two
+// maps, so there's no double counting. We filter on alive (rather than just
+// len) defensively: decisions are only accepted from the living and nobody
+// dies mid-PhaseDayVote, so the numbers agree today, but counting the living
+// keeps it honest if that ever changes.
+func (s *GameState) votesCastCount() int {
+	n := 0
+	for voter := range s.votes {
+		if p, ok := s.findPlayer(voter); ok && p.alive {
+			n++
+		}
+	}
+	for voter := range s.abstentions {
+		if p, ok := s.findPlayer(voter); ok && p.alive {
+			n++
+		}
+	}
+	return n
 }
 
 // isNightBlocked reports whether a living Consort has targeted pid with

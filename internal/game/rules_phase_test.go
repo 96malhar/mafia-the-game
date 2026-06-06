@@ -730,6 +730,109 @@ func TestDayVote_StateTable(t *testing.T) {
 	})
 }
 
+// The running count of how many players have voted is PUBLIC (so the whole
+// room can see voting progress) even while the individual votes stay
+// hidden until the host reveals. Every cast/change/retract rides with a
+// VoteProgress carrying the current living-voter count — a change leaves
+// the count unchanged, a retract decrements it.
+func TestDayVote_PublicProgressCount(t *testing.T) {
+	g := intoDayVote(t) // 5 living players, nobody voted yet
+
+	// castCount applies a vote edit, asserts it carried a PUBLIC
+	// VoteProgress, and returns the running count it reported.
+	castCount := func(c game.DayVote) int {
+		t.Helper()
+		evts, err := g.Apply(c)
+		require.NoError(t, err)
+		vp, ok := findEvent[game.VoteProgress](evts)
+		require.True(t, ok, "every vote edit emits a VoteProgress")
+		require.Equal(t, "public", vp.Visibility().Audience,
+			"the running count is public — never gated to the voter")
+		return vp.Cast
+	}
+
+	require.Equal(t, 1, castCount(game.DayVote{Voter: "town1", Target: "mafia1"}))
+	require.Equal(t, 2, castCount(game.DayVote{Voter: "det", Target: "mafia1"}))
+	// A voter switching targets does not change how many have voted.
+	require.Equal(t, 2, castCount(game.DayVote{Voter: "town1", Target: "det"}))
+	// A retract drops the count back down.
+	require.Equal(t, 1, castCount(game.DayVote{Voter: "town1", Target: ""}))
+}
+
+// An abstention is a first-class DECISION: it counts toward the public
+// progress count and the reveal gate, contributes to no target's tally,
+// is private to the abstainer, and is mutually exclusive with a real vote.
+func TestDayAbstain(t *testing.T) {
+	t.Run("abstaining emits a private VoteAbstained plus a public count bump", func(t *testing.T) {
+		g := intoDayVote(t)
+		evts, err := g.Apply(game.DayAbstain{Voter: "town1"})
+		require.NoError(t, err)
+
+		va, ok := findEvent[game.VoteAbstained](evts)
+		require.True(t, ok, "abstaining emits VoteAbstained")
+		require.Equal(t, "player", va.Visibility().Audience,
+			"an abstention is private to the abstainer until reveal")
+		require.Equal(t, game.PlayerID("town1"), va.Visibility().Player)
+
+		vp, ok := findEvent[game.VoteProgress](evts)
+		require.True(t, ok)
+		require.Equal(t, 1, vp.Cast, "an abstention counts toward the cast total")
+	})
+
+	t.Run("abstaining again is ErrNoChange", func(t *testing.T) {
+		g := intoDayVote(t)
+		_, err := g.Apply(game.DayAbstain{Voter: "town1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayAbstain{Voter: "town1"})
+		require.ErrorIs(t, err, game.ErrNoChange)
+	})
+
+	t.Run("abstaining supersedes a prior vote without raising the count", func(t *testing.T) {
+		g := intoDayVote(t)
+		evts, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+		vp, _ := findEvent[game.VoteProgress](evts)
+		require.Equal(t, 1, vp.Cast)
+
+		evts, err = g.Apply(game.DayAbstain{Voter: "town1"})
+		require.NoError(t, err)
+		vp, _ = findEvent[game.VoteProgress](evts)
+		require.Equal(t, 1, vp.Cast, "vote → abstain stays one cast, not two")
+
+		// The vote no longer counts toward any target: a lone other voter
+		// can't reach a majority, so finalize is a NoLynch.
+		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
+		require.NoError(t, err)
+		out, err := g.Apply(game.FinalizeVotes{})
+		require.NoError(t, err)
+		_, lynched := findEvent[game.PlayerLynched](out)
+		require.False(t, lynched, "only one real vote remains → no majority")
+	})
+
+	t.Run("retract clears an abstention", func(t *testing.T) {
+		g := intoDayVote(t)
+		_, err := g.Apply(game.DayAbstain{Voter: "town1"})
+		require.NoError(t, err)
+		evts, err := g.Apply(game.DayVote{Voter: "town1", Target: ""})
+		require.NoError(t, err, "an abstention is retractable")
+		_, ok := findEvent[game.VoteRetracted](evts)
+		require.True(t, ok)
+		vp, _ := findEvent[game.VoteProgress](evts)
+		require.Equal(t, 0, vp.Cast, "retracting an abstention drops the count")
+	})
+
+	t.Run("abstain outside PhaseDayVote is rejected", func(t *testing.T) {
+		g := fixedRoster(t)
+		playNight(t, g, map[game.Role]game.PlayerID{
+			game.RoleMafia:  "town1",
+			game.RoleDoctor: "town1",
+		})
+		require.Equal(t, game.PhaseDayDiscussion, g.State().Phase())
+		_, err := g.Apply(game.DayAbstain{Voter: "town1"})
+		require.ErrorIs(t, err, game.ErrWrongPhase)
+	})
+}
+
 // --- Vote resolution (host-driven) ---------------------------------------
 
 // Roster has 5 living players entering the vote (doctor saved the
@@ -863,14 +966,20 @@ func TestVoteResolution(t *testing.T) {
 // --- Reveal-then-finalize vote flow --------------------------------------
 
 func TestRevealVotes(t *testing.T) {
+	// castDecisive makes ALL FIVE living players cast a decision so a reveal
+	// is allowed: three vote mafia1 (a 3/5 strict majority), and the other
+	// two abstain (counting toward the reveal gate without swinging the
+	// tally). The revealed tally therefore still holds exactly the 3 votes.
 	castDecisive := func(t *testing.T, g *game.Game) {
 		t.Helper()
-		_, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
-		require.NoError(t, err)
-		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
-		require.NoError(t, err)
-		_, err = g.Apply(game.DayVote{Voter: "det", Target: "mafia1"})
-		require.NoError(t, err)
+		for _, v := range []game.PlayerID{"town1", "town2", "det"} {
+			_, err := g.Apply(game.DayVote{Voter: v, Target: "mafia1"})
+			require.NoError(t, err)
+		}
+		for _, v := range []game.PlayerID{"doc", "mafia1"} {
+			_, err := g.Apply(game.DayAbstain{Voter: v})
+			require.NoError(t, err)
+		}
 	}
 
 	t.Run("reveal emits a public VotesRevealed snapshot of the tally", func(t *testing.T) {
@@ -911,27 +1020,59 @@ func TestRevealVotes(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrWrongPhase)
 	})
 
-	t.Run("reveal with an empty tally is allowed and snapshots empty", func(t *testing.T) {
+	t.Run("reveal is blocked until every living player has cast", func(t *testing.T) {
+		g := intoDayVote(t) // 5 living
+		// Only three of five decide → reveal is rejected.
+		_, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "mafia1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayAbstain{Voter: "det"})
+		require.NoError(t, err)
+
+		_, err = g.Apply(game.RevealVotes{})
+		require.ErrorIs(t, err, game.ErrVotingIncomplete)
+		require.False(t, g.State().VotesRevealed(), "a blocked reveal must not flip the flag")
+
+		// The last two decide → reveal now succeeds.
+		_, err = g.Apply(game.DayAbstain{Voter: "doc"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayAbstain{Voter: "mafia1"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		require.True(t, g.State().VotesRevealed())
+	})
+
+	t.Run("reveal with everyone abstaining is allowed and snapshots empty", func(t *testing.T) {
 		g := intoDayVote(t)
+		for _, v := range []game.PlayerID{"town1", "town2", "det", "doc", "mafia1"} {
+			_, err := g.Apply(game.DayAbstain{Voter: v})
+			require.NoError(t, err)
+		}
 		evts, err := g.Apply(game.RevealVotes{})
 		require.NoError(t, err)
 		rv, ok := findEvent[game.VotesRevealed](evts)
 		require.True(t, ok)
-		require.Empty(t, rv.Tally)
+		require.Empty(t, rv.Tally, "all abstained → no votes in the tally")
 		require.NotNil(t, rv.Tally, "tally is always a non-nil (possibly empty) map")
 	})
 
-	t.Run("clear after an empty reveal reopens voting", func(t *testing.T) {
-		// Regression: revealing before anyone votes left the host stuck —
-		// ClearVotes rejected with ErrNoChange because the tally was
-		// empty, even though clearing would still undo the reveal.
+	t.Run("clear after an all-abstain reveal reopens voting", func(t *testing.T) {
+		// Regression: ClearVotes must work after a reveal even when the
+		// tally is empty (here because everyone abstained) — clearing still
+		// undoes the reveal and reopens hidden voting.
 		g := intoDayVote(t)
+		for _, v := range []game.PlayerID{"town1", "town2", "det", "doc", "mafia1"} {
+			_, err := g.Apply(game.DayAbstain{Voter: v})
+			require.NoError(t, err)
+		}
 		_, err := g.Apply(game.RevealVotes{})
 		require.NoError(t, err)
 		require.True(t, g.State().VotesRevealed())
 
 		evts, err := g.Apply(game.ClearVotes{})
-		require.NoError(t, err, "clear must work after a reveal even with no votes")
+		require.NoError(t, err, "clear must work after a reveal even with an empty tally")
 		_, ok := findEvent[game.VoteCleared](evts)
 		require.True(t, ok)
 		require.False(t, g.State().VotesRevealed(), "clear undoes the reveal")
@@ -973,6 +1114,11 @@ func TestRevealVotes(t *testing.T) {
 		_, err = g.Apply(game.DayVote{Voter: "town2", Target: "det"})
 		require.NoError(t, err)
 		_, err = g.Apply(game.DayVote{Voter: "mafia1", Target: "det"})
+		require.NoError(t, err)
+		// det and doc must also decide before the host can reveal.
+		_, err = g.Apply(game.DayAbstain{Voter: "det"})
+		require.NoError(t, err)
+		_, err = g.Apply(game.DayAbstain{Voter: "doc"})
 		require.NoError(t, err)
 		_, err = g.Apply(game.RevealVotes{})
 		require.NoError(t, err)

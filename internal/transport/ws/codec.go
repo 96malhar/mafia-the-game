@@ -142,6 +142,12 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.VoteRetracted:
 		tag = wire.EventVoteRetracted
 		data = kv{"voter": string(v.Voter), "was": string(v.Was)}
+	case game.VoteAbstained:
+		tag = wire.EventVoteAbstained
+		data = kv{"voter": string(v.Voter)}
+	case game.VoteProgress:
+		tag = wire.EventVoteProgress
+		data = kv{"day": v.Day, "cast": v.Cast}
 	case game.VotesRevealed:
 		tag = wire.EventVotesRevealed
 		data = kv{"day": v.Day, "tally": stringKeyValMap(v.Tally)}
@@ -296,7 +302,8 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		clientMsgClearVotes,
 		clientMsgFinalizeVotes,
 		clientMsgResetGame,
-		clientMsgNightPass:
+		clientMsgNightPass,
+		clientMsgAbstain:
 		return tag, struct{}{}, nil
 
 	default:
@@ -344,6 +351,9 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgVote:
 		d := data.(clientVoteData)
 		return game.DayVote{Target: game.PlayerID(d.Target)}, true
+	case clientMsgAbstain:
+		// Voter is filled in server-side by the room (rewriteActor).
+		return game.DayAbstain{}, true
 	case clientMsgSetMafia:
 		d := data.(clientSetMafiaData)
 		return game.SetMafiaCount{Count: d.Count}, true

@@ -253,6 +253,7 @@ func (g *Game) applyBeginNight(_ BeginNight) ([]Event, error) {
 	from := g.state.phase
 	g.state.phase = PhaseNight
 	g.state.votes = nil
+	g.state.abstentions = nil
 	g.state.dayLynchResolved = false
 	events := []Event{PhaseChanged{From: from, To: PhaseNight, Day: g.state.day}}
 	events = append(events, g.beginNightTurns()...)
@@ -273,6 +274,7 @@ func (g *Game) applyOpenVoting(_ OpenVoting) ([]Event, error) {
 	from := g.state.phase
 	g.state.phase = PhaseDayVote
 	g.state.votes = make(map[PlayerID]PlayerID)
+	g.state.abstentions = nil
 	g.state.votesRevealed = false
 	return []Event{PhaseChanged{From: from, To: PhaseDayVote, Day: g.state.day}}, nil
 }
@@ -290,6 +292,13 @@ func (g *Game) applyRevealVotes(_ RevealVotes) ([]Event, error) {
 	}
 	if g.state.votesRevealed {
 		return nil, ErrNoChange
+	}
+	// Reveal is gated until every living player has cast a decision (a vote
+	// or an abstention), so the host can't open the box on a partial tally.
+	// The running count is public (VoteProgress) so the room can see who is
+	// still outstanding before this becomes possible.
+	if g.state.votesCastCount() < g.state.livingCount() {
+		return nil, ErrVotingIncomplete
 	}
 	g.state.votesRevealed = true
 	return []Event{VotesRevealed{Day: g.state.day, Tally: g.snapshotVotes()}}, nil
@@ -318,13 +327,15 @@ func (g *Game) applyClearVotes(_ ClearVotes) ([]Event, error) {
 		return nil, err
 	}
 	// Nothing to clear AND nothing revealed → no-op, reject to avoid
-	// spamming the log with redundant VoteCleared events. But once the
-	// host has revealed (even an empty tally), ClearVotes is meaningful:
-	// it un-reveals and reopens hidden voting, which IS a state change.
-	if len(g.state.votes) == 0 && !g.state.votesRevealed {
+	// spamming the log with redundant VoteCleared events. Abstentions
+	// count as "something to clear" too. But once the host has revealed
+	// (even an empty tally), ClearVotes is meaningful: it un-reveals and
+	// reopens hidden voting, which IS a state change.
+	if len(g.state.votes) == 0 && len(g.state.abstentions) == 0 && !g.state.votesRevealed {
 		return nil, ErrNoChange
 	}
 	g.state.votes = make(map[PlayerID]PlayerID)
+	g.state.abstentions = nil
 	g.state.votesRevealed = false
 	return []Event{VoteCleared{Day: g.state.day}}, nil
 }

@@ -53,6 +53,7 @@ const (
 	clientMsgNightAction   clientMsgType = wire.ClientMsgNightAction
 	clientMsgNightPass     clientMsgType = wire.ClientMsgNightPass
 	clientMsgVote          clientMsgType = wire.ClientMsgVote
+	clientMsgAbstain       clientMsgType = wire.ClientMsgAbstain
 	clientMsgStartGame     clientMsgType = wire.ClientMsgStartGame
 	clientMsgBeginNight    clientMsgType = wire.ClientMsgBeginNight
 	clientMsgOpenVoting    clientMsgType = wire.ClientMsgOpenVoting

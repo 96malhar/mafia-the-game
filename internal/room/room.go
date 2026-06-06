@@ -625,6 +625,9 @@ func rewriteActor(cmd game.Command, pid game.PlayerID) game.Command {
 	case game.DayVote:
 		c.Voter = pid
 		return c
+	case game.DayAbstain:
+		c.Voter = pid
+		return c
 	// Commands without an actor field (StartGame, BeginNight, etc.)
 	// pass through unchanged. Host-only authorization is checked in
 	// handleCommand via isHostOnly before this function runs.

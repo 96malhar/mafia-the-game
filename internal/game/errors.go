@@ -83,4 +83,11 @@ var (
 	// target picker — so this rejects a client that bypasses the UI.
 	// Mafia are immune to the block and never see this error.
 	ErrBlocked = errors.New("game: your night action is blocked tonight")
+
+	// ErrVotingIncomplete is returned by RevealVotes when not every living
+	// player has yet cast a decision (a vote or an abstention). Reveal is
+	// gated so the host can't open the box on a partial tally; the count
+	// is surfaced publicly (VoteProgress) so the room can see who is still
+	// outstanding.
+	ErrVotingIncomplete = errors.New("game: not every living player has voted yet")
 )

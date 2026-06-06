@@ -221,6 +221,21 @@
       // (voting is locked until a Clear & re-vote). Reset to false on
       // any phase change and on voteCleared.
       let votesRevealed = false;
+      // votesCastCount is the PUBLIC running count of how many living
+      // players have voted in the current (still-hidden) day-vote tally.
+      // The individual votes stay private until reveal, so this aggregate —
+      // fed by the server's voteProgress event — is the only way a viewer
+      // (voter, non-voter, or dead) learns voting progress before the host
+      // opens the box. The living total (the "of M" denominator) is NOT
+      // carried; we compute it locally from the roster. Reset to 0 on any
+      // phase change, on voteCleared, and on votesRevealed.
+      let votesCastCount = 0;
+      // iAbstained mirrors OUR OWN abstention in the current (hidden) day
+      // vote — set by the private voteAbstained event, cleared when we cast a
+      // real vote or retract. Like our own vote it's local-only; other
+      // players' abstentions stay private (we learn only the aggregate count
+      // via votesCastCount). Reset on phase change, voteCleared, votesRevealed.
+      let iAbstained = false;
       let winner = null;
       // dayLynchResolved mirrors the engine's same-named flag. Set to
       // true when a PlayerLynched event arrives during day_vote (the

@@ -462,6 +462,38 @@ type VoteRetracted struct {
 func (VoteRetracted) isEvent()                 {}
 func (e VoteRetracted) Visibility() Visibility { return PrivateTo(e.Voter) }
 
+// VoteAbstained is emitted when a voter records an abstention (DayAbstain).
+// Like the other per-voter vote events it is PRIVATE TO THE VOTER while the
+// tally is hidden — only the abstainer's own UI reflects it; the room learns
+// only that the running count went up (via VoteProgress). On reveal, an
+// abstainer is simply a living player absent from the public tally (reveal
+// is gated on everyone having decided, so "didn't vote for anyone" then
+// unambiguously means "abstained").
+type VoteAbstained struct {
+	Voter PlayerID
+}
+
+func (VoteAbstained) isEvent()                 {}
+func (e VoteAbstained) Visibility() Visibility { return PrivateTo(e.Voter) }
+
+// VoteProgress is a PUBLIC running count of how many living players have a
+// vote recorded in the current PhaseDayVote. It rides alongside each
+// private VoteCast/VoteChanged/VoteRetracted so the WHOLE room — voters,
+// non-voters, and the dead — can watch voting progress ("N of M voted",
+// or all-in) WITHOUT learning who voted for whom. It deliberately carries
+// only the aggregate Cast count, never any voter→target pair: this is the
+// one running number that crosses the secrecy boundary the individual
+// votes do not (see the note above VoteCast). M (the living count) is not
+// carried — every client already knows the roster and computes it locally,
+// the same way the lynch-threshold preview does.
+type VoteProgress struct {
+	Day  int
+	Cast int
+}
+
+func (VoteProgress) isEvent()               {}
+func (VoteProgress) Visibility() Visibility { return Public() }
+
 // VotesRevealed is emitted when the host calls RevealVotes. It carries
 // the full voter→target tally so every viewer — alive, dead, or
 // spectating — can render who voted for whom in one shot. It is the only

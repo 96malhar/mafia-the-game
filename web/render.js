@@ -10,6 +10,8 @@
         mafiaKillTarget = null;
         votes = new Map();
         votesRevealed = false;
+        votesCastCount = 0;
+        iAbstained = false;
         winner = null;
         myRole = null;
         mafiaPeers = new Set();

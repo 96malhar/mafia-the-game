@@ -630,6 +630,7 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 		{game.ErrGameEnded, wire.ErrCodeGameEnded},
 		{game.ErrNoChange, wire.ErrCodeNoChange},
 		{game.ErrAlreadyActed, wire.ErrCodeAlreadyActed},
+		{game.ErrVotingIncomplete, wire.ErrCodeVotingIncomplete},
 
 		// Room / transport sentinels.
 		{ErrAuthFailed, wire.ErrCodeAuthFailed},

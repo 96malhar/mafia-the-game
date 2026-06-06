@@ -33,20 +33,21 @@ const (
 	// Each of these maps 1:1 to a sentinel in internal/game/errors.go.
 	// The mapping lives in internal/room/errors.go (errorFor).
 
-	ErrCodeWrongPhase      ErrorCode = "wrong_phase"
-	ErrCodeUnknownPlayer   ErrorCode = "unknown_player"
-	ErrCodeDuplicatePlayer ErrorCode = "duplicate_player"
-	ErrCodeDuplicateName   ErrorCode = "duplicate_name"
-	ErrCodePlayerDead      ErrorCode = "player_dead"
-	ErrCodeNotYourAction   ErrorCode = "not_your_action"
-	ErrCodeNotYourTurn     ErrorCode = "not_your_turn"
-	ErrCodeSelfTarget      ErrorCode = "self_target"
-	ErrCodeRosterMismatch  ErrorCode = "roster_mismatch"
-	ErrCodeLobbyFull       ErrorCode = "lobby_full"
-	ErrCodeGameEnded       ErrorCode = "game_ended"
-	ErrCodeNoChange        ErrorCode = "no_change"
-	ErrCodeAlreadyActed    ErrorCode = "already_acted"
-	ErrCodeBlocked         ErrorCode = "blocked"
+	ErrCodeWrongPhase       ErrorCode = "wrong_phase"
+	ErrCodeUnknownPlayer    ErrorCode = "unknown_player"
+	ErrCodeDuplicatePlayer  ErrorCode = "duplicate_player"
+	ErrCodeDuplicateName    ErrorCode = "duplicate_name"
+	ErrCodePlayerDead       ErrorCode = "player_dead"
+	ErrCodeNotYourAction    ErrorCode = "not_your_action"
+	ErrCodeNotYourTurn      ErrorCode = "not_your_turn"
+	ErrCodeSelfTarget       ErrorCode = "self_target"
+	ErrCodeRosterMismatch   ErrorCode = "roster_mismatch"
+	ErrCodeLobbyFull        ErrorCode = "lobby_full"
+	ErrCodeGameEnded        ErrorCode = "game_ended"
+	ErrCodeNoChange         ErrorCode = "no_change"
+	ErrCodeAlreadyActed     ErrorCode = "already_acted"
+	ErrCodeBlocked          ErrorCode = "blocked"
+	ErrCodeVotingIncomplete ErrorCode = "voting_incomplete"
 
 	// --- Room / transport-layer codes -----------------------------
 	//
@@ -103,6 +104,7 @@ var ErrorCodes = []ErrorCode{
 	ErrCodeNoChange,
 	ErrCodeAlreadyActed,
 	ErrCodeBlocked,
+	ErrCodeVotingIncomplete,
 
 	ErrCodeAuthFailed,
 	ErrCodeNotJoined,

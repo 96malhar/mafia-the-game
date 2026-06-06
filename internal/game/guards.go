@@ -118,6 +118,7 @@ func (g *Game) endDayToDiscussion() Event {
 	from := g.state.phase
 	g.state.phase = PhaseDayDiscussion
 	g.state.votes = nil
+	g.state.abstentions = nil
 	g.state.dayLynchResolved = true
 	return PhaseChanged{From: from, To: PhaseDayDiscussion, Day: g.state.day}
 }

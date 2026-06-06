@@ -93,6 +93,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyRecruit(c)
 	case DayVote:
 		return g.applyDayVote(c)
+	case DayAbstain:
+		return g.applyDayAbstain(c)
 	case AdvancePhase:
 		return g.applyAdvancePhase(c)
 	default:

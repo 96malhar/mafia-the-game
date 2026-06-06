@@ -238,8 +238,10 @@
             mafiaKillTarget = null;
             votes = new Map();
             // Each fresh phase (notably a new day_vote opened by the
-            // host) starts with the tally hidden again.
+            // host) starts with the tally hidden again and no votes cast.
             votesRevealed = false;
+            votesCastCount = 0;
+            iAbstained = false;
             // Going INTO night clears any prior turn state; the
             // accompanying nightOpeningStarted / nightNarrationStarted
             // events in the same batch will set the new sub-phase.
@@ -618,20 +620,50 @@
           // arrives later via votesRevealed.
           case "voteCast":
             votes.set(env.data.voter, env.data.target);
+            // Casting a real vote supersedes any abstention of ours.
+            if (env.data.voter === myId) iAbstained = false;
             renderActionPanel();
             renderPlayers();
             break;
 
           case "voteChanged":
             votes.set(env.data.voter, env.data.to);
+            if (env.data.voter === myId) iAbstained = false;
             renderActionPanel();
             renderPlayers();
             break;
 
           case "voteRetracted":
             votes.delete(env.data.voter);
+            // A retract clears whatever decision we had — vote OR abstention.
+            if (env.data.voter === myId) iAbstained = false;
             renderActionPanel();
             renderPlayers();
+            break;
+
+          case "voteAbstained":
+            // PRIVATE to the abstainer: only ever us. Reflect our own
+            // abstention and drop any real vote we had so the two states
+            // stay mutually exclusive (mirrors the engine). Other players'
+            // abstentions never arrive here — the room learns only the
+            // aggregate count via voteProgress.
+            if (env.data.voter === myId) {
+              iAbstained = true;
+              votes.delete(myId);
+            }
+            renderActionPanel();
+            renderPlayers();
+            break;
+
+          case "voteProgress":
+            // PUBLIC running count of how many living players have voted,
+            // emitted alongside every (private) cast/change/retract. This is
+            // how non-voters and the dead — who never receive the individual
+            // votes — learn voting progress while the tally stays hidden.
+            // Only the count moves; the banner shows "N of M voted" (M from
+            // the local roster) or "Voting completed" once everyone's in.
+            votesCastCount = env.data.cast || 0;
+            renderActionPanel();
             break;
 
           case "votesRevealed": {
@@ -642,6 +674,10 @@
             // per-row Vote buttons drop out (renderPlayers keys off
             // votesRevealed) and the host swaps Reveal → Finalize/Clear.
             votesRevealed = true;
+            // The full board takes over now; the hidden-window progress
+            // count and our own abstention indicator are no longer shown.
+            votesCastCount = 0;
+            iAbstained = false;
             votes = new Map();
             const tally = env.data.tally || {};
             for (const [voter, target] of Object.entries(tally)) {
@@ -658,6 +694,8 @@
           case "voteCleared":
             votes = new Map();
             votesRevealed = false;
+            votesCastCount = 0;
+            iAbstained = false;
             renderActionPanel();
             renderPlayers();
             if (!replaying) {

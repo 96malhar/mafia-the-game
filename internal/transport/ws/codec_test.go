@@ -103,6 +103,11 @@ func TestDecodeClientMessage_Variants(t *testing.T) {
 			raw:     `{"type":"nightPass"}`,
 			wantTag: clientMsgNightPass,
 		},
+		{
+			name:    "resetGame no data",
+			raw:     `{"type":"resetGame"}`,
+			wantTag: clientMsgResetGame,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,6 +251,7 @@ func TestEncodeOutbound_AllEventTypes(t *testing.T) {
 		game.NoLynch{Day: 1},
 		game.RosterRevealed{Roles: map[game.PlayerID]game.Role{"p1": game.RoleMafia, "p2": game.RoleVillager}},
 		game.GameEnded{Winner: game.FactionTown, FinalRoles: map[game.PlayerID]game.Role{"p1": game.RoleMafia}},
+		game.GameReset{Players: []game.ResetPlayer{{ID: "p1", Name: "Alice"}}, MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1},
 	}
 	for _, ev := range all {
 		t.Run(eventTypeName(ev), func(t *testing.T) {
@@ -309,6 +315,47 @@ func TestEncodeOutbound_RosterRevealed(t *testing.T) {
 	require.Equal(t, map[string]string{"p1": "mafia", "p2": "villager"}, data.Roles)
 }
 
+// GameReset is the self-contained lobby snapshot a reset broadcasts. It must
+// carry the retained roster as an array of {playerId, name} objects plus the
+// lobby config, so a post-reset client can rebuild the lobby from it alone.
+func TestEncodeOutbound_GameReset(t *testing.T) {
+	ev := game.GameReset{
+		Players:    []game.ResetPlayer{{ID: "p1", Name: "Alice"}, {ID: "p2", Name: "Bob"}},
+		MinPlayers: 5,
+		MaxPlayers: 20,
+		MafiaCount: 1,
+	}
+	raw, ok, err := encodeOutbound(room.OutEvent{Event: ev})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	env := mustUnmarshalEnvelope(t, raw)
+	require.Equal(t, "event", env.Type)
+
+	var ed serverEventData
+	require.NoError(t, json.Unmarshal(env.Data, &ed))
+	require.Equal(t, "gameReset", ed.Event.Type)
+
+	var data struct {
+		Players []struct {
+			PlayerID string `json:"playerId"`
+			Name     string `json:"name"`
+		} `json:"players"`
+		MinPlayers int `json:"minPlayers"`
+		MaxPlayers int `json:"maxPlayers"`
+		MafiaCount int `json:"mafiaCount"`
+	}
+	require.NoError(t, json.Unmarshal(ed.Event.Data, &data))
+	require.Equal(t, 5, data.MinPlayers)
+	require.Equal(t, 20, data.MaxPlayers)
+	require.Equal(t, 1, data.MafiaCount)
+	require.Len(t, data.Players, 2)
+	require.Equal(t, "p1", data.Players[0].PlayerID)
+	require.Equal(t, "Alice", data.Players[0].Name)
+	require.Equal(t, "p2", data.Players[1].PlayerID)
+	require.Equal(t, "Bob", data.Players[1].Name)
+}
+
 // Producer side uses the typed wire.ErrorCode; wire-format side
 // (serverErrorData.Code) is a plain JSON string. The codec is the
 // only place that bridges the two, so we verify both directions
@@ -352,6 +399,8 @@ func TestCommandFromClient(t *testing.T) {
 		{"revealVotes", clientMsgRevealVotes, struct{}{}, game.RevealVotes{}, true},
 		{"clearVotes", clientMsgClearVotes, struct{}{}, game.ClearVotes{}, true},
 		{"finalizeVotes", clientMsgFinalizeVotes, struct{}{}, game.FinalizeVotes{}, true},
+		// resetGame is payload-less; the Seed is filled in server-side by the room.
+		{"resetGame", clientMsgResetGame, struct{}{}, game.ResetGame{}, true},
 		// "join" isn't a command in the engine sense.
 		{"join is not a command", clientMsgJoin, clientJoinData{Name: "x"}, nil, false},
 	}

@@ -516,3 +516,34 @@ type GameEnded struct {
 
 func (GameEnded) isEvent()               {}
 func (GameEnded) Visibility() Visibility { return Public() }
+
+// ResetPlayer is the per-player snapshot carried by GameReset: just the
+// stable identity (id + name), since a fresh lobby has no roles, no
+// aliveness distinctions, and no other per-player state to preserve.
+type ResetPlayer struct {
+	ID   PlayerID
+	Name string
+}
+
+// GameReset records a finished game returning to a fresh lobby in the same
+// room (see the ResetGame command). It is a self-contained lobby snapshot:
+// the room replaces its entire event log with this single event as the new
+// baseline — the previous game's events are deliberately NOT carried over —
+// so a player joining or rejoining after the reset reconstructs the whole
+// lobby from GameReset alone. That is why it duplicates the GameCreated
+// config (MinPlayers/MaxPlayers/MafiaCount) and the retained roster rather
+// than relying on earlier events still being present.
+//
+// Public: a reset to lobby is not secret, and every connected client (living
+// or dead in the prior game) must see it to drop back to the lobby view.
+// Optional-role toggles are intentionally omitted — a reset clears them all
+// to off, which is the client's lobby default.
+type GameReset struct {
+	Players    []ResetPlayer
+	MinPlayers int
+	MaxPlayers int
+	MafiaCount int
+}
+
+func (GameReset) isEvent()               {}
+func (GameReset) Visibility() Visibility { return Public() }

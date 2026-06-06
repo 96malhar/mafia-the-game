@@ -44,6 +44,7 @@ const (
 	ClientMsgSetVigilante  = "setVigilante"
 	ClientMsgSetYakuza     = "setYakuza"
 	ClientMsgRecruit       = "recruit"
+	ClientMsgResetGame     = "resetGame"
 )
 
 // --- Server → client message types ---------------------------------------
@@ -97,6 +98,7 @@ const (
 	EventNoLynch               = "noLynch"
 	EventRosterRevealed        = "rosterRevealed"
 	EventGameEnded             = "gameEnded"
+	EventGameReset             = "gameReset"
 )
 
 // Note: the on-wire spellings of domain enums (Role, Phase, Faction) are

@@ -22,8 +22,10 @@ type Config struct {
 	MaxPlayers int
 	MafiaCount int
 
-	// Seed is the deterministic shuffle seed passed to the engine.
-	// 0 (the default) is a valid seed.
+	// Seed is the shuffle seed passed to the engine. Leave it 0 (the zero
+	// value) and newRoom mints a fresh random seed so deals are
+	// unpredictable; set a non-zero value only to force a deterministic
+	// deal (e.g. a replay/debug path).
 	Seed int64
 
 	// MaxLifetime is the hard upper bound on a room's wall-clock age.
@@ -126,7 +128,7 @@ const DefaultMafiaNarrateDayN = 1500 * time.Millisecond
 // brush up against it; short enough that abandoned rooms (any
 // flavor: empty, full of zombies, ended) don't accumulate forever
 // on a long-running server.
-const DefaultMaxLifetime = 5 * time.Hour
+const DefaultMaxLifetime = 8 * time.Hour
 
 // defaultSubPhaseDuration returns the built-in wall-clock duration for
 // a night sub-phase. These values are the single source of timing

@@ -57,6 +57,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applyClearVotes(c)
 	case FinalizeVotes:
 		return g.applyFinalizeVotes(c)
+	case ResetGame:
+		return g.applyResetGame(c)
 	case NightAction:
 		return g.applyNightAction(c)
 	case NightPass:

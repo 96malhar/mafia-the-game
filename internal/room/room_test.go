@@ -900,6 +900,54 @@ func TestRoom_RoleToggleIsClassifiedHostOnly(t *testing.T) {
 	}
 }
 
+// TestRoom_ResetGameIsClassifiedHostOnly guards that only the host can start
+// a new game in the room (restarting reconfigures the whole roster, so a
+// non-host must not be able to trigger it).
+func TestRoom_ResetGameIsClassifiedHostOnly(t *testing.T) {
+	require.True(t, isHostOnly(game.ResetGame{}), "ResetGame must be host-only")
+}
+
+// TestRoom_NonHostResetGameRejected: a non-host's resetGame is Forbidden and
+// changes nothing — it never reaches the engine (the host gate precedes it).
+func TestRoom_NonHostResetGameRejected(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")
+	other, _ := connect(t, r, "Player2")
+	_ = drain(host, 50*time.Millisecond)
+	_ = drain(other, 50*time.Millisecond)
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: other, Cmd: game.ResetGame{},
+	}))
+	errOut := recvType[OutError](t, other)
+	require.Equal(t, wire.ErrCodeForbidden, errOut.Code,
+		"a non-host ResetGame must be forbidden")
+
+	// Nothing rebaselined the log for anyone.
+	requireNoEvent[game.GameReset](t, host, 100*time.Millisecond,
+		"a forbidden ResetGame must not broadcast GameReset")
+}
+
+// TestRoom_HostResetGameInLobbyRejected: even the host can't reset a game
+// that hasn't ended. The room routes ResetGame through its special handler,
+// which applies it to the engine; the engine rejects a non-ended game with
+// ErrWrongPhase, and that error must flow back to the requesting host.
+func TestRoom_HostResetGameInLobbyRejected(t *testing.T) {
+	_, r := newTestRoom(t)
+	host, _ := connect(t, r, "Host")
+	_ = drain(host, 50*time.Millisecond)
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: host, Cmd: game.ResetGame{},
+	}))
+	errOut := recvType[OutError](t, host)
+	require.Equal(t, wire.ErrCodeWrongPhase, errOut.Code,
+		"resetting a game that hasn't ended must be a wrong-phase error")
+
+	requireNoEvent[game.GameReset](t, host, 100*time.Millisecond,
+		"a rejected ResetGame must not broadcast GameReset")
+}
+
 // TestRoom_NonHostSetConsortRejected covers the rejection path once (it's
 // identical across the toggles): a non-host attempt is Forbidden and broadcasts
 // nothing.

@@ -523,7 +523,20 @@
             headline.textContent = winner
               ? `${capitalize(winner)} wins`
               : "Game over";
-            hint.textContent = "Roles below are revealed. Open a new room to play again.";
+            // The host can restart in-place: a new game in the SAME room,
+            // keeping every player, returning to the lobby so optional
+            // roles can be re-toggled and new players can join before the
+            // next deal. Non-hosts just wait for the host to do so.
+            if (myIsHost) {
+              hint.textContent = "Roles below are revealed. Start a new game with the same players, or share the room link to add more.";
+              extras.appendChild(actionButton(
+                "Start new game",
+                "bg-emerald-600 hover:bg-emerald-500",
+                () => send("resetGame"),
+              ));
+            } else {
+              hint.textContent = "Roles below are revealed. Waiting for the host to start a new game.";
+            }
             break;
           }
 

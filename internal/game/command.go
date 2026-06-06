@@ -160,6 +160,26 @@ type FinalizeVotes struct{}
 
 func (FinalizeVotes) isCommand() {}
 
+// ResetGame returns a finished game to a fresh lobby so the same room can
+// play again. Valid only in PhaseEnded; host-only at the transport layer.
+//
+// It RETAINS the player roster (each player's id and name) but wipes every
+// per-game artifact: roles are cleared, everyone is alive again, the day
+// counter, votes, night-turn state, and the rolesDealt lock all reset, and
+// the optional-role toggles + mafia count return to their lobby defaults
+// (the host re-configures from scratch, mirroring a brand-new room). Because
+// the phase returns to PhaseLobby with rolesDealt == false, new players can
+// join again before the next deal.
+//
+// Seed supplies a fresh shuffle seed for the next StartGame. The room mints
+// a new one on every reset so replaying with the same roster does not redeal
+// the identical roles (the engine's deal is deterministic in the seed).
+type ResetGame struct {
+	Seed int64
+}
+
+func (ResetGame) isCommand() {}
+
 // NightAction is a generic per-role action submitted during PhaseNight:
 //
 //   - Mafia      -> Target is the player to kill.

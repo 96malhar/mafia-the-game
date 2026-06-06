@@ -476,11 +476,21 @@ func (s *GameState) isNightBlocked(pid PlayerID) bool {
 // player recruited THIS night still holds their original (non-mafia) role at
 // the Tracker's turn — resolveRecruit runs later in resolveNight — so they
 // correctly fall to this branch and read "stayed home".
+//
+// A SELF-target is collapsed to "stayed home": a player who acts on
+// themselves never left home (the doctor who saves themselves is the live
+// case). Reporting it verbatim would surface the nonsensical "<name> visited
+// <name>"; "stayed home" is both truthful (they went nowhere) and leaks no
+// more than the empty reading every idle player already produces.
 func (s *GameState) trackedVisit(target *Player) PlayerID {
+	visit := s.pendingNight[target.id] // "" when absent
 	if target.role.Faction() == FactionMafia {
-		return s.factionNightTarget()
+		visit = s.factionNightTarget()
 	}
-	return s.pendingNight[target.id] // "" when absent
+	if visit == target.id {
+		return "" // self-target == stayed home
+	}
+	return visit
 }
 
 // factionNightTarget returns the mafia faction's single target this night:

@@ -174,7 +174,8 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 	// which is why the spec's reveal-phase Apply is a no-op). A
 	// blocked/neutralized tracker never reaches this point — its turn is
 	// phantom (no act window) — so the result is always genuine. The Visited
-	// id is "" when the tracked player took no action ("stayed home").
+	// id is "" when the tracked player took no action OR acted on themselves
+	// (e.g. a doctor self-save) — both read as "stayed home" (see trackedVisit).
 	if actor.role == RoleTracker {
 		events = append(events, TrackerResult{
 			Tracker: actor.id,

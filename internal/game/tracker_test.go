@@ -274,6 +274,23 @@ func TestTracker_StayedHome(t *testing.T) {
 		"a target that took no action reads as stayed home")
 }
 
+// TestTracker_DoctorSelfSaveReadsStayedHome: a doctor who saves THEMSELVES
+// never left home, so tracking them reads "stayed home" (empty visit) rather
+// than the nonsensical "<doctor> visited <doctor>". The self-target collapses
+// to the no-visit reading in trackedVisit.
+func TestTracker_DoctorSelfSaveReadsStayedHome(t *testing.T) {
+	g := fixedRosterWithTracker(t)
+	evts := runTrackerNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleDoctor:  "doc", // the doctor saves themselves
+		game.RoleTracker: "doc",
+	})
+	res, ok := findEvent[game.TrackerResult](evts)
+	require.True(t, ok)
+	require.Equal(t, game.PlayerID("doc"), res.Target)
+	require.Equal(t, game.PlayerID(""), res.Visited,
+		"a doctor who self-saves stayed home, not visited themselves")
+}
+
 // --- the mafia-faction read -----------------------------------------------
 
 // TestTracker_TracksMafiaSeesFactionKill: tracking a mafioso reveals the

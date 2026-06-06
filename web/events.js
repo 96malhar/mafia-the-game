@@ -898,13 +898,18 @@
           // If we were mid-PAGE-LOAD-auto-rejoin and the socket died
           // before any frame (server down, room gone), surface the
           // lobby instead of leaving the user looking at an empty
-          // in-game view they can't escape. (The in-game reconnect
-          // loop uses the `reconnecting` flag, NOT pendingRejoinCode,
-          // so it falls through to the auto-reconnect branch below.)
+          // in-game view they can't escape. The close is opaque — a
+          // reaped room 404s the handshake (no auth_failed frame ever
+          // arrives) and looks identical to a transient outage — so
+          // recoverFromFailedRejoin probes the room to disambiguate and
+          // either clears the dead creds + offers Create, or keeps the
+          // "Join room CODE" view for a retry. (The in-game reconnect
+          // loop uses the `reconnecting` flag, NOT pendingRejoinCode, so
+          // it falls through to the auto-reconnect branch below.)
           if (pendingRejoinCode) {
             const stale = pendingRejoinCode;
             pendingRejoinCode = null;
-            recoverToLobby(stale, "Could not reconnect — the room may be closed.");
+            recoverFromFailedRejoin(stale);
             return;
           }
           // Symmetric guard for first-time joins: socket died before

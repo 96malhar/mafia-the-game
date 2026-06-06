@@ -64,6 +64,35 @@
         setStatus(code ? `room ${code} unavailable` : "room unavailable", "text-rose-400");
       }
 
+      // recoverFromFailedRejoin runs when a PAGE-LOAD auto-rejoin socket dies
+      // before any frame arrives. The WebSocket close is opaque: a reaped or
+      // never-created room 404s the handshake (so the server never sends an
+      // auth_failed frame — that recovery path can't fire), which is
+      // indistinguishable at the socket level from a transient server outage.
+      // So we probe the room to disambiguate:
+      //   - unjoinable (gone / in progress / ended) → the stored credentials
+      //     are dead. Drop them so a future visit doesn't re-run the same
+      //     doomed auto-rejoin, and pivot to "create a new room" with the
+      //     reason (matching the no-creds share-link path).
+      //   - joinable again, OR the probe itself is unreachable → keep the
+      //     "Join room CODE" view so the player can retry this same room (the
+      //     conservative behaviour for a likely-transient blip).
+      //
+      // An opaque rejoin close almost always means the room is genuinely gone:
+      // had it still existed in ANY phase, the handshake would have completed
+      // and the server would have replied "rejoined" or "auth_failed" rather
+      // than 404'ing. So in practice the probe returns "doesn't exist" here;
+      // the other unjoinable reasons are handled identically for safety.
+      async function recoverFromFailedRejoin(code) {
+        const probe = await probeRoom(code);
+        if (probe.state === "unjoinable") {
+          credStore.removeItem(storageKey(code));
+          showUnjoinableRoom(code, probe.reason);
+          return;
+        }
+        recoverToLobby(code, "Could not reconnect — the room may be closed.");
+      }
+
       // tryAutoRejoin runs at page load. If the URL carries a room
       // code AND credStore has matching rejoin credentials, we
       // open a WebSocket immediately and let the server replay the

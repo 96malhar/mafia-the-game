@@ -176,3 +176,61 @@ test("a share link we hold credentials for skips the join probe", async () => {
   // The share-link join view is left intact for the rejoin path.
   assert.match(app.$("lobby-title").textContent, /Join room MINE/);
 });
+
+// --- recoverFromFailedRejoin: a page-load auto-rejoin whose socket died -----
+//
+// When a reaped room 404s the WS handshake, no auth_failed frame ever arrives,
+// so the close is opaque. recoverFromFailedRejoin probes the room to tell
+// "gone forever" (clear creds, offer Create) from "transient outage" (keep the
+// Join view for a retry).
+
+test("a failed auto-rejoin to a reaped room clears creds and offers create", async () => {
+  const app = newApp({ hostname: "example.com" }); // localStorage credStore
+  // Stored creds from the game we played before the room was reaped.
+  app.window.localStorage.setItem(
+    "mafia.room.ABCD",
+    JSON.stringify({ playerId: "p1", secret: "s" }),
+  );
+  // The probe confirms the room is gone.
+  app.window.fetch = () => Promise.resolve({ status: 404 });
+
+  await app.window.recoverFromFailedRejoin("ABCD");
+
+  // Pivots to "create a new room" with the doesn't-exist reason.
+  assert.match(app.$("lobby-title").textContent, /Room ABCD unavailable/);
+  assert.match(app.$("lobby-subtitle").textContent, /doesn't exist/);
+  assert.ok(!app.$("create").classList.contains("hidden"), "create shown");
+  assert.ok(app.$("join").classList.contains("hidden"), "join hidden");
+  // URL cleared so a reload lands on a clean lobby, not another doomed rejoin.
+  assert.equal(app.window.location.search, "", "room param cleared from URL");
+  // Dead creds are removed so future visits don't re-run the doomed rejoin.
+  assert.equal(
+    app.window.localStorage.getItem("mafia.room.ABCD"),
+    null,
+    "stale creds cleared",
+  );
+});
+
+test("a failed auto-rejoin during a transient outage keeps the join view", async () => {
+  const app = newApp({ hostname: "example.com" });
+  app.window.localStorage.setItem(
+    "mafia.room.ABCD",
+    JSON.stringify({ playerId: "p1", secret: "s" }),
+  );
+  // The probe itself is unreachable (network down) → state "unknown".
+  app.window.fetch = () => Promise.reject(new Error("offline"));
+
+  await app.window.recoverFromFailedRejoin("ABCD");
+
+  // Keeps "Join room ABCD" so the player can retry the same room once the
+  // server is back; Create is NOT surfaced.
+  assert.match(app.$("lobby-title").textContent, /Join room ABCD/);
+  assert.ok(!app.$("join").classList.contains("hidden"), "join still offered");
+  assert.ok(app.$("create").classList.contains("hidden"), "create hidden");
+  // Creds are PRESERVED — the room may well still be there.
+  assert.equal(
+    app.window.localStorage.getItem("mafia.room.ABCD"),
+    JSON.stringify({ playerId: "p1", secret: "s" }),
+    "creds kept for retry",
+  );
+});

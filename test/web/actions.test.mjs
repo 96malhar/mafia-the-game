@@ -14,14 +14,38 @@ const SIX = [
   { id: "p6", name: "Finn" },
 ];
 
-test("the Yakuza gets Kill AND Recruit on town rows, nothing on teammates or self", () => {
+test("the Yakuza gets a single Kill button by default, nothing on teammates or self", () => {
   const app = newApp();
   startGameAs(app, { me: "p1", myRole: "yakuza", players: SIX, mafiaRoster: ["p1", "p2"], yakuza: "p1" });
   toNightRoleAct(app, "mafia"); // the Yakuza acts within the Mafia turn
 
-  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill", "Recruit"], "town row: both buttons");
+  // Default (kill mode): one Kill button per town row, like a plain mafioso.
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"], "town row: Kill only");
   assert.deepEqual(buttonTexts(rowFor(app, "Boss")), [], "fellow mafioso: no buttons");
   assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "self: no buttons");
+});
+
+test("the Yakuza's banner Recruit-mode toggle flips every row button between Kill and Recruit", () => {
+  const app = newApp();
+  startGameAs(app, { me: "p1", myRole: "yakuza", players: SIX, mafiaRoster: ["p1", "p2"], yakuza: "p1" });
+  toNightRoleAct(app, "mafia");
+
+  const toggle = () => app.$("night-banner-actions").querySelector("button");
+
+  // Off by default, advertising the OFF state; rows show Kill.
+  assert.match(toggle().textContent, /Recruit mode: OFF/i, "toggle starts OFF");
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
+
+  // Turning it ON flips the row buttons to Recruit and highlights the toggle.
+  toggle().click();
+  assert.match(toggle().textContent, /Recruit mode: ON/i, "toggle now ON");
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Recruit"], "town row: Recruit");
+  assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "self: still no buttons");
+
+  // Toggling back returns to kill mode.
+  toggle().click();
+  assert.match(toggle().textContent, /Recruit mode: OFF/i, "toggle back OFF");
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
 });
 
 test("a plain mafioso gets only Kill (no Recruit) on the Mafia turn", () => {
@@ -31,6 +55,8 @@ test("a plain mafioso gets only Kill (no Recruit) on the Mafia turn", () => {
 
   assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
   assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "the Yakuza is a teammate — no target button");
+  // The Recruit-mode toggle is Yakuza-only; a plain mafioso never sees it.
+  assert.equal(app.$("night-banner-actions").querySelector("button"), null, "no recruit toggle");
 });
 
 test("the doctor gets a 'Save self' button on its own row", () => {

@@ -35,7 +35,6 @@
         trackerEnabled = false;
         vigilanteFired = false;
         heldFireThisTurn = false;
-        yakuzaRecruitMode = false;
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
@@ -441,26 +440,27 @@
             return b;
           };
 
-          // The yakuza gets a SINGLE button per row, just like a plain
-          // mafioso — but the banner's "Recruit mode" toggle
-          // (yakuzaRecruitMode) flips it between the faction Kill and a
-          // Recruit (one-shot self-sacrifice conversion). The two fire
-          // distinct engine commands; the toggle only chooses which.
+          // The yakuza gets TWO buttons per row — a faction Kill and a
+          // Recruit (the one-shot self-sacrifice conversion) — and always
+          // sees both choices during its act window (no mode toggle). The
+          // two fire distinct engine commands. A locked recruit is tracked
+          // faction-wide via mafiaRecruitTarget (from recruitRecorded), the
+          // recruit analogue of myAction for the kill.
           if (myRole === "yakuza") {
-            if (yakuzaRecruitMode) {
-              // A locked recruit is tracked faction-wide via
-              // mafiaRecruitTarget (from recruitRecorded), the recruit
-              // analogue of myAction for the kill.
-              const recruiting = mafiaRecruitTarget === p.id;
-              return mkBtn(
-                recruiting ? "Recruiting" : "Recruit",
-                recruiting,
-                () => send("recruit", { target: p.id })
-              );
-            }
-            return mkBtn(submitted ? "Killing" : "Kill", submitted, () =>
-              send("nightAction", { target: p.id })
+            const recruiting = mafiaRecruitTarget === p.id;
+            const wrap = document.createElement("div");
+            wrap.className = "flex items-center gap-1";
+            wrap.appendChild(
+              mkBtn(submitted ? "Killing" : "Kill", submitted, () =>
+                send("nightAction", { target: p.id })
+              )
             );
+            wrap.appendChild(
+              mkBtn(recruiting ? "Recruiting" : "Recruit", recruiting, () =>
+                send("recruit", { target: p.id })
+              )
+            );
+            return wrap;
           }
 
           // Button label per acting role, sourced from ROLE_VERBS (the

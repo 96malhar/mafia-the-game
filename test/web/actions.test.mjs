@@ -14,38 +14,33 @@ const SIX = [
   { id: "p6", name: "Finn" },
 ];
 
-test("the Yakuza gets a single Kill button by default, nothing on teammates or self", () => {
+test("the Yakuza gets both Kill and Recruit on every town row, nothing on teammates or self", () => {
   const app = newApp();
   startGameAs(app, { me: "p1", myRole: "yakuza", players: SIX, mafiaRoster: ["p1", "p2"], yakuza: "p1" });
   toNightRoleAct(app, "mafia"); // the Yakuza acts within the Mafia turn
 
-  // Default (kill mode): one Kill button per town row, like a plain mafioso.
-  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"], "town row: Kill only");
+  // Both choices are always present during the act window — no mode toggle.
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill", "Recruit"], "town row: Kill + Recruit");
   assert.deepEqual(buttonTexts(rowFor(app, "Boss")), [], "fellow mafioso: no buttons");
   assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "self: no buttons");
 });
 
-test("the Yakuza's banner Recruit-mode toggle flips every row button between Kill and Recruit", () => {
+test("the Yakuza owns the night countdown bar during the Mafia act window", () => {
   const app = newApp();
   startGameAs(app, { me: "p1", myRole: "yakuza", players: SIX, mafiaRoster: ["p1", "p2"], yakuza: "p1" });
-  toNightRoleAct(app, "mafia");
+  toNightRoleAct(app, "mafia"); // the Yakuza acts within the Mafia turn
 
-  const toggle = () => app.$("night-banner-actions").querySelector("button");
-
-  // Off by default, advertising the OFF state; rows show Kill.
-  assert.match(toggle().textContent, /Recruit mode: OFF/i, "toggle starts OFF");
-  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
-
-  // Turning it ON flips the row buttons to Recruit and highlights the toggle.
-  toggle().click();
-  assert.match(toggle().textContent, /Recruit mode: ON/i, "toggle now ON");
-  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Recruit"], "town row: Recruit");
-  assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "self: still no buttons");
-
-  // Toggling back returns to kill mode.
-  toggle().click();
-  assert.match(toggle().textContent, /Recruit mode: OFF/i, "toggle back OFF");
-  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
+  // The Yakuza has no turn of its own (currentNightRole === "mafia" while
+  // myRole === "yakuza"), so a bare role-equality check used to hide its
+  // timer; it should own the countdown like any other actor in its act window.
+  assert.ok(
+    !app.$("night-banner-bar-wrap").classList.contains("hidden"),
+    "Yakuza sees the countdown bar",
+  );
+  assert.ok(
+    !app.$("night-banner-countdown").classList.contains("hidden"),
+    "Yakuza sees the countdown number",
+  );
 });
 
 test("a plain mafioso gets only Kill (no Recruit) on the Mafia turn", () => {
@@ -55,8 +50,6 @@ test("a plain mafioso gets only Kill (no Recruit) on the Mafia turn", () => {
 
   assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Kill"]);
   assert.deepEqual(buttonTexts(rowFor(app, "Yak")), [], "the Yakuza is a teammate — no target button");
-  // The Recruit-mode toggle is Yakuza-only; a plain mafioso never sees it.
-  assert.equal(app.$("night-banner-actions").querySelector("button"), null, "no recruit toggle");
 });
 
 test("the doctor gets a 'Save self' button on its own row", () => {

@@ -77,11 +77,13 @@
                 ? "Pick someone to distract"
                 : myRole === "vigilante"
                   ? "Pick someone to eliminate"
-                  : myRole === "yakuza"
-                    ? yakuzaRecruitMode
-                      ? "Pick someone to Recruit (you'll sacrifice yourself)"
-                      : "Pick someone to kill"
-                    : "Pick a target";
+                  : myRole === "tracker"
+                    ? "Pick someone to track"
+                    : myRole === "yakuza"
+                      ? yakuzaRecruitMode
+                        ? "Pick someone to Recruit (you'll sacrifice yourself)"
+                        : "Pick someone to kill"
+                      : "Pick a target";
             if (mafiaRecruitTarget) {
               // A recruit is locked — the faction kills no one tonight. The
               // recruiting Yakuza sees it as its own action; co-mafia see who
@@ -192,10 +194,11 @@
             const optionalRoles =
               (consortEnabled ? 1 : 0) +
               (vigilanteEnabled ? 1 : 0) +
-              (yakuzaEnabled ? 1 : 0);
+              (yakuzaEnabled ? 1 : 0) +
+              (trackerEnabled ? 1 : 0);
             // The Consort and the Yakuza are the mafia-aligned optionals (the
-            // Vigilante is town), so they shrink the town count in the parity
-            // test. Keep in sync with applyStartGame's parity guard.
+            // Vigilante and Tracker are town), so they shrink the town count in
+            // the parity test. Keep in sync with applyStartGame's parity guard.
             const mafiaAlignedOptionals =
               (consortEnabled ? 1 : 0) + (yakuzaEnabled ? 1 : 0);
             // Det + Doc + every optional + at least one plain villager.
@@ -248,6 +251,7 @@
               extras.appendChild(renderConsortToggle());
               extras.appendChild(renderVigilanteToggle());
               extras.appendChild(renderYakuzaToggle());
+              extras.appendChild(renderTrackerToggle());
             }
 
             if (myIsHost) {
@@ -707,6 +711,10 @@
 
       function renderYakuzaToggle() {
         return renderOptionalRoleToggle("Yakuza", yakuzaEnabled, "setYakuza");
+      }
+
+      function renderTrackerToggle() {
+        return renderOptionalRoleToggle("Tracker", trackerEnabled, "setTracker");
       }
 
       function disabledNote(text) {

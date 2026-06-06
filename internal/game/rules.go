@@ -220,6 +220,13 @@ func (g *Game) applySetYakuza(c SetYakuza) ([]Event, error) {
 	return g.applyLobbyToggle(c.Enabled, &g.state.yakuzaEnabled, YakuzaChanged(c))
 }
 
+// applySetTracker toggles the optional Tracker role during PhaseLobby. See
+// SetTracker in command.go for the validity envelope. Locked once roles are
+// dealt, like every other lobby toggle.
+func (g *Game) applySetTracker(c SetTracker) ([]Event, error) {
+	return g.applyLobbyToggle(c.Enabled, &g.state.trackerEnabled, TrackerChanged(c))
+}
+
 // applyStartGame deals roles and locks the lobby; the game stays in
 // PhaseLobby until the host issues BeginNight.
 //
@@ -377,6 +384,7 @@ func (g *Game) applyResetGame(c ResetGame) ([]Event, error) {
 	s.consortEnabled = false
 	s.vigilanteEnabled = false
 	s.yakuzaEnabled = false
+	s.trackerEnabled = false
 
 	// Clear all per-game state. Roles are wiped and everyone is alive again;
 	// the lobby reopens (rolesDealt == false) so new players can join before
@@ -427,6 +435,7 @@ var optionalRoles = []optionalRole{
 	{role: RoleConsort, enabled: func(s *GameState) bool { return s.consortEnabled }},
 	{role: RoleVigilante, enabled: func(s *GameState) bool { return s.vigilanteEnabled }},
 	{role: RoleYakuza, enabled: func(s *GameState) bool { return s.yakuzaEnabled }},
+	{role: RoleTracker, enabled: func(s *GameState) bool { return s.trackerEnabled }},
 }
 
 // enabledOptionalRoles returns the optional roles toggled on for the

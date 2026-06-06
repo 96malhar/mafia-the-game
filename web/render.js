@@ -32,6 +32,7 @@
         consortEnabled = false;
         vigilanteEnabled = false;
         yakuzaEnabled = false;
+        trackerEnabled = false;
         vigilanteFired = false;
         heldFireThisTurn = false;
         yakuzaRecruitMode = false;
@@ -353,7 +354,8 @@
           myRole === "doctor" ||
           myRole === "detective" ||
           myRole === "consort" ||
-          myRole === "vigilante"
+          myRole === "vigilante" ||
+          myRole === "tracker"
         );
       }
 
@@ -390,6 +392,7 @@
         //     so we hide the button on every teammate row (mafiaPeers
         //     includes self, covering the self case too).
         //   - detective: cannot investigate self (ErrSelfTarget).
+        //   - tracker: cannot track self (ErrSelfTarget).
         //   - doctor: CAN save self on any night.
         // So we allow the self row only for the doctor.
         const isSelfRow = p.id === myId;

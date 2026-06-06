@@ -439,6 +439,16 @@ func (g *Game) beginNightTurns() []Event {
 		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleVigilante)
 	}
 	g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleDoctor)
+	// The optional Tracker wakes LAST, after the doctor — it reads who
+	// everyone visited, so it must run once every other role's target is
+	// locked. Like the consort/vigilante we key off the dealt-time toggle
+	// (trackerEnabled) rather than the live roster so a dead tracker's turn
+	// keeps running as a phantom; dropping it would shorten the night
+	// cadence and leak the death. A Consort-blocked tracker is likewise
+	// phantom (roleTurnIsPhantom) and learns nothing.
+	if g.state.trackerEnabled {
+		g.state.nightTurnQueue = append(g.state.nightTurnQueue, RoleTracker)
+	}
 	// Enter the night-scoped opening sub-phase. currentNightRole
 	// stays empty until the opening elapses and advanceNightSubPhase
 	// pops the first role.

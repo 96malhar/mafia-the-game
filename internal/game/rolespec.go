@@ -293,6 +293,31 @@ var roleSpecs = map[Role]roleSpec{
 		},
 	},
 
+	RoleTracker: {
+		// Town-aligned: wins with the town, reads as "not mafia" to the
+		// detective. Narrate/Sleep durations live in internal/room/config.go
+		// (universal defaults); its ponder is sized like the detective's so
+		// the result modal lands cleanly (see defaultPonderDuration).
+		Faction: FactionTown,
+		NightAction: &nightActionSpec{
+			// The tracker's result is emitted at action time (see
+			// applyNightAction in rules_night.go), mirroring the detective:
+			// the tracker is the LAST turn of the night, so every other
+			// role's target is already locked into pendingNight and any
+			// recruit is recorded by the time it acts. The reveal-phase
+			// Apply is therefore a no-op — kept for symmetry, and so any
+			// future tracker logic that genuinely needs resolved state slots
+			// in at the right point.
+			Phase: nightPhaseReveal,
+			Validate: func(_ *GameState, actor, target *Player) error {
+				return rejectSelfTarget(actor, target)
+			},
+			Apply: func(_ *nightContext, _, _ *Player) {
+				// no-op (result delivered at action time)
+			},
+		},
+	},
+
 	RoleVigilante: {
 		// Town-aligned: wins with the town, reads as "not mafia" to the
 		// detective. Narrate/Sleep durations live in internal/room/config.go

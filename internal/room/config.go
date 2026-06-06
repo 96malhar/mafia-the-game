@@ -66,15 +66,16 @@ const DefaultActionDuration = 60 * time.Second
 // "wake up" begins.
 const DefaultSettleDuration = 3 * time.Second
 
-// DefaultPonderRealSubmit is the post-submit pause for non-detective
-// real roles. A breath between "action recorded" and the "go to
-// sleep" cue.
-const DefaultPonderRealSubmit = 2 * time.Second
+// DefaultPonderRealSubmit is the post-submit pause for real roles that do
+// NOT pop a result modal (everything but the detective and tracker). A
+// breath between "action recorded" and the "go to sleep" cue.
+const DefaultPonderRealSubmit = 2500 * time.Millisecond
 
-// DefaultPonderDetectiveSubmit is the post-submit pause for the
-// detective. Sized to comfortably cover "read the modal + click Got
-// it" without dragging the night out.
-const DefaultPonderDetectiveSubmit = 3 * time.Second
+// DefaultPonderResultSubmit is the post-submit pause for a role that
+// delivers a private RESULT modal at action time — the detective and the
+// tracker. Sized to comfortably cover "read the modal + click Got it"
+// without dragging the night out.
+const DefaultPonderResultSubmit = 3500 * time.Millisecond
 
 // DefaultPhantomPonderMin and DefaultPhantomPonderMax bound the
 // randomized duration of a phantom (dead-role) ponder sub-phase. The
@@ -178,8 +179,8 @@ func defaultSubPhaseDuration(e game.NightSubPhaseStarted) time.Duration {
 //   - phantom (no actionable holder — dead, spent, or blocked): uniformly
 //     random in [DefaultPhantomPonderMin, DefaultPhantomPonderMax] so the
 //     cadence can't be used to deduce WHY the turn was inert.
-//   - detective (real): DefaultPonderDetectiveSubmit, so its result
-//     modal lands cleanly.
+//   - detective / tracker (real): DefaultPonderResultSubmit, so the
+//     private result modal each delivers at action time lands cleanly.
 //   - any other real role (submit OR timeout): DefaultPonderRealSubmit.
 func defaultPonderDuration(role game.Role, phantom bool) time.Duration {
 	if phantom {
@@ -190,8 +191,8 @@ func defaultPonderDuration(role game.Role, phantom bool) time.Duration {
 		}
 		return lo + time.Duration(mrand.Int64N(int64(span)+1))
 	}
-	if role == game.RoleDetective {
-		return DefaultPonderDetectiveSubmit
+	if role == game.RoleDetective || role == game.RoleTracker {
+		return DefaultPonderResultSubmit
 	}
 	return DefaultPonderRealSubmit
 }

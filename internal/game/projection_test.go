@@ -31,6 +31,9 @@ func newProjectionFixture(t *testing.T) projectionFixture {
 		game.DetectiveResult{
 			Detective: "det", Target: "mafia1", IsMafia: true,
 		},
+		game.TrackerResult{
+			Tracker: "town1", Target: "mafia1", Visited: "town2",
+		},
 		game.PlayerKilled{PlayerID: "town2"}, // public
 	}
 	return projectionFixture{g: g, events: events}
@@ -91,6 +94,20 @@ func TestProjection_PrivateEventsOnlyForOwner(t *testing.T) {
 			out := game.Project(viewer, f.events, f.g.State())
 			require.Empty(t, findAllEvents[game.DetectiveResult](out),
 				"viewer %q must not see DetectiveResult", viewer)
+		}
+	})
+
+	t.Run("tracker sees own TrackerResult", func(t *testing.T) {
+		out := game.Project("town1", f.events, f.g.State())
+		require.NotEmpty(t, findAllEvents[game.TrackerResult](out),
+			"the tracker must see their own TrackerResult")
+	})
+
+	t.Run("non-tracker does NOT see TrackerResult", func(t *testing.T) {
+		for _, viewer := range []game.PlayerID{"mafia1", "det", "doc", "town2"} {
+			out := game.Project(viewer, f.events, f.g.State())
+			require.Empty(t, findAllEvents[game.TrackerResult](out),
+				"viewer %q must not see TrackerResult", viewer)
 		}
 	})
 

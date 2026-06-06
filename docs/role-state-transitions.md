@@ -17,6 +17,7 @@ The engine itself is **timeless** — it only knows sub-phase *order*. All wall-
 - [Doctor](#doctor)
 - [Consort (optional)](#consort-optional)
 - [Vigilante (optional)](#vigilante-optional)
+- [Tracker (optional)](#tracker-optional)
 - [Yakuza (optional)](#yakuza-optional)
 - [Villager](#villager)
 - [Night resolution order](#night-resolution-order)
@@ -27,9 +28,9 @@ The engine itself is **timeless** — it only knows sub-phase *order*. All wall-
 
 A night is a fixed **opening** beat followed by one turn per role in the wake queue, then resolution. The wake order is:
 
-> Mafia → [Consort] → Detective → [Vigilante] → Doctor
+> Mafia → [Consort] → Detective → [Vigilante] → Doctor → [Tracker]
 
-`[Consort]` and `[Vigilante]` are **optional** roles (host toggles before the game starts); when enabled they each take a villager slot. The queue is built from the *dealt-time* toggles, not the live roster, so a dead (or spent, or promoted) role's turn still runs — as a **phantom** — to keep the moderator's audio cadence and to avoid leaking who is still alive.
+`[Consort]`, `[Vigilante]`, and `[Tracker]` are **optional** roles (host toggles before the game starts); when enabled they each take a villager slot. The **Tracker wakes last of all**, after the doctor — it reads who everyone else visited, so its turn must run once every other action is locked. The queue is built from the *dealt-time* toggles, not the live roster, so a dead (or spent, or promoted) role's turn still runs — as a **phantom** — to keep the moderator's audio cadence and to avoid leaking who is still alive.
 
 The optional **Yakuza** does **not** add a queue entry: it is a full mafia member that acts *within the Mafia turn* (see [Yakuza](#yakuza-optional)), so the wake order above is unchanged when it is enabled.
 
@@ -71,8 +72,8 @@ Source of truth: `internal/room/config.go`. The engine emits `Deadline = 0`; the
 | `narrate` (Mafia, Day 0) | 4s | Extra "recognize each other" beat. |
 | `narrate` (Mafia, Day 1+) | 1.5s | Shorter per-night line. |
 | `act` | 60s | Normal action window. Only a turn with an actionable holder reaches it. |
-| `ponder` (real, most roles) | 2s | Post-submit breath. |
-| `ponder` (real, detective) | 3s | Sized to read the result modal. |
+| `ponder` (real, most roles) | 2.5s | Post-submit breath. |
+| `ponder` (real, detective / tracker) | 3.5s | Sized to read the private result modal. |
 | `ponder` (phantom) | 5–10s (random) | Hides *why* the turn was inert (dead/spent/blocked). |
 | `sleep` | 2s | "Go to sleep" cue. |
 | `settle` | 3s | Post-sleep beat before the next role. |
@@ -101,7 +102,7 @@ Before any role-specific logic runs, every `NightAction` passes a generic gate i
 The per-role `Validate` hook (step 8) is:
 
 - **Mafia** — target may not be another mafioso (`ErrNotYourAction`).
-- **Consort / Detective / Vigilante** — may not target self (`ErrSelfTarget`).
+- **Consort / Detective / Vigilante / Tracker** — may not target self (`ErrSelfTarget`).
 - **Vigilante** — bullet already spent (`ErrAlreadyActed`, a backstop; see below).
 - **Doctor** — none (self-save is allowed).
 
@@ -154,7 +155,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 ## Doctor
 
 - **Faction:** Town. Always-on reserved role.
-- Wakes **last of all**, after both night-killers (the mafia and, when enabled, the vigilante), so the save is the final beat of the night.
+- Wakes **last of the consequential roles**, after both night-killers (the mafia and, when enabled, the vigilante), so the save is the final beat that can change who lives. (The optional [Tracker](#tracker-optional) wakes *after* the doctor, but it only observes — it never affects the outcome.)
 - **Blockable** by the Consort.
 - **Self-save is allowed** on any night.
 
@@ -224,6 +225,33 @@ The one-shot flag (`vigilanteShotUsed`) is set during resolution **only if a sho
 
 ---
 
+## Tracker (optional)
+
+- **Faction:** Town. Wakes **last of all**, after the doctor (only if enabled) — every other role's target is locked into `pendingNight` and any Yakuza recruit is recorded by the time it acts, which is what lets it read the night.
+- **Blockable** by the Consort.
+- Learns **who its target visited** — the identity of the player the tracked target took a night action against — delivered **immediately and privately** at submit time (like the detective). It never learns **what** the action was, only the visit.
+- A target that took **no action** that night (a villager, a role that timed out, a suppressed/blocked actor, or the mafia that didn't kill) reads as having **stayed home** (an empty visit).
+
+**Turn transitions:**
+
+- `narrate → act` — tracker alive and unblocked; the 60s window opens.
+- `narrate → ponder` (phantom, 5–10s) — tracker is dead, **or** blocked this night; no act window.
+- `act → ponder` — tracks a target, or the 60s timer expires with no read.
+- Then `ponder → sleep → settle`.
+
+When the tracker submits, the engine emits `NightActionRecorded` plus a private `TrackerResult` carrying the visited player's id (empty for "stayed home"). Self-tracking is rejected with `ErrSelfTarget`. The result is computed in `applyNightAction` from the night's already-recorded intents (`trackedVisit` / `factionNightTarget` in [`state.go`](../internal/game/state.go)); the spec's reveal-phase `Apply` is a no-op, mirroring the detective.
+
+**The mafia-faction read.** Tracking **any current `FactionMafia` member** — a mafioso, the Yakuza, a recruit, or a promoted Consort — reveals the faction's **collective** target rather than that member's personal entry:
+
+- On a **kill** night, the visit is the faction kill target.
+- On a **recruit** night (the Yakuza recruited instead of killing), the visit is the **recruit target**.
+
+This is deliberate: only one mafioso submits the kill, so reading a personal entry would (a) leak *which* mafioso pressed the button and (b) show nothing for the rest. Reporting the single faction target for every member fixes both and fulfills "tracking a mafioso reveals who the mafia targeted." A player recruited **this** night still holds their original (non-mafia) role at the tracker's turn — `resolveRecruit` runs later — so tracking the fresh recruit reads "stayed home," not the faction target.
+
+When the turn is phantom because of a **block**: there is no act window, and a private `Blocked` event arrives as the ponder begins (just after narrate); the client hides the picker. A bypassing submit is rejected with `ErrNotYourTurn`, and **no** `TrackerResult` is produced.
+
+---
+
 ## Yakuza (optional)
 
 - **Faction:** Mafia. A **full mafia member**: in the roster, counts toward the parity win, and reads as mafia to the detective. The faction's roster reveal carries a `Yakuza` field (`MafiaRosterRevealed.Yakuza`) naming which member is the Yakuza, so co-mafia can tell it apart from a plain mafioso (the client badges it "Yakuza"). The Consort is promoted only once **every** `FactionMafia` member — the mafia *and* the Yakuza — is dead.
@@ -273,8 +301,9 @@ After the last role's `settle`, `resolveNight` reconciles every scheduled intent
 | Event | Visibility | When |
 | --- | --- | --- |
 | `NightSubPhaseStarted` | public | every sub-phase boundary (carries `Phantom`) |
-| `NightActionRecorded` | faction-only **for the mafia**; **private to the actor** for solo roles (detective / doctor / vigilante / consort) | an actor submits within the act window |
+| `NightActionRecorded` | faction-only **for the mafia**; **private to the actor** for solo roles (detective / doctor / vigilante / consort / tracker) | an actor submits within the act window |
 | `DetectiveResult` | private (detective) | at the detective's submit time |
+| `TrackerResult` | private (tracker) | at the tracker's submit time |
 | `Blocked` | private (blocked actor) | as the blocked actor's cannot-act ponder begins (just after their narrate) |
 | `RecruitRecorded` | faction-only (mafia) | the Yakuza locks a recruit during the Mafia turn (co-mafia learn no kill is coming) |
 | `Recruited` | private (recruited target) | active role: as their cannot-act ponder begins; villager: at night resolution |

@@ -164,6 +164,25 @@ func (g *Game) applyNightAction(c NightAction) ([]Event, error) {
 		})
 	}
 
+	// Tracker gets immediate private feedback naming who its target
+	// visited tonight ("X visited Y", or "X stayed home"). Like the
+	// detective above, we emit it BEFORE the ponder transition so the
+	// modal pops the moment the action is recorded. The tracker wakes
+	// LAST (after the doctor), so every other role's target is already in
+	// pendingNight and any Yakuza recruit is recorded — trackedVisit reads
+	// that settled intent directly (it does NOT depend on the resolve step,
+	// which is why the spec's reveal-phase Apply is a no-op). A
+	// blocked/neutralized tracker never reaches this point — its turn is
+	// phantom (no act window) — so the result is always genuine. The Visited
+	// id is "" when the tracked player took no action ("stayed home").
+	if actor.role == RoleTracker {
+		events = append(events, TrackerResult{
+			Tracker: actor.id,
+			Target:  target.id,
+			Visited: g.state.trackedVisit(target),
+		})
+	}
+
 	// Drive act → ponder. Both submit (here) and timeout (AdvancePhase
 	// during the act window) pass through ponder, so the audio cadence
 	// and sub-phase sequence are uniform — observers can't tell a real

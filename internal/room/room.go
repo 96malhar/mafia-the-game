@@ -558,6 +558,7 @@ func isHostOnly(cmd game.Command) bool {
 		game.SetConsort,
 		game.SetVigilante,
 		game.SetYakuza,
+		game.SetTracker,
 		game.ResetGame:
 		return true
 	}

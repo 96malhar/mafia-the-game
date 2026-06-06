@@ -63,6 +63,7 @@ const (
 	clientMsgSetConsort    clientMsgType = wire.ClientMsgSetConsort
 	clientMsgSetVigilante  clientMsgType = wire.ClientMsgSetVigilante
 	clientMsgSetYakuza     clientMsgType = wire.ClientMsgSetYakuza
+	clientMsgSetTracker    clientMsgType = wire.ClientMsgSetTracker
 	clientMsgRecruit       clientMsgType = wire.ClientMsgRecruit
 	clientMsgResetGame     clientMsgType = wire.ClientMsgResetGame
 )
@@ -111,6 +112,13 @@ type clientSetVigilanteData struct {
 // role during PhaseLobby. The engine validates phase/no-op; the transport
 // just forwards the flag.
 type clientSetYakuzaData struct {
+	Enabled bool `json:"enabled"`
+}
+
+// clientSetTrackerData carries a host-driven toggle of the optional Tracker
+// role during PhaseLobby. The engine validates phase/no-op; the transport
+// just forwards the flag.
+type clientSetTrackerData struct {
 	Enabled bool `json:"enabled"`
 }
 

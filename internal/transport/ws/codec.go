@@ -43,6 +43,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.YakuzaChanged:
 		tag = wire.EventYakuzaChanged
 		data = kv{"enabled": v.Enabled}
+	case game.TrackerChanged:
+		tag = wire.EventTrackerChanged
+		data = kv{"enabled": v.Enabled}
 	case game.PlayerJoined:
 		tag = wire.EventPlayerJoined
 		data = kv{"playerId": string(v.PlayerID), "name": v.Name}
@@ -127,6 +130,9 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 	case game.DetectiveResult:
 		tag = wire.EventDetectiveResult
 		data = kv{"detective": string(v.Detective), "target": string(v.Target), "isMafia": v.IsMafia}
+	case game.TrackerResult:
+		tag = wire.EventTrackerResult
+		data = kv{"tracker": string(v.Tracker), "target": string(v.Target), "visited": string(v.Visited)}
 	case game.VoteCast:
 		tag = wire.EventVoteCast
 		data = kv{"voter": string(v.Voter), "target": string(v.Target)}
@@ -274,6 +280,8 @@ func decodeClientMessage(raw []byte) (clientMsgType, any, error) {
 		return decodePayload[clientSetVigilanteData](tag, env.Data)
 	case clientMsgSetYakuza:
 		return decodePayload[clientSetYakuzaData](tag, env.Data)
+	case clientMsgSetTracker:
+		return decodePayload[clientSetTrackerData](tag, env.Data)
 	case clientMsgRecruit:
 		return decodePayload[clientRecruitData](tag, env.Data)
 
@@ -348,6 +356,9 @@ func commandFromClient(tag clientMsgType, data any) (game.Command, bool) {
 	case clientMsgSetYakuza:
 		d := data.(clientSetYakuzaData)
 		return game.SetYakuza{Enabled: d.Enabled}, true
+	case clientMsgSetTracker:
+		d := data.(clientSetTrackerData)
+		return game.SetTracker{Enabled: d.Enabled}, true
 	case clientMsgRecruit:
 		d := data.(clientRecruitData)
 		return game.Recruit{Target: game.PlayerID(d.Target)}, true

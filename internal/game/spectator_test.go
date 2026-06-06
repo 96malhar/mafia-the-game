@@ -153,6 +153,45 @@ func TestSpectator_PrivateRoleResultsNotLeakedToTheDead(t *testing.T) {
 	})
 }
 
+// TestSpectator_TrackerResultNotLeakedToTheDead is the tracker analogue of
+// the detective check: a dead spectator may watch the tracker act on whom
+// (SpectatorNightAction) but must never receive the private TrackerResult.
+// Real-flow, so it also exercises that applyNightAction emits TrackerResult
+// with PrivateTo visibility.
+func TestSpectator_TrackerResultNotLeakedToTheDead(t *testing.T) {
+	g := fixedRosterWithTracker(t)
+	// Real night: the mafia kills town1 (creating a dead spectator) and the
+	// tracker tracks the mafioso, learning the faction's kill target.
+	evts := runTrackerNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:   "town1",
+		game.RoleTracker: "mafia1",
+	})
+	require.False(t, livingByID(g, "town1"), "town1 should be dead after the night")
+
+	// Sanity (non-vacuous): the tracker genuinely tracked, producing a real
+	// result + spectator feed in the batch.
+	trkResult, ok := findEvent[game.TrackerResult](evts)
+	require.True(t, ok, "the tracker actually tracked someone this night")
+	require.Equal(t, game.PlayerID("town1"), trkResult.Visited,
+		"tracking the mafioso reveals the faction kill target")
+	require.NotEmpty(t, findAllEvents[game.SpectatorNightAction](evts),
+		"the night produced spectator actions to feed the graveyard")
+
+	t.Run("a dead spectator sees the action feed but not the private result", func(t *testing.T) {
+		out := game.Project("town1", evts, g.State())
+		require.NotEmpty(t, findAllEvents[game.SpectatorNightAction](out),
+			"the dead spectate who the tracker watched")
+		require.Empty(t, findAllEvents[game.TrackerResult](out),
+			"the dead must NOT learn the tracker's result")
+	})
+
+	t.Run("the tracker still receives their own result", func(t *testing.T) {
+		out := game.Project("trk", evts, g.State())
+		require.NotEmpty(t, findAllEvents[game.TrackerResult](out),
+			"the tracker sees their own result")
+	})
+}
+
 // TestSpectator_ConsortBlockNotLeakedToTheDead is the consort-block analogue:
 // it drives a REAL night where the consort distracts the doctor while the
 // mafia kills a villager. A dead spectator watches the consort's distract via

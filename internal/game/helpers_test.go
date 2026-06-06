@@ -49,6 +49,7 @@ type rosterDeal struct {
 	consort    bool
 	vigilante  bool
 	yakuza     bool
+	tracker    bool
 	maxSeeds   int64
 }
 
@@ -81,6 +82,10 @@ func fixedRosterDealt(t *testing.T, d rosterDeal) (*game.Game, []game.Event) {
 		}
 		if d.yakuza {
 			_, err = g.Apply(game.SetYakuza{Enabled: true})
+			require.NoError(t, err)
+		}
+		if d.tracker {
+			_, err = g.Apply(game.SetTracker{Enabled: true})
 			require.NoError(t, err)
 		}
 		addPlayers(t, g, d.ids...)

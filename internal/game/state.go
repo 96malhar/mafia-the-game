@@ -62,6 +62,14 @@ type GameState struct {
 	// Yakuza is a full mafia member that acts during the Mafia turn.
 	yakuzaEnabled bool
 
+	// trackerEnabled records whether the host has toggled the optional
+	// Tracker role on for the upcoming game. Set via SetTracker while in
+	// PhaseLobby; consumed by composeRoster at StartGame to add one
+	// RoleTracker (taking the slot of a villager, like the Consort). The
+	// Tracker wakes last (after the Doctor) and learns who its target
+	// visited that night.
+	trackerEnabled bool
+
 	// recruitPending / recruitYakuza / recruitTarget hold the in-flight
 	// Yakuza recruit for the current night. recruitPending distinguishes
 	// "a recruit was submitted" from the zero-value ids. The recruit is
@@ -449,6 +457,49 @@ func (s *GameState) isNightBlocked(pid PlayerID) bool {
 		}
 	}
 	return false
+}
+
+// trackedVisit reports whom `target` visited tonight — for the Tracker's
+// immediate result. It is evaluated at the Tracker's act window, which is
+// the LAST turn of the night, so every other role's target is already
+// locked into pendingNight and any Yakuza recruit is recorded. Returns ""
+// when the target visited no one ("stayed home").
+//
+// A mafia-faction member reports the faction's COLLECTIVE target (see
+// factionNightTarget), never a personal pendingNight entry: only one
+// mafioso submits the kill, so reading pendingNight[target] directly would
+// both leak WHICH mafioso pressed the button and show nothing for the rest.
+// Everyone else visited whatever their own action targeted (the consort's
+// block, the doctor's save, the detective's check, the vigilante's shot); a
+// player who took no action — including one whose power was suppressed by a
+// recruit/block this night — has no entry and reads as having stayed home. A
+// player recruited THIS night still holds their original (non-mafia) role at
+// the Tracker's turn — resolveRecruit runs later in resolveNight — so they
+// correctly fall to this branch and read "stayed home".
+func (s *GameState) trackedVisit(target *Player) PlayerID {
+	if target.role.Faction() == FactionMafia {
+		return s.factionNightTarget()
+	}
+	return s.pendingNight[target.id] // "" when absent
+}
+
+// factionNightTarget returns the mafia faction's single target this night:
+// the recruit target on a recruit night, otherwise the kill target, or "" if
+// the faction did nothing (e.g. the mafia let its window lapse). Recruit and
+// kill are mutually exclusive (the recruit closes the mafia act window), and
+// the kill is the lone mafia-faction entry in pendingNight (the first
+// submission locks it for the whole faction), so the scan is deterministic
+// despite map iteration order.
+func (s *GameState) factionNightTarget() PlayerID {
+	if s.recruitPending {
+		return s.recruitTarget
+	}
+	for actor, tgt := range s.pendingNight {
+		if ap, ok := s.findPlayer(actor); ok && ap.role.Faction() == FactionMafia {
+			return tgt
+		}
+	}
+	return ""
 }
 
 // livingHolderOf returns the first living player holding role r, in join

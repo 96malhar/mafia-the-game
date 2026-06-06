@@ -43,6 +43,7 @@ const (
 	ClientMsgSetConsort    = "setConsort"
 	ClientMsgSetVigilante  = "setVigilante"
 	ClientMsgSetYakuza     = "setYakuza"
+	ClientMsgSetTracker    = "setTracker"
 	ClientMsgRecruit       = "recruit"
 	ClientMsgResetGame     = "resetGame"
 )
@@ -74,6 +75,7 @@ const (
 	EventConsortChanged        = "consortChanged"
 	EventVigilanteChanged      = "vigilanteChanged"
 	EventYakuzaChanged         = "yakuzaChanged"
+	EventTrackerChanged        = "trackerChanged"
 	EventBlocked               = "blocked"
 	EventRecruited             = "recruited"
 	EventRecruitRecorded       = "recruitRecorded"
@@ -89,6 +91,7 @@ const (
 	EventSpectatorNightAction  = "spectatorNightAction"
 	EventPlayerKilled          = "playerKilled"
 	EventDetectiveResult       = "detectiveResult"
+	EventTrackerResult         = "trackerResult"
 	EventVoteCast              = "voteCast"
 	EventVoteChanged           = "voteChanged"
 	EventVoteRetracted         = "voteRetracted"

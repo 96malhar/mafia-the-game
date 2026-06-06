@@ -28,9 +28,9 @@ test("the role guide is visible and collapsed in the lobby", () => {
   assert.equal(guide(app).open, false, "collapsed by default (no open attribute)");
 });
 
-test("the role guide lists all seven roles, grouped by faction", () => {
+test("the role guide lists all eight roles, grouped by faction", () => {
   const text = guide(lobbyApp()).textContent;
-  for (const role of ["Villager", "Detective", "Doctor", "Vigilante", "Mafia", "Consort", "Yakuza"]) {
+  for (const role of ["Villager", "Detective", "Doctor", "Vigilante", "Tracker", "Mafia", "Consort", "Yakuza"]) {
     assert.match(text, new RegExp(role), `lists ${role}`);
   }
   assert.match(text, /Town/, "has a Town faction heading");

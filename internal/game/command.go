@@ -91,6 +91,19 @@ type SetYakuza struct {
 
 func (SetYakuza) isCommand() {}
 
+// SetTracker toggles the optional Tracker role for the upcoming game. Valid
+// only in PhaseLobby (before roles are dealt). Setting it to its current
+// value is a no-op (ErrNoChange). When enabled, StartGame deals exactly one
+// RoleTracker, taking the slot of a villager — so the same 1 ≤ mafia ≤
+// playerCount-3 envelope still applies, and because the Tracker is
+// town-aligned it does not affect the parity guard. Host-only at the
+// transport layer.
+type SetTracker struct {
+	Enabled bool
+}
+
+func (SetTracker) isCommand() {}
+
 // AddPlayer joins a player to the lobby. Only valid in PhaseLobby.
 type AddPlayer struct {
 	PlayerID PlayerID
@@ -187,6 +200,7 @@ func (ResetGame) isCommand() {}
 //   - Detective  -> Target is the player to investigate.
 //   - Consort    -> Target is the player to block.
 //   - Vigilante  -> Target is the player to shoot (one-shot for the game).
+//   - Tracker    -> Target is the player to track (learns who they visited).
 //
 // Villagers have no night action. The engine resolves all submitted
 // actions when AdvancePhase moves Night -> Day.

@@ -68,6 +68,15 @@ test("the doctor gets a 'Save self' button on its own row", () => {
   assert.deepEqual(buttonTexts(rowFor(app, "Cara")), ["Save"], "other rows: plain Save");
 });
 
+test("the tracker gets a 'Track' button on other rows, none on its own", () => {
+  const app = newApp();
+  startGameAs(app, { me: "p3", myRole: "tracker", players: SIX });
+  toNightRoleAct(app, "tracker");
+
+  assert.deepEqual(buttonTexts(rowFor(app, "Dee")), ["Track"], "other rows: Track");
+  assert.deepEqual(buttonTexts(rowFor(app, "Cara")), [], "no track button on your own row");
+});
+
 test("a recruited player's hint and toast announce the recruit; no picker", () => {
   const app = newApp();
   startGameAs(app, { me: "p4", myRole: "doctor", players: SIX });

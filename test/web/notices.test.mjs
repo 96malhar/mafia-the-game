@@ -70,6 +70,40 @@ test("the detective result shows a private modal naming the target", () => {
   assert.match(modalText(app), /IS a mafia/i);
 });
 
+test("the tracker result shows a private modal naming the target and their visit", () => {
+  const app = newApp();
+  startGameAs(app, { me: "p3", myRole: "tracker", players: SIX });
+  emit(app, "phaseChanged", { from: "lobby", to: "night", day: 0 });
+  emit(app, "trackerResult", { tracker: "p3", target: "p1", visited: "p2" });
+
+  assert.match(modalText(app), /Yak/, "the modal names the tracked player");
+  assert.match(modalText(app), /Boss/, "the modal names who they visited");
+  assert.match(modalText(app), /visited/i);
+});
+
+test("the tracker result renders 'stayed home' when the target took no action", () => {
+  const app = newApp();
+  startGameAs(app, { me: "p3", myRole: "tracker", players: SIX });
+  emit(app, "phaseChanged", { from: "lobby", to: "night", day: 0 });
+  emit(app, "trackerResult", { tracker: "p3", target: "p1", visited: "" });
+
+  assert.match(modalText(app), /Yak/, "the modal names the tracked player");
+  assert.match(modalText(app), /stayed home/i);
+});
+
+test("the tracker result says 'visited you' when the tracked player came for the tracker", () => {
+  const app = newApp();
+  // The tracker is p3 (Cara). p1 (Yak, e.g. the mafia) targeted the tracker,
+  // so tracking p1 reveals they visited us.
+  startGameAs(app, { me: "p3", myRole: "tracker", players: SIX });
+  emit(app, "phaseChanged", { from: "lobby", to: "night", day: 0 });
+  emit(app, "trackerResult", { tracker: "p3", target: "p1", visited: "p3" });
+
+  assert.match(modalText(app), /Yak/, "the modal names the tracked player");
+  assert.match(modalText(app), /visited you/i, "renders 'you', not the tracker's own name");
+  assert.doesNotMatch(modalText(app), /Cara/, "does not show the tracker's own name");
+});
+
 // --- replay vs acknowledgement -------------------------------------------
 //
 // The one-shot notices (recruit / promotion / detective result) must still

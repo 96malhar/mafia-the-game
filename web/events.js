@@ -159,6 +159,11 @@
             renderActionPanel();
             break;
 
+          case "trackerChanged":
+            trackerEnabled = env.data.enabled;
+            renderActionPanel();
+            break;
+
           case "playerJoined":
             upsertPlayer(env.data.playerId, {
               name: env.data.name,
@@ -494,6 +499,27 @@
             break;
           }
 
+          case "trackerResult": {
+            // PrivateTo the tracker — projection guarantees only the
+            // tracker receives this. Same one-shot, dismiss-to-remember
+            // pacing as the detective result (show live; on replay only if
+            // not yet acknowledged). The id is per track (day + target),
+            // since the tracker tracks once per night. `visited` is "" when
+            // the target took no action — render that as "stayed home". When
+            // the target visited US (a player who acted on the tracker, e.g.
+            // the mafia or the doctor), render "you" rather than our own name.
+            const trkAckId = `track:${day}:${env.data.target}`;
+            if (!replaying || !hasAckedNotice(trkAckId)) {
+              const visited = env.data.visited;
+              showTrackerToast(
+                nameOf(env.data.target),
+                visited ? (visited === myId ? "you" : nameOf(visited)) : null,
+                trkAckId
+              );
+            }
+            break;
+          }
+
           case "blocked":
             // PrivateTo us, delivered at the START of our act window:
             // the Consort blocked us, so our action can't land. Set the
@@ -783,6 +809,9 @@
         vigilante: {
           default: "Vigilante, wake up. Choose someone to eliminate.",
         },
+        tracker: {
+          default: "Tracker, wake up. Choose someone to track.",
+        },
       };
 
       const ROLE_SLEEP = {
@@ -791,6 +820,7 @@
         detective: "Detective, go to sleep.",
         doctor:    "Doctor, go to sleep.",
         vigilante: "Vigilante, go to sleep.",
+        tracker:   "Tracker, go to sleep.",
       };
 
       function lookupRoleNarration(role, dayNum) {

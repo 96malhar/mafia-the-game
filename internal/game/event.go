@@ -116,6 +116,17 @@ type YakuzaChanged struct {
 func (YakuzaChanged) isEvent()               {}
 func (YakuzaChanged) Visibility() Visibility { return Public() }
 
+// TrackerChanged records a host-driven toggle of the optional Tracker role
+// during PhaseLobby. Public so every observer sees the configured
+// composition update in real time (it does NOT reveal who, if anyone, will
+// be dealt the role — that stays secret until GameEnded).
+type TrackerChanged struct {
+	Enabled bool
+}
+
+func (TrackerChanged) isEvent()               {}
+func (TrackerChanged) Visibility() Visibility { return Public() }
+
 // PlayerJoined records a successful lobby join.
 type PlayerJoined struct {
 	PlayerID PlayerID
@@ -390,6 +401,22 @@ type DetectiveResult struct {
 
 func (e DetectiveResult) isEvent()               {}
 func (e DetectiveResult) Visibility() Visibility { return PrivateTo(e.Detective) }
+
+// TrackerResult delivers a tracking outcome privately to the Tracker: who
+// the tracked Target visited that night. Visited is the id of the player
+// the target acted against — or, when the target is a mafia-faction member,
+// the faction's collective target (see GameState.trackedVisit). Visited is
+// "" when the target took no action ("stayed home"). It carries no hint of
+// WHAT the action was: the Tracker learns the visit, never the verb.
+// Private to the Tracker; no one else may see it.
+type TrackerResult struct {
+	Tracker PlayerID
+	Target  PlayerID
+	Visited PlayerID
+}
+
+func (e TrackerResult) isEvent()               {}
+func (e TrackerResult) Visibility() Visibility { return PrivateTo(e.Tracker) }
 
 // Vote events are PRIVATE TO THE VOTER while the tally is hidden.
 //

@@ -45,6 +45,9 @@ func (s *GameState) VigilanteEnabled() bool { return s.vigilanteEnabled }
 // YakuzaEnabled reports whether the optional Yakuza role is toggled on.
 func (s *GameState) YakuzaEnabled() bool { return s.yakuzaEnabled }
 
+// TrackerEnabled reports whether the optional Tracker role is toggled on.
+func (s *GameState) TrackerEnabled() bool { return s.trackerEnabled }
+
 // VigilanteShotUsed reports whether the Vigilante has already fired his
 // single bullet on a prior night.
 func (s *GameState) VigilanteShotUsed() bool { return s.vigilanteShotUsed }

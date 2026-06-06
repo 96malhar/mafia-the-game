@@ -80,10 +80,15 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 			"doctor too")
 	})
 
-	t.Run("ponder default - detective uses the detective-submit beat", func(t *testing.T) {
-		require.Equal(t, DefaultPonderDetectiveSubmit,
+	t.Run("ponder default - result-modal roles use the result-submit beat", func(t *testing.T) {
+		// The detective and the tracker each pop a private result modal at
+		// action time, so both get the longer read-the-modal ponder.
+		require.Equal(t, DefaultPonderResultSubmit,
 			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleDetective, 0, false)),
 			"detective ponder is sized for the read-modal pause")
+		require.Equal(t, DefaultPonderResultSubmit,
+			c.subPhaseDuration(sub(game.NightSubPonder, game.RoleTracker, 0, false)),
+			"tracker ponder is sized for the read-modal pause too")
 	})
 
 	t.Run("ponder default - phantom is bounded random", func(t *testing.T) {

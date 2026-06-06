@@ -187,6 +187,7 @@
         // Mafia turn). Its recruit is a separate "Recruit" button with its own
         // fixed copy at the call site, so it isn't a verb-table entry.
         yakuza:    { base: "Kill",        gerund: "Killing",       past: "Killed" },
+        tracker:   { base: "Track",       gerund: "Tracking",      past: "Tracked" },
       };
 
       // Per-phase state. All of these are reset on phaseChanged so a
@@ -265,6 +266,11 @@
       // upcoming game. Event-sourced from yakuzaChanged (replayed on join),
       // defaulting to false until the first event.
       let yakuzaEnabled = false;
+
+      // trackerEnabled mirrors the engine's optional-Tracker toggle for the
+      // upcoming game. Event-sourced from trackerChanged (replayed on join),
+      // defaulting to false until the first event.
+      let trackerEnabled = false;
 
       // vigilanteFired tracks whether the LOCAL vigilante has already
       // spent his single bullet (set when our own nightActionRecorded
@@ -575,6 +581,22 @@
             : `${targetName} is NOT a mafia member.`,
           isMafia ? MODAL_ROSE : MODAL_EMERALD,
           "Investigation result",
+          false,
+          ackId
+        );
+      }
+
+      // showTrackerToast tells the tracker who their target visited tonight.
+      // visitedName is null when the target took no action ("stayed home").
+      // It reveals only the visit, never what the action was. Same
+      // dismiss-to-remember mechanics as the detective result.
+      function showTrackerToast(targetName, visitedName, ackId) {
+        showModalCard(
+          visitedName
+            ? `${targetName} visited ${visitedName}.`
+            : `${targetName} stayed home.`,
+          MODAL_EMERALD,
+          "Tracking result",
           false,
           ackId
         );

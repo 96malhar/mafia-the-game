@@ -56,6 +56,28 @@ const (
 	// rules_phase.go). It can recruit any living non-RoleMafia player,
 	// the Consort included; recruiting an actual mafioso is rejected.
 	RoleYakuza Role = "yakuza"
+
+	// RoleTracker is an OPTIONAL town-aligned role (the host toggles it on
+	// before StartGame, like the Consort). Each night it picks one living
+	// player and immediately learns WHO that player visited that night —
+	// the identity of the target the tracked player took a night action
+	// against — without learning WHAT the action was. It is FactionTown: it
+	// wins with the town and reads as "not mafia" to the detective.
+	//
+	// The Tracker wakes LAST, after the Doctor, so by its turn every other
+	// role's target is already locked into pendingNight and any Yakuza
+	// recruit is recorded — its result is therefore delivered immediately at
+	// action time (like the detective), read off the night's recorded
+	// targets. Special case: tracking ANY current mafia-faction member (a
+	// mafioso, the Yakuza, a recruit, or a promoted Consort) reveals the
+	// faction's COLLECTIVE target (the kill, or the recruit target on a
+	// recruit night) rather than a personal entry — only one mafioso submits
+	// the kill, so this both fulfills "who did the mafia target" and avoids
+	// leaking which mafioso acted. A tracked player who took no action that
+	// night reads as having "stayed home" (an empty visit). The Tracker can
+	// be roleblocked by the Consort, exactly like the detective/doctor: a
+	// blocked Tracker's turn is phantom and it learns nothing.
+	RoleTracker Role = "tracker"
 )
 
 // Faction is the win-condition + knowledge group a role belongs to.

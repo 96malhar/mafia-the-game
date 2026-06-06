@@ -45,6 +45,8 @@ func (g *Game) Apply(cmd Command) ([]Event, error) {
 		return g.applySetVigilante(c)
 	case SetYakuza:
 		return g.applySetYakuza(c)
+	case SetTracker:
+		return g.applySetTracker(c)
 	case StartGame:
 		return g.applyStartGame(c)
 	case BeginNight:

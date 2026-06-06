@@ -1100,3 +1100,93 @@ func TestWinConditions(t *testing.T) {
 		require.False(t, ended, "with mafia=1 town=3 alive, no win yet")
 	})
 }
+
+// TestNightRoles_ActOncePerNight pins the once-per-night invariant for EVERY
+// night-acting role in one place. The first submission drives act → ponder,
+// closing the act window, so a second submission by the same actor lands
+// outside the act sub-phase and is rejected with ErrNotYourTurn — NOT
+// ErrAlreadyActed (the pendingNight dup-check is a later, effectively
+// unreachable backstop; the window closing is the real enforcement). The
+// mafia is the faction-collective variant of the same mechanism (see also
+// TestMafia_OneKillPerNightAcrossTheFaction); here we exercise it for the
+// solo roles too, including the optional ones, so the property can't silently
+// regress for any single role.
+func TestNightRoles_ActOncePerNight(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup leaves the game in PhaseNight on `actor`'s ACT window.
+		setup         func(t *testing.T) *game.Game
+		actor         game.PlayerID
+		first, second game.PlayerID // two distinct living, non-self targets
+	}{
+		{
+			name:  "mafia",
+			setup: fixedRoster,
+			actor: "mafia1", first: "town1", second: "town2",
+		},
+		{
+			name: "detective",
+			setup: func(t *testing.T) *game.Game {
+				g := fixedRoster(t)
+				toDetectiveAct(t, g)
+				return g
+			},
+			actor: "det", first: "mafia1", second: "town1",
+		},
+		{
+			name: "doctor",
+			setup: func(t *testing.T) *game.Game {
+				g := fixedRoster(t)
+				walkRestOfTurn(t, g) // mafia -> detective
+				walkRestOfTurn(t, g) // detective -> doctor
+				return g
+			},
+			actor: "doc", first: "town1", second: "town2",
+		},
+		{
+			name: "consort",
+			setup: func(t *testing.T) *game.Game {
+				g := fixedRosterWithConsort(t)
+				walkRestOfTurn(t, g) // mafia -> consort
+				return g
+			},
+			actor: "consort", first: "town1", second: "town2",
+		},
+		{
+			name: "vigilante",
+			setup: func(t *testing.T) *game.Game {
+				g := fixedRosterWithVigilante(t)
+				walkRestOfTurn(t, g) // mafia -> detective
+				walkRestOfTurn(t, g) // detective -> vigilante
+				return g
+			},
+			actor: "vig", first: "town1", second: "town2",
+		},
+		{
+			name: "tracker",
+			setup: func(t *testing.T) *game.Game {
+				g := fixedRosterWithTracker(t)
+				walkRestOfTurn(t, g) // mafia -> detective
+				walkRestOfTurn(t, g) // detective -> doctor
+				walkRestOfTurn(t, g) // doctor -> tracker
+				return g
+			},
+			actor: "trk", first: "mafia1", second: "town1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := tc.setup(t)
+			require.Equal(t, game.NightSubAct, g.State().CurrentNightSubPhase(),
+				"setup must leave %s on its act window", tc.name)
+
+			_, err := g.Apply(game.NightAction{Actor: tc.actor, Target: tc.first})
+			require.NoError(t, err, "the first action is accepted")
+
+			_, err = g.Apply(game.NightAction{Actor: tc.actor, Target: tc.second})
+			require.ErrorIs(t, err, game.ErrNotYourTurn,
+				"%s cannot act twice in one night — the act window closed after the first submission", tc.name)
+		})
+	}
+}

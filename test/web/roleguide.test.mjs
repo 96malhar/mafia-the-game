@@ -73,6 +73,21 @@ test("it hides once the night begins and returns by day / vote / end", () => {
   assert.ok(visible(app), "visible after the game ends");
 });
 
+test("the guide leads with how-to-play (the round loop + basics) before the roles", () => {
+  const text = guide(lobbyApp()).textContent;
+  // The how-to-play half: the round loop and the key basics.
+  for (const beat of ["Each round", "Setup", "Night", "Daybreak", "Vote", "Repeat"]) {
+    assert.match(text, new RegExp(beat), `covers the ${beat} beat`);
+  }
+  assert.match(text, /Abstain/i, "mentions abstaining");
+  assert.match(text, /Hosting/, "explains the host's job");
+  // Flow first, then roles: "Each round" appears before the "Roles" heading.
+  assert.ok(
+    text.indexOf("Each round") < text.indexOf("Villager"),
+    "how-to-play comes before the role reference",
+  );
+});
+
 test("the guide content is identical for town and mafia viewers (static, not faction-aware)", () => {
   const town = newApp();
   startGameAs(town, { me: "p3", myRole: "detective", players: SIX });

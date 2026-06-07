@@ -174,20 +174,46 @@
 
 
         <!--
-          Role guide. A static, always-available reference of every role the
-          game supports, collapsed by default. renderRoleGuide() (render.js)
-          hides it during the night phase (phase === "night") so players keep
-          their eyes closed; it's visible the rest of the time — including the
-          whole lobby and the roles-dealt window, right up until "Begin night".
-          Content is intentionally static (all roles, spoiler-free): it never
-          reveals who holds which role. Sits above the phase banner so the
-          reference is the first thing players reach for.
+          Game guide. One static, spoiler-free reference combining "how to
+          play" (the round loop + basics) and the per-role reference, collapsed
+          by default. renderRoleGuide() (render.js) hides it during the night
+          phase (phase === "night") so players keep their eyes closed; it's
+          visible the rest of the time — the whole lobby and roles-dealt window
+          (phase stays "lobby" until BeginNight), every day phase, and after
+          the game ends. Content is intentionally static: it never reveals who
+          holds which role. The id stays "role-guide" (renderRoleGuide and the
+          tests key off it). Sits above the phase banner so the reference is
+          the first thing a new player reaches for — flow first, then roles.
         -->
         <details id="role-guide"
                  class="hidden rounded border border-slate-700 bg-slate-800/40 p-4">
           <summary class="cursor-pointer select-none text-xs font-semibold uppercase tracking-wide text-slate-300">
-            Role guide
+            How to play
           </summary>
+
+          <div class="mt-3 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-indigo-300">Each round</h3>
+              <ol class="list-decimal space-y-2 pl-5 text-slate-200">
+                <li><span class="font-semibold">Setup</span> — the host shares the room link; everyone joins with a name. The host sets the mafia count and any optional roles, then starts the game to deal everyone a secret role.</li>
+                <li><span class="font-semibold">Night</span> — eyes closed. The app narrates each role's turn; when it's your turn and your role can act, make your choice on your phone. The mafia secretly pick someone to kill while town roles use their powers.</li>
+                <li><span class="font-semibold">Daybreak</span> — the app announces who was killed overnight, if anyone. Talk it out — in person or over voice — to work out who the mafia are.</li>
+                <li><span class="font-semibold">Vote</span> — tap a player to vote for the lynch, or Abstain. Counts stay hidden until the host reveals; a lynch needs more than half of the living players on one target.</li>
+                <li><span class="font-semibold">Repeat</span> — night and day alternate until one side wins, then every role is revealed.</li>
+              </ol>
+            </div>
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-indigo-300">Good to know</h3>
+              <ul class="space-y-2 text-slate-200">
+                <li><span class="font-semibold">Goal</span> — the town wins when every mafia-aligned player is gone; the mafia win once they outnumber the town.</li>
+                <li><span class="font-semibold">Your role is secret</span> — only you (and your fellow mafia) know it. See the roles below for what each one does.</li>
+                <li><span class="font-semibold">Changing your vote</span> — tap another player to switch, or tap your current pick to retract. Abstaining still counts as having voted.</li>
+                <li><span class="font-semibold">Hosting</span> — the host drives the day (reveal votes, finalize, start the next night) and plays the narration aloud for the table. Enable audio when prompted.</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3 class="mt-5 border-t border-slate-700 pt-4 text-xs font-semibold uppercase tracking-wide text-slate-300">Roles</h3>
           <div class="mt-3 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
             <div>
               <h3 class="text-xs font-semibold uppercase tracking-wide text-emerald-300">Town</h3>

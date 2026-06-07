@@ -64,7 +64,7 @@ const DefaultActionDuration = 60 * time.Second
 // DefaultSettleDuration is the universal post-sleep beat. Lets the
 // "Mafia, go to sleep." cue land cleanly before the next role's
 // "wake up" begins.
-const DefaultSettleDuration = 3 * time.Second
+const DefaultSettleDuration = 3500 * time.Millisecond
 
 // DefaultPonderRealSubmit is the post-submit pause for real roles that do
 // NOT pop a result modal (everything but the detective and tracker). A
@@ -83,8 +83,8 @@ const DefaultPonderResultSubmit = 3500 * time.Millisecond
 // actor decided quickly: long enough to be plausible, short enough
 // not to drag the night out per dead role.
 const (
-	DefaultPhantomPonderMin = 5 * time.Second
-	DefaultPhantomPonderMax = 10 * time.Second
+	DefaultPhantomPonderMin = 8 * time.Second
+	DefaultPhantomPonderMax = 12 * time.Second
 )
 
 // DefaultNarrateDuration is the universal narrate-cue duration for
@@ -110,18 +110,11 @@ const DefaultNarrateDuration = 2500 * time.Millisecond
 const DefaultSleepDuration = 2 * time.Second
 
 // DefaultMafiaNarrateDay0 is the Day-0-only mafia narrate duration.
-// Day 1 mafia includes a "look around and recognize each other" beat
-// in addition to the standard "Choose your target." cue, so the
-// audio runs longer. From Day 1 onward we collapse to the standard
-// per-night value.
+// Day 0 mafia includes a "look around and recognize each other" beat
+// in addition to the standard "Choose your target." cue, so the audio
+// runs longer. From Day 1 onward mafia collapses to the universal
+// DefaultNarrateDuration like every other role.
 const DefaultMafiaNarrateDay0 = 4 * time.Second
-
-// DefaultMafiaNarrateDayN is the mafia narrate duration on every
-// night after Day 0. Shorter than the universal default because
-// mafia's per-night line ("Mafia, wake up. Choose your target.") is
-// slightly shorter than the generic "<role>, wake up. Choose someone
-// to <verb>" template.
-const DefaultMafiaNarrateDayN = 1500 * time.Millisecond
 
 // DefaultMaxLifetime caps how long any room may live before the
 // manager forcibly closes it. Long enough that no real game session
@@ -155,11 +148,12 @@ func defaultSubPhaseDuration(e game.NightSubPhaseStarted) time.Duration {
 	case game.NightSubOpening:
 		return DefaultOpeningDuration
 	case game.NightSubNarrate:
-		if e.Role == game.RoleMafia {
-			if e.Day == 0 {
-				return DefaultMafiaNarrateDay0
-			}
-			return DefaultMafiaNarrateDayN
+		// Mafia's Day-0 narration carries an extra "look around and
+		// recognize each other" beat, so it runs longer. Every other
+		// narrate — mafia from Day 1 on, and all other roles — uses the
+		// universal default.
+		if e.Role == game.RoleMafia && e.Day == 0 {
+			return DefaultMafiaNarrateDay0
 		}
 		return DefaultNarrateDuration
 	case game.NightSubAct:

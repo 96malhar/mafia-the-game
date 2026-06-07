@@ -2,7 +2,7 @@
 
 This document describes how each role moves through a night turn, including every branch the engine can take: an action submitted within the timer, an action **not** submitted (timeout), an action **blocked** by the Consort, a one-shot ability that is already **spent**, a **dead** role, and the validation rejections that can occur.
 
-A unifying idea runs through all of this: **any turn whose holder cannot take an effective action is a _phantom_ turn** — it narrates and then goes straight to a ponder, skipping the act window entirely. "Cannot act" covers four cases that the engine treats identically: the role has **no living holder** (dead), a one-shot ability is **spent** (an out-of-bullets Vigilante), the holder was **roleblocked** by the Consort this night, or the holder was **recruited** by the Yakuza this night (their power is suppressed the night they are converted). Because the phantom ponder is a single randomized 5–10s beat, an observer can't tell *which* of those reasons applies — so a block (or a recruit) is no longer a timing tell. See `roleTurnIsPhantom` in [`state.go`](../internal/game/state.go).
+A unifying idea runs through all of this: **any turn whose holder cannot take an effective action is a _phantom_ turn** — it narrates and then goes straight to a ponder, skipping the act window entirely. "Cannot act" covers four cases that the engine treats identically: the role has **no living holder** (dead), a one-shot ability is **spent** (an out-of-bullets Vigilante), the holder was **roleblocked** by the Consort this night, or the holder was **recruited** by the Yakuza this night (their power is suppressed the night they are converted). Because the phantom ponder is a single randomized 8–12s beat, an observer can't tell *which* of those reasons applies — so a block (or a recruit) is no longer a timing tell. See `roleTurnIsPhantom` in [`state.go`](../internal/game/state.go).
 
 The engine itself is **timeless** — it only knows sub-phase *order*. All wall-clock durations are owned by the room layer ([`internal/room/config.go`](../internal/room/config.go)); the values quoted here come from the `Default*` constants there. The night state machine lives in [`internal/game/rules_phase.go`](../internal/game/rules_phase.go) and [`internal/game/rules_night.go`](../internal/game/rules_night.go); per-role behaviour lives in [`internal/game/rolespec.go`](../internal/game/rolespec.go).
 
@@ -68,15 +68,14 @@ Source of truth: `internal/room/config.go`. The engine emits `Deadline = 0`; the
 | Sub-phase | Duration | Notes |
 | --- | --- | --- |
 | `opening` | 7s | Once per night, before any role. |
-| `narrate` | 2.5s | Universal "wake up" cue. |
+| `narrate` | 2.5s | Universal "wake up" cue (Mafia from Day 1 on uses this too). |
 | `narrate` (Mafia, Day 0) | 4s | Extra "recognize each other" beat. |
-| `narrate` (Mafia, Day 1+) | 1.5s | Shorter per-night line. |
 | `act` | 60s | Normal action window. Only a turn with an actionable holder reaches it. |
 | `ponder` (real, most roles) | 2.5s | Post-submit breath. |
 | `ponder` (real, detective / tracker) | 3.5s | Sized to read the private result modal. |
-| `ponder` (phantom) | 5–10s (random) | Hides *why* the turn was inert (dead/spent/blocked). |
+| `ponder` (phantom) | 8–12s (random) | Hides *why* the turn was inert (dead/spent/blocked). |
 | `sleep` | 2s | "Go to sleep" cue. |
-| `settle` | 3s | Post-sleep beat before the next role. |
+| `settle` | 3.5s | Post-sleep beat before the next role. |
 
 There is **no shortened "blocked" act window** — a blocked actor never reaches `act` at all; their turn is phantom. The phantom ponder is **randomized** specifically so an observer can't deduce from timing why the turn produced no action: a dead, spent, and blocked role are all indistinguishable.
 
@@ -140,7 +139,7 @@ During `act`:
 **Turn transitions:**
 
 - `narrate → act` — detective alive and unblocked; the 60s window opens.
-- `narrate → ponder` (phantom, 5–10s) — detective is dead, **or** blocked this night; no act window.
+- `narrate → ponder` (phantom, 8–12s) — detective is dead, **or** blocked this night; no act window.
 - `act → ponder` — investigates a target, or the 60s timer expires with no read.
 - Then `ponder → sleep → settle`.
 
@@ -162,7 +161,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 **Turn transitions:**
 
 - `narrate → act` — doctor alive and unblocked; the 60s window opens.
-- `narrate → ponder` (phantom, 5–10s) — doctor is dead, **or** blocked this night; no act window.
+- `narrate → ponder` (phantom, 8–12s) — doctor is dead, **or** blocked this night; no act window.
 - `act → ponder` — saves a target (possibly self), or the 60s timer expires with no save.
 - Then `ponder → sleep → settle`.
 
@@ -182,7 +181,7 @@ When the turn is phantom because of a **block**: there is no act window, and a p
 **Turn transitions:**
 
 - `narrate → act` — consort alive; the 60s window opens.
-- `narrate → ponder` (phantom, 5–10s) — consort is dead **or** has been promoted away (no living `RoleConsort` holder); no act window.
+- `narrate → ponder` (phantom, 8–12s) — consort is dead **or** has been promoted away (no living `RoleConsort` holder); no act window.
 - `act → ponder` — blocks a target, or the 60s timer expires with no block.
 - Then `ponder → sleep → settle`.
 
@@ -203,7 +202,7 @@ When the consort submits, the engine emits `NightActionRecorded`. Self-block is 
 **Turn transitions:**
 
 - `narrate → act` — vigilante alive, bullet unspent, **and** unblocked; the 60s window opens.
-- `narrate → ponder` (phantom, 5–10s) — the bullet is already **spent**, the vigilante is **dead**, **or** he is **blocked** this night; no act window.
+- `narrate → ponder` (phantom, 8–12s) — the bullet is already **spent**, the vigilante is **dead**, **or** he is **blocked** this night; no act window.
 - `act → ponder` — fires the one bullet, **or** holds fire (`NightPass`, bullet preserved), **or** the 60s timer expires (no shot, bullet preserved).
 - Then `ponder → sleep → settle`.
 
@@ -235,7 +234,7 @@ The one-shot flag (`vigilanteShotUsed`) is set during resolution **only if a sho
 **Turn transitions:**
 
 - `narrate → act` — tracker alive and unblocked; the 60s window opens.
-- `narrate → ponder` (phantom, 5–10s) — tracker is dead, **or** blocked this night; no act window.
+- `narrate → ponder` (phantom, 8–12s) — tracker is dead, **or** blocked this night; no act window.
 - `act → ponder` — tracks a target, or the 60s timer expires with no read.
 - Then `ponder → sleep → settle`.
 

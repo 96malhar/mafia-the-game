@@ -32,13 +32,14 @@ func TestConfig_SubPhaseDuration(t *testing.T) {
 			c.subPhaseDuration(sub(game.NightSubOpening, "", 3, false)),
 			"opening default is day-independent today")
 
-		// Narrate: mafia has a Day-0 variant; everyone else is universal.
+		// Narrate: mafia has a longer Day-0 variant; from Day 1 on mafia
+		// collapses to the universal default like everyone else.
 		mafiaNarrateDay0 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 0, false))
 		mafiaNarrateDay1 := c.subPhaseDuration(sub(game.NightSubNarrate, game.RoleMafia, 1, false))
 		require.Equal(t, DefaultMafiaNarrateDay0, mafiaNarrateDay0,
 			"mafia Day 0 narrate uses the day-0 constant")
-		require.Equal(t, DefaultMafiaNarrateDayN, mafiaNarrateDay1,
-			"mafia Day N>0 narrate uses the later-night constant")
+		require.Equal(t, DefaultNarrateDuration, mafiaNarrateDay1,
+			"mafia Day N>0 narrate uses the universal default")
 		require.Greater(t, mafiaNarrateDay0, mafiaNarrateDay1,
 			"day-0 mafia narrate must be longer than later-night")
 

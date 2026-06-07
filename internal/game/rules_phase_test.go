@@ -809,6 +809,34 @@ func TestDayAbstain(t *testing.T) {
 		require.False(t, lynched, "only one real vote remains → no majority")
 	})
 
+	t.Run("voting after abstaining clears the abstention (not both at once)", func(t *testing.T) {
+		g := intoDayVote(t)
+		_, err := g.Apply(game.DayAbstain{Voter: "town1"})
+		require.NoError(t, err)
+
+		// Switching to a real vote is a FIRST VoteCast (no prior real vote)
+		// and the count stays at one — proving the abstention was replaced,
+		// not added to. A voter is never counted as both at once.
+		evts, err := g.Apply(game.DayVote{Voter: "town1", Target: "mafia1"})
+		require.NoError(t, err)
+		_, ok := findEvent[game.VoteCast](evts)
+		require.True(t, ok, "abstain → vote emits a fresh VoteCast")
+		vp, _ := findEvent[game.VoteProgress](evts)
+		require.Equal(t, 1, vp.Cast, "abstain → vote stays one cast, not two")
+
+		// And the recorded vote — not a lingering abstention — is what shows
+		// up in the tally once everyone else decides and the host reveals.
+		for _, v := range []game.PlayerID{"town2", "det", "doc", "mafia1"} {
+			_, err = g.Apply(game.DayAbstain{Voter: v})
+			require.NoError(t, err)
+		}
+		out, err := g.Apply(game.RevealVotes{})
+		require.NoError(t, err)
+		rv, _ := findEvent[game.VotesRevealed](out)
+		require.Equal(t, map[game.PlayerID]game.PlayerID{"town1": "mafia1"}, rv.Tally,
+			"the live vote is in the tally; the abstention left no trace")
+	})
+
 	t.Run("retract clears an abstention", func(t *testing.T) {
 		g := intoDayVote(t)
 		_, err := g.Apply(game.DayAbstain{Voter: "town1"})

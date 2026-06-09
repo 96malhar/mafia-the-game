@@ -275,6 +275,29 @@ func TestVigilante_MafiaKillTakesPrecedenceOverVigilante(t *testing.T) {
 	require.Equal(t, game.PlayerID("vig"), kills[0].PlayerID)
 }
 
+// Rule 2, town-target variant: mafia targets the vigilante, the
+// vigilante targets a TOWNSPERSON (not the mafia). resolvePhase gates
+// the shot on shooter.alive BEFORE it looks at the target, so the
+// target's faction is irrelevant — the dead vigilante's shot still
+// never lands and the townsperson survives. Same branch as the test
+// above; this pins that the precedence rule is target-agnostic.
+func TestVigilante_MafiaKillTakesPrecedenceTownTarget(t *testing.T) {
+	g := fixedRosterWithVigilante(t)
+	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:     "vig",
+		game.RoleVigilante: "town1",
+	})
+
+	require.False(t, livingByID(g, "vig"), "the vigilante dies to the mafia kill")
+	require.True(t, livingByID(g, "town1"),
+		"the townsperson survives — the dead vigilante's shot never lands")
+
+	// Exactly one death, and it's the vigilante.
+	kills := findAllEvents[game.PlayerKilled](evts)
+	require.Len(t, kills, 1, "only the mafia kill lands")
+	require.Equal(t, game.PlayerID("vig"), kills[0].PlayerID)
+}
+
 // --- rule 3: doctor saves the vigilante -----------------------------------
 
 // Rule 3: mafia targets the vigilante, the doctor saves the
@@ -299,6 +322,37 @@ func TestVigilante_DoctorSavesVigilanteSoShotLands(t *testing.T) {
 	// The shot landed, so the one bullet is spent. (This night ends the
 	// game as a town win, so there is no later night to walk to — assert
 	// the bullet state directly.)
+	require.True(t, g.State().VigilanteShotUsed(), "a landed shot spends the bullet")
+}
+
+// Rule 3, town-target variant: mafia targets the vigilante, the doctor
+// saves the vigilante, and the vigilante shoots a TOWNSPERSON. The save
+// cancels the mafia kill, so the vigilante survives — and a live
+// shooter's shot DOES land, so the townsperson dies. The pair with
+// TestVigilante_MafiaKillTakesPrecedenceTownTarget shows the doctor save
+// is exactly what flips the same cast from "T survives" to "T dies":
+// shooter survival, not the target, decides whether the shot lands.
+func TestVigilante_DoctorSavesVigilanteSoTownShotLands(t *testing.T) {
+	g := fixedRosterWithVigilante(t)
+	evts := runVigilanteNightToDay(t, g, map[game.Role]game.PlayerID{
+		game.RoleMafia:     "vig",
+		game.RoleDoctor:    "vig",
+		game.RoleVigilante: "town1",
+	})
+
+	require.True(t, livingByID(g, "vig"), "the saved vigilante survives")
+	require.False(t, livingByID(g, "town1"),
+		"the townsperson dies — the surviving vigilante's shot lands")
+
+	// Exactly one death, and it's the townsperson (the mafia kill on the
+	// vigilante was cancelled by the save).
+	kills := findAllEvents[game.PlayerKilled](evts)
+	require.Len(t, kills, 1, "only the vigilante's shot lands")
+	require.Equal(t, game.PlayerID("town1"), kills[0].PlayerID)
+
+	// The shot landed, so the one bullet is spent. Killing a lone
+	// villager doesn't end the game (mafia still don't outnumber town),
+	// so the bullet state is asserted directly here too.
 	require.True(t, g.State().VigilanteShotUsed(), "a landed shot spends the bullet")
 }
 

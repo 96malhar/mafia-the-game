@@ -61,11 +61,34 @@
       // changes (cheap: at most every few seconds) so that any UI piece
       // depending on phase + roster + votes stays consistent.
       function renderAll() {
+        applyPhaseAtmosphere();
         renderInviteBanner();
         renderHostAudioBar();
         renderRoleGuide();
         renderPlayers();
         renderActionPanel();
+      }
+
+      // applyPhaseAtmosphere drives the full-screen "Midnight Noir" mood:
+      // it tags <body data-phase> so styles.css can paint the per-phase
+      // glow + vignette, and re-tints the browser-chrome theme-color so
+      // the iOS toolbar / Android nav blend into the same field instead
+      // of sandwiching the dark UI between two mismatched bars. The base
+      // colours MUST stay in sync with the body[data-phase] rules in
+      // styles.css. Before a game starts (or in any unknown phase) we
+      // fall back to the neutral lobby ink.
+      const PHASE_CHROME = {
+        lobby:          "#0b1020",
+        night:          "#060914",
+        day_discussion: "#15100a",
+        day_vote:       "#140a0e",
+        ended:          "#07140f",
+      };
+      function applyPhaseAtmosphere() {
+        const body = document.body;
+        if (body) body.dataset.phase = phase || "lobby";
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", PHASE_CHROME[phase] || PHASE_CHROME.lobby);
       }
 
       // renderRoleGuide hides the static game guide (how-to-play + roles,

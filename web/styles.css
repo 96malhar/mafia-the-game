@@ -23,3 +23,142 @@
       button, [role="button"], a {
         touch-action: manipulation;
       }
+
+      /* ==================================================================
+       * Midnight Noir — a mobile-first visual treatment.
+       *
+       * The phone is the table's mood light: a Mafia game is played
+       * in-person, in a dim room, glanced at one-handed between rounds.
+       * So the *whole screen* carries the phase (night = cold moonlight,
+       * day = warm sodium, vote = tense rose), not just a panel border.
+       *
+       * Everything here is plain CSS (no build step): the atmosphere is
+       * two fixed pseudo-element layers behind the content, and the press
+       * states / dramatic-beat animations layer over the Tailwind classes
+       * already in the markup. Typography stays the app default.
+       * ================================================================== */
+
+      :root {
+        /* Per-phase base ink. Kept in sync with the JS theme-color hook
+           (applyPhaseAtmosphere) so the iOS toolbar tints to match. */
+        --atmo-base: #0b1020;
+      }
+
+      body {
+        background-color: var(--atmo-base);
+        /* Smoothly cross-fade the base ink between phases. The radial
+           glow (::before) swaps per phase too; gradients don't
+           interpolate, but with the base colour easing under them the
+           transition reads as one gentle mood shift. */
+        transition: background-color 700ms ease;
+      }
+
+      /* ---- atmosphere layers ---------------------------------------- */
+      /* A radial "glow" (top-of-screen light source) layered over a heavy
+         vignette that pulls the eye to the centre. Both are fixed and sit
+         behind the content (negative z-index); the app's translucent
+         panels (bg-*/40) let the glow bleed through, which is the whole
+         point. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        pointer-events: none;
+        background:
+          radial-gradient(120% 80% at 50% -10%, var(--atmo-glow, rgba(99, 102, 241, 0.13)) 0%, transparent 60%),
+          radial-gradient(140% 120% at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+      }
+      /* A faint film grain so the dark fields have texture instead of
+         banding flatly on OLED phones. Inline SVG turbulence — no asset
+         to ship. Very low opacity; purely atmospheric. */
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        opacity: 0.035;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      }
+
+      /* Per-phase glow + base. data-phase is set by applyPhaseAtmosphere.
+         Defaults (no attribute / lobby) use the cool indigo above. */
+      body[data-phase="night"] {
+        --atmo-base: #060914;
+        --atmo-glow: rgba(129, 140, 248, 0.17); /* cold moonlight */
+      }
+      body[data-phase="day_discussion"] {
+        --atmo-base: #15100a;
+        --atmo-glow: rgba(251, 191, 36, 0.15); /* warm sodium dawn */
+      }
+      body[data-phase="day_vote"] {
+        --atmo-base: #140a0e;
+        --atmo-glow: rgba(244, 63, 94, 0.14); /* tense */
+      }
+      body[data-phase="ended"] {
+        --atmo-base: #07140f;
+        --atmo-glow: rgba(16, 185, 129, 0.14); /* calm victory */
+      }
+
+      /* ---- touch feedback ------------------------------------------- */
+      /* Hover does nothing on a touchscreen, so give every button a real
+         press state: a quick scale + dim that reads as a physical tap.
+         Scoped to fine-pointer-less devices is unnecessary — the dip is
+         subtle enough to feel right with a mouse too. */
+      button:active,
+      [role="button"]:active {
+        transform: scale(0.97);
+        filter: brightness(0.92);
+      }
+      button {
+        transition: transform 90ms ease, filter 90ms ease, background-color 150ms ease;
+      }
+      /* A clear keyboard-focus ring (the press state above is pointer-only). */
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid rgba(165, 180, 252, 0.9);
+        outline-offset: 2px;
+      }
+
+      /* ---- the dramatic beats: notice modal & narrator -------------- */
+      /* The detective result / recruit / promotion modal is the most
+         theatrical moment in the game. Give it a staged entrance: the
+         backdrop fades, the card rises and settles. */
+      @keyframes noticeBackdropIn {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      @keyframes noticeCardIn {
+        from { opacity: 0; transform: translateY(14px) scale(0.94); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      #notice-modal:not(.hidden) {
+        animation: noticeBackdropIn 220ms ease both;
+      }
+      #notice-modal:not(.hidden) #notice-modal-card {
+        animation: noticeCardIn 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+
+      /* The narrator card pulses in when a new cue lands so the eye
+         catches the change even mid-conversation. */
+      @keyframes narratorIn {
+        from { opacity: 0; transform: translateY(-6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      #narrator-card:not(.hidden) {
+        animation: narratorIn 260ms ease both;
+      }
+
+      /* Honour reduced-motion: keep the meaning, drop the movement. */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+      }

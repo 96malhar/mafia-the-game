@@ -98,3 +98,17 @@ type inJoinability struct {
 }
 
 func (inJoinability) isInbound() {}
+
+// inTestHook carries a closure for the room to run on its own goroutine.
+// It is a TEST-ONLY seam — nothing in production constructs one. It lets
+// white-box recovery tests read run-loop-only state race-free (the closure
+// rides the inbox like any message, so the channel handoff synchronizes
+// it), and trigger a panic ON the room goroutine to exercise the recover
+// path without needing a real engine bug. Carrying the closure in the
+// message (rather than a shared package var) is what keeps it race-free
+// under -race.
+type inTestHook struct {
+	fn func(*Room)
+}
+
+func (inTestHook) isInbound() {}

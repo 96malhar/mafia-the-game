@@ -22,6 +22,7 @@ var (
 	metricsOnce sync.Once
 	cmdRejected metric.Int64Counter
 	roomsActive metric.Int64UpDownCounter
+	roomPanics  metric.Int64Counter
 )
 
 func initMetrics() {
@@ -37,6 +38,11 @@ func initMetrics() {
 			metric.WithDescription("Number of rooms currently held in memory"),
 			metric.WithUnit("{room}"),
 		)
+		roomPanics, _ = m.Int64Counter(
+			"room.panic",
+			metric.WithDescription("Panics recovered in a room goroutine (each is a bug to investigate)"),
+			metric.WithUnit("{panic}"),
+		)
 	})
 }
 
@@ -50,6 +56,14 @@ func recordCommandRejected(code wire.ErrorCode) {
 	cmdRejected.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("code", string(code)),
 	))
+}
+
+// recordRoomPanic counts a panic recovered in a room goroutine. Recovery
+// keeps the process alive, but every panic is a real bug, so this is the
+// alertable signal that one occurred (paired with the Error log + stack).
+func recordRoomPanic() {
+	initMetrics()
+	roomPanics.Add(context.Background(), 1)
 }
 
 func recordRoomOpened() {

@@ -281,6 +281,14 @@
               // lastNightVictims stays empty and the chip stays
               // hidden, which is correct.
               lastNightVictims = [];
+              // Clear the pending-dawn-announcement list here too, not only
+              // when narratePhaseChange consumes it — that consumption is
+              // gated behind !replaying, so on a refresh-replay across several
+              // nights the list would otherwise accumulate EVERY night's kills
+              // and the next LIVE dawn would announce the whole game's dead.
+              // Scoping it to the current night (like lastNightVictims) keeps
+              // the announcement to last night's victims only.
+              dayDiscussionPendingDeaths = [];
               // A fresh night starts the spectator feed over: the dead
               // watch THIS night's actions, not last night's.
               spectatorNightActions = [];

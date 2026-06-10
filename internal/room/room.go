@@ -56,6 +56,18 @@ type Room struct {
 	// when no phase-timeout is active (lobby, ended, or untimed phases).
 	phaseTimer *time.Timer
 
+	// journal is the per-room command-recovery log: every successfully
+	// applied command paired with the events it committed (see recovery.go).
+	// The run loop replays it to rebuild the engine and event log after a
+	// panic, so one bad command can't take down the process.
+	journal []journalEntry
+
+	// recoveries / recoveryWindowStart implement the crash-loop guard: how
+	// many panics this room has recovered from in the current window. See
+	// overRecoveryBudget.
+	recoveries          int
+	recoveryWindowStart time.Time
+
 	// createdAt is the wall-clock moment newRoom returned. Combined
 	// with cfg.MaxLifetime it determines when the manager's sweeper
 	// reaps this room. Immutable after construction; read-only from
@@ -109,13 +121,14 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	if gid == "" {
 		gid = game.GameID("game-" + code)
 	}
-	createdEvents, err := r.g.Apply(game.CreateGame{
+	createCmd := game.CreateGame{
 		GameID:     gid,
 		MinPlayers: cfg.MinPlayers,
 		MaxPlayers: cfg.MaxPlayers,
 		MafiaCount: cfg.MafiaCount,
 		Seed:       cfg.Seed,
-	})
+	}
+	createdEvents, err := r.g.Apply(createCmd)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("room: CreateGame failed: %w", err)
@@ -132,8 +145,9 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	// first join's OutJoined will fan these events out via the
 	// projected priorEvents slice.
 	r.events = append(r.events, createdEvents...)
-	// We DON'T append GameCreated to r.events: the event is purely a
-	// room-construction artifact, not interesting to any player view.
+	// Record CreateGame as journal entry 0 so a post-panic rebuild starts
+	// from the same construction the live room did (same GameID/config/seed).
+	r.record(createCmd, createdEvents, false)
 	return r, nil
 }
 
@@ -151,8 +165,8 @@ func (r *Room) SubmitJoin(ctx context.Context, sub *Subscriber, name string) err
 // player slot using the rejoin secret. If auth fails the room sends an
 // OutError to the subscriber (and SubmitRejoin still returns nil — the
 // failure flows through the outbound channel, not the return value).
-func (r *Room) SubmitRejoin(ctx context.Context, sub *Subscriber, pid game.PlayerID, secret string) error {
-	return r.submit(ctx, inRejoin{From: sub, PlayerID: pid, Secret: secret})
+func (r *Room) SubmitRejoin(ctx context.Context, sub *Subscriber, pid game.PlayerID, secret string, since int) error {
+	return r.submit(ctx, inRejoin{From: sub, PlayerID: pid, Secret: secret, Since: since})
 }
 
 // SubmitLeave detaches a subscriber from its player slot. The player
@@ -273,6 +287,12 @@ func (r *Room) Run() {
 			timerC = r.phaseTimer.C
 		}
 
+		// Each unit of work runs under guard so a panic anywhere beneath
+		// the run loop (engine, projection, a handler) is caught and
+		// converted into a per-room rebuild instead of crashing the whole
+		// process and every other game. recoverFromPanic returns false when
+		// the room is unrecoverable (crash-loop budget exhausted, or the
+		// rebuild itself panicked) and has been cancelled — then we exit.
 		select {
 		case <-r.ctx.Done():
 			return
@@ -280,9 +300,17 @@ func (r *Room) Run() {
 			if !ok {
 				return
 			}
-			r.dispatch(msg)
+			if p := guard(func() { r.dispatch(msg) }); p != nil {
+				if !r.recoverFromPanic("dispatch", p) {
+					return
+				}
+			}
 		case <-timerC:
-			r.handlePhaseTimer()
+			if p := guard(r.handlePhaseTimer); p != nil {
+				if !r.recoverFromPanic("phase-timer", p) {
+					return
+				}
+			}
 		}
 	}
 }
@@ -306,6 +334,11 @@ func (r *Room) dispatch(msg inbound) {
 		r.handleLifetimeCheck()
 	case inJoinability:
 		r.handleJoinability(m)
+	case inTestHook:
+		// Test-only: run a closure on the room goroutine (see inbound.go).
+		// Nothing in production constructs this, so the case is inert in a
+		// real deployment.
+		m.fn(r)
 	default:
 		r.log.Warn("unknown inbound", "type", fmt.Sprintf("%T", msg))
 	}
@@ -330,7 +363,8 @@ func (r *Room) handleJoin(m inJoin) {
 		return
 	}
 
-	events, err := r.g.Apply(game.AddPlayer{PlayerID: pid, Name: m.Name})
+	addCmd := game.AddPlayer{PlayerID: pid, Name: m.Name}
+	events, err := r.g.Apply(addCmd)
 	if err != nil {
 		// joinErrorFor gives lobby-closed errors a player-facing
 		// message; all other codes pass through unchanged. The join
@@ -387,9 +421,17 @@ func (r *Room) handleJoin(m inJoin) {
 		Secret:   secret,
 		RoomCode: r.code,
 		IsHost:   isHost,
-		Events:   priorEvents,
+		// High-water at join time: r.events has not yet grown by this join's
+		// own events (appended just below), so its length is the joiner's
+		// starting cursor.
+		LastSeq: len(r.events),
+		Events:  priorEvents,
 	})
 	r.appendAndBroadcast(events)
+	// appendAndBroadcast stamps deadlines in place, so `events` now holds the
+	// final committed batch (PlayerJoined plus a first-joiner HostChanged) —
+	// journal it against the AddPlayer command for panic recovery.
+	r.record(addCmd, events, false)
 }
 
 // handleRejoin reattaches a subscriber to an existing slot. If the
@@ -421,12 +463,27 @@ func (r *Room) handleRejoin(m inRejoin) {
 	r.attachSubscriber(m.From)
 	m.From.setPlayerID(m.PlayerID)
 
+	// Cursor-driven resume: ship only the projected tail since the client's
+	// cursor. A cursor of 0, or one past the current log length (e.g. the
+	// client's pre-reset cursor after a GameReset rebaselined the log), falls
+	// back to the full projected log with FromSeq=0 so the client rebuilds
+	// from scratch.
+	total := len(r.events)
+	fromSeq := 0
+	tail := r.events
+	if m.Since > 0 && m.Since <= total {
+		fromSeq = m.Since
+		tail = r.events[m.Since:]
+	}
+
 	r.sendOne(m.From, OutRejoined{
 		PlayerID: m.PlayerID,
 		Name:     slot.name,
 		RoomCode: r.code,
 		IsHost:   m.PlayerID == r.host,
-		Events:   game.Project(m.PlayerID, r.events, r.g.State()),
+		FromSeq:  fromSeq,
+		LastSeq:  total,
+		Events:   game.Project(m.PlayerID, tail, r.g.State()),
 	})
 }
 
@@ -536,6 +593,11 @@ func (r *Room) handleCommand(m inCommand) {
 		return
 	}
 	r.appendAndBroadcast(events)
+	// Journal the (post-rewrite, successfully applied) command paired with
+	// its now-stamped events, so a panic anywhere downstream can rebuild this
+	// exact history. Capturing the post-rewrite command means replay needs no
+	// re-authorization.
+	r.record(cmd, events, false)
 }
 
 // handleReset returns a finished game to a fresh lobby in the same room
@@ -553,7 +615,11 @@ func (r *Room) handleCommand(m inCommand) {
 // requester is the host's subscriber, used only to deliver an error if the
 // engine rejects the reset (e.g. the game isn't actually ended).
 func (r *Room) handleReset(requester *Subscriber) {
-	events, err := r.g.Apply(game.ResetGame{Seed: seedOrFallback()})
+	// Capture the exact reset command (with its freshly-minted seed) so a
+	// post-panic replay redeals identically — calling seedOrFallback again
+	// during rebuild would diverge.
+	resetCmd := game.ResetGame{Seed: seedOrFallback()}
+	events, err := r.g.Apply(resetCmd)
 	if err != nil {
 		r.sendOne(requester, errorFor(err))
 		return
@@ -576,6 +642,10 @@ func (r *Room) handleReset(requester *Subscriber) {
 	// time for this room. broadcastToSubs then projects it to every
 	// connected subscriber (both events are Public, so all see them).
 	r.events = events
+	// Journal the reset as a rebaseline entry so a rebuild replays the full
+	// command history (reproducing the engine's post-reset lobby) and then
+	// replaces its log with this snapshot, exactly as here.
+	r.record(resetCmd, events, true)
 	r.broadcastToSubs(events)
 }
 

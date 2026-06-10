@@ -44,6 +44,10 @@ func (r *Room) handlePhaseTimer() {
 		return
 	}
 	r.appendAndBroadcast(events)
+	// Journal the synthesized AdvancePhase (with its now-stamped events) so a
+	// rebuild reproduces the night's progression — the timer ticks are part
+	// of the game's truth, not just client-facing.
+	r.record(game.AdvancePhase{}, events, false)
 }
 
 // resetPhaseTimer clears any active phase-level timer on a phase

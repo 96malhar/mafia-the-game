@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +16,21 @@ import (
 	"github.com/96malhar/mafia-the-game/internal/game"
 	"github.com/96malhar/mafia-the-game/internal/room"
 )
+
+// parseSinceCursor parses the ?since= resume cursor from a rejoin URL. Any
+// missing, non-numeric, or negative value yields 0 — a cold rejoin (full
+// projected log) — so a malformed or absent cursor degrades safely rather
+// than erroring the connection.
+func parseSinceCursor(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 // Handler bundles the WebSocket upgrade endpoint and the small JSON
 // HTTP endpoints around it (create-room). It holds a reference to the
@@ -194,9 +210,14 @@ func (h *Handler) Connect(w http.ResponseWriter, req *http.Request) {
 
 	isRejoin := playerID != "" && secret != ""
 	if isRejoin {
+		// since is the client's resume cursor: the highest event sequence it
+		// has already applied. Absent/garbage parses to 0, which the room
+		// treats as a cold rejoin (full projected log) — so an old client that
+		// never sends ?since= still works, just without the delta optimization.
+		since := parseSinceCursor(req.URL.Query().Get("since"))
 		// Rejoin path: submit the rejoin immediately so the client
 		// receives the snapshot on its first read.
-		if err := r.SubmitRejoin(ctx, sub, game.PlayerID(playerID), secret); err != nil {
+		if err := r.SubmitRejoin(ctx, sub, game.PlayerID(playerID), secret, since); err != nil {
 			h.logger.Info("rejoin submit failed", "err", err)
 			_ = conn.Close(websocket.StatusInternalError, "rejoin failed")
 			cancel()

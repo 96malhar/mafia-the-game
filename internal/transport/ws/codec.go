@@ -101,7 +101,15 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 			data = roleSub(true)
 		case game.NightSubAct:
 			tag = wire.EventNightActionStarted
-			data = roleSub(false)
+			// Carry the sub-phase duration ONLY here: the act window is the one
+			// sub-phase that renders a countdown bar, and its length is a fixed,
+			// non-secret constant. (Phantom-ponder durations are randomized to
+			// hide why a turn was inert, so we deliberately don't expose them.)
+			// The client needs Duration to draw the bar at the correct
+			// proportion after a mid-window join/refresh.
+			actData := roleSub(false)
+			actData["duration"] = v.Duration
+			data = actData
 		case game.NightSubPonder:
 			tag = wire.EventNightPonderStarted
 			data = roleSub(true)
@@ -202,6 +210,7 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 			Secret:   m.Secret,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
+			LastSeq:  m.LastSeq,
 			Events:   evs,
 		})
 		return raw, true, err
@@ -216,6 +225,8 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 			Name:     m.Name,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
+			FromSeq:  m.FromSeq,
+			LastSeq:  m.LastSeq,
 			Events:   evs,
 		})
 		return raw, true, err
@@ -225,7 +236,7 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
-		raw, err := marshalEnvelope(string(serverMsgEvent), serverEventData{Event: envev})
+		raw, err := marshalEnvelope(string(serverMsgEvent), serverEventData{Seq: m.Seq, Event: envev})
 		return raw, true, err
 
 	case room.OutError:

@@ -44,23 +44,42 @@ type OutJoined struct {
 	Secret   string
 	RoomCode string
 	IsHost   bool
-	Events   []game.Event
+
+	// LastSeq is the log high-water mark at join time (the count of events
+	// preceding this join). The client adopts it as its resume cursor so a
+	// reconnect right after joining sends an accurate ?since= — the backlog
+	// events carry no per-event sequence, and the joiner's own PlayerJoined
+	// arrives as the next streaming OutEvent with Seq = LastSeq+1.
+	LastSeq int
+	Events  []game.Event
 }
 
 func (OutJoined) isOutbound() {}
 
-// OutRejoined acknowledges a successful rejoin and includes the full
-// projected event log so the client can rebuild its view from scratch.
-// Sent only to the rejoining subscriber.
+// OutRejoined acknowledges a successful rejoin. It is a cursor-driven
+// resume: the client reconnects with the highest sequence it has already
+// applied (?since=N), and the room replies with only the events after that
+// point rather than re-shipping the entire log on every flap.
+//
+// FromSeq is the cursor the delta starts AFTER: when FromSeq > 0, Events is
+// the projected tail since the client's cursor and the client appends it to
+// its existing view; when FromSeq == 0 (a cold rejoin, an unknown/too-old
+// cursor, or a post-reset rebaseline) Events is the full projected log and
+// the client rebuilds from scratch. LastSeq is the room's current
+// high-water mark (len of the log) — the client adopts it as its cursor
+// once the batch is applied, so subsequent OutEvent.Seq values continue
+// monotonically. Sent only to the rejoining subscriber.
 type OutRejoined struct {
 	PlayerID game.PlayerID
 	Name     string
 	RoomCode string
 	IsHost   bool
 
-	// Events is the entire event log filtered through the projection
-	// for this player — i.e. everything they have ever been allowed
-	// to see, in order.
+	FromSeq int
+	LastSeq int
+
+	// Events is the projected slice the client should apply — the tail
+	// since FromSeq, or the whole log when FromSeq == 0.
 	Events []game.Event
 }
 
@@ -69,7 +88,16 @@ func (OutRejoined) isOutbound() {}
 // OutEvent carries one engine event, already passed through the
 // per-player projection. This is the streaming channel — every state
 // change in the game emits one or more OutEvents to each subscriber.
+//
+// Seq is the event's 1-based position in the room's canonical log (its
+// index + 1). It is the same absolute sequence the cursor-resume protocol
+// keys on: the client tracks the highest Seq it has applied and sends it as
+// ?since=N on reconnect. Because events are projected per viewer, a given
+// subscriber sees an increasing-but-gappy Seq stream (filtered events are
+// skipped), which is exactly right — the gaps are events it was never
+// allowed to see and never needs to catch up on.
 type OutEvent struct {
+	Seq   int
 	Event game.Event
 }
 

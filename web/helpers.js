@@ -321,6 +321,14 @@
       // the live sub-phase.
       let currentNightRole = "";
       let nightTurnDeadlineMs = 0;
+      // nightTurnTotalMs is the CURRENT act window's full length in millis,
+      // sent by the server on the act sub-phase. The countdown bar's fill is
+      // remaining / nightTurnTotalMs, so the bar shows the true proportion even
+      // when we join/refresh mid-window (knowing only the deadline, we couldn't
+      // tell how much already elapsed and the bar would restart full). 0 when
+      // unknown (non-act sub-phases, or an older server) — then the bar falls
+      // back to draining over whatever time remains.
+      let nightTurnTotalMs = 0;
 
       // iAmBlocked is set true when the server tells us (privately) that
       // the Consort blocked our action this night — delivered at the
@@ -690,7 +698,13 @@
         stopNightCountdown();
         if (!deadlineMs) return;
         if (!viewerOwnsCurrentTimer()) return;
-        nightCountdownTotalMs = Math.max(1, deadlineMs - Date.now());
+        // Prefer the server-sent full duration so the bar's fill is the true
+        // proportion (remaining / total) — correct whether the window just
+        // opened or we joined/refreshed partway through. Fall back to the
+        // remaining time when the duration is unknown (older server), which
+        // simply starts the bar full and drains it to the deadline.
+        nightCountdownTotalMs =
+          nightTurnTotalMs > 0 ? nightTurnTotalMs : Math.max(1, deadlineMs - Date.now());
         renderNightCountdownFrame();
         nightCountdownInterval = setInterval(renderNightCountdownFrame, 100);
       }
@@ -884,6 +898,13 @@
       // currentRoomCode is the room we're connected to (or reconnecting
       // to); creds for it live in credStore under storageKey(code).
       let currentRoomCode = null;
+      // lastSeq is the resume cursor: the highest event sequence we've
+      // applied this session. On an in-session reconnect we send it as
+      // ?since=N so the server replies with only the events we missed
+      // instead of the whole log. It is deliberately in-memory only — a
+      // full page reload clears the model, so it resets to 0 and does a
+      // full resync (a delta would have no base state to apply onto).
+      let lastSeq = 0;
       // reconnecting is true while the established-drop retry loop is
       // active. It distinguishes "lost an in-game connection, keep
       // retrying" from the page-load auto-rejoin (pendingRejoinCode),

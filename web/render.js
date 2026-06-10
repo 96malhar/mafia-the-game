@@ -6,6 +6,10 @@
         players = new Map();
         phase = "lobby";
         day = 0;
+        // The model is being rebuilt from scratch, so the resume cursor
+        // restarts too; enterRoomFromServer re-adopts the server's
+        // high-water mark right after the replay.
+        lastSeq = 0;
         myAction = null;
         mafiaKillTarget = null;
         votes = new Map();
@@ -40,6 +44,7 @@
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
+        nightTurnTotalMs = 0;
         currentNightSubPhase = "";
         currentNightTurnPhantom = false;
         iAmBlocked = false;

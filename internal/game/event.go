@@ -251,6 +251,14 @@ type NightSubPhaseStarted struct {
 	// current and future via the replayed log — agree on the timing.
 	Deadline int64
 
+	// Duration is the sub-phase's full length in millis (Deadline minus its
+	// start instant). Like Deadline, the engine emits 0 and the room stamps
+	// it. A client that joins or refreshes mid-sub-phase knows only the
+	// absolute Deadline, so it can't tell how much of the window already
+	// elapsed; Duration lets it render the countdown bar at the correct
+	// proportion (remaining / Duration) instead of restarting it full.
+	Duration int64
+
 	// Phantom is true when no living player holds Role at the time the
 	// sub-phase starts. It is meaningful for narrate (narration still
 	// plays, so the room can't deduce a dead role from missing audio)
@@ -263,14 +271,15 @@ type NightSubPhaseStarted struct {
 func (NightSubPhaseStarted) isEvent()               {}
 func (NightSubPhaseStarted) Visibility() Visibility { return Public() }
 
-// WithDeadline returns a copy of the event with its Deadline set to ms
-// (unix-millis), but only if it was still 0 (unstamped). Value receiver
-// + return-copy keeps events immutable. The room layer calls this to
-// stamp a wall-clock deadline onto the engine's timeless event before
+// WithTiming returns a copy of the event with its Deadline (unix-millis) and
+// Duration (millis) stamped, but only if Deadline was still 0 (unstamped).
+// Value receiver + return-copy keeps events immutable. The room layer calls
+// this to stamp wall-clock timing onto the engine's timeless event before
 // broadcasting (see stampNightDeadlines in internal/room).
-func (e NightSubPhaseStarted) WithDeadline(ms int64) Event {
+func (e NightSubPhaseStarted) WithTiming(deadlineMs, durationMs int64) Event {
 	if e.Deadline == 0 {
-		e.Deadline = ms
+		e.Deadline = deadlineMs
+		e.Duration = durationMs
 	}
 	return e
 }

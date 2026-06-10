@@ -50,6 +50,11 @@ type inRejoin struct {
 	From     *Subscriber
 	PlayerID game.PlayerID
 	Secret   string
+	// Since is the client's resume cursor: the highest event sequence it has
+	// already applied. The room replies with only the projected tail after
+	// this point (a delta); 0 — or a value past the current log, e.g. after a
+	// reset — yields the full projected log instead. See OutRejoined.
+	Since int
 }
 
 func (inRejoin) isInbound() {}
@@ -98,3 +103,17 @@ type inJoinability struct {
 }
 
 func (inJoinability) isInbound() {}
+
+// inTestHook carries a closure for the room to run on its own goroutine.
+// It is a TEST-ONLY seam — nothing in production constructs one. It lets
+// white-box recovery tests read run-loop-only state race-free (the closure
+// rides the inbox like any message, so the channel handoff synchronizes
+// it), and trigger a panic ON the room goroutine to exercise the recover
+// path without needing a real engine bug. Carrying the closure in the
+// message (rather than a shared package var) is what keeps it race-free
+// under -race.
+type inTestHook struct {
+	fn func(*Room)
+}
+
+func (inTestHook) isInbound() {}

@@ -6,26 +6,39 @@
       }
 
       // enterRoomFromServer applies the session-entry setup shared by a
-      // successful join and rejoin: adopt our identity, stop any reconnect
-      // loop, reset to a clean model, paint the in-game view, and replay
-      // the server's projected event log. The replay is marked
-      // {replaying:true} so narration and one-shot toasts don't re-fire on
-      // catch-up (we don't want a late joiner's / reconnecter's phone
-      // re-announcing every event from earlier in the night). The joined
-      // and rejoined cases wrap this with their own small deltas.
-      function enterRoomFromServer(d) {
+      // join and a rejoin. With {delta:true} (a cursor-resume rejoin that
+      // carries only the events we missed) it KEEPS the current model and
+      // applies the tail on top; otherwise it rebuilds from scratch
+      // (resetGameState) and replays the full projected log. Either way it
+      // adopts the server's high-water mark (d.lastSeq) as our cursor — this
+      // covers events filtered from our view (we never received them but
+      // must still advance past them) and the join backlog (whose events
+      // carry no per-event sequence).
+      function enterRoomFromServer(d, { delta = false } = {}) {
         myId = d.playerId;
         myIsHost = !!d.isHost;
         pendingRejoinCode = null;
         cancelReconnect();
         reconnectAttempts = 0;
         showReconnectingBanner(false);
-        resetGameState();
+        if (!delta) resetGameState();
         $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
         showGame(d.roomCode);
         // (d.events || []) makes the presence guard universal: a rejoin
-        // always carries the projected log, a fresh join may omit it.
+        // always carries events (full log or delta tail), a fresh join may
+        // omit them.
         for (const env of (d.events || [])) handleEvent(env, { replaying: true });
+        if (typeof d.lastSeq === "number") lastSeq = d.lastSeq;
+        // Re-arm the act-window countdown after a replay. The per-sub-phase
+        // handlers skip startNightCountdown while replaying (so a reconnect
+        // doesn't restart it on every historical sub-phase) — but once the
+        // replay has settled the model on the CURRENT sub-phase, the actor's
+        // timer must keep draining. Without this, a refresh mid-act leaves the
+        // bar frozen full. startNightCountdown self-gates on
+        // viewerOwnsCurrentTimer (only the current actor, only during "act")
+        // and on a non-zero deadline, so it's a no-op for a fresh join, a
+        // non-actor, or any non-act sub-phase.
+        startNightCountdown(nightTurnDeadlineMs);
       }
 
       function handleServerMessage(msg) {
@@ -46,14 +59,19 @@
             break;
           }
           case "rejoined": {
-            // Reconnect (or page-load auto-rejoin) succeeded — the shared
-            // setup stops the retry loop, resets backoff, and replays our
-            // full state.
-            enterRoomFromServer(msg.data);
+            // Reconnect (or page-load auto-rejoin) succeeded. fromSeq>0 means
+            // the server sent only the tail since our cursor (a delta we
+            // apply onto the existing model); fromSeq===0 is a full snapshot
+            // we rebuild from scratch.
+            enterRoomFromServer(msg.data, { delta: msg.data.fromSeq > 0 });
             break;
           }
           case "event":
             handleEvent(msg.data.event);
+            // Advance the resume cursor. Set unconditionally (not max-ed):
+            // the WebSocket delivers events in order, and a gameReset
+            // rebaselines the log to a LOWER sequence that we must adopt.
+            if (typeof msg.data.seq === "number") lastSeq = msg.data.seq;
             break;
           case "error": {
             const code = msg.data && msg.data.code;
@@ -263,6 +281,14 @@
               // lastNightVictims stays empty and the chip stays
               // hidden, which is correct.
               lastNightVictims = [];
+              // Clear the pending-dawn-announcement list here too, not only
+              // when narratePhaseChange consumes it — that consumption is
+              // gated behind !replaying, so on a refresh-replay across several
+              // nights the list would otherwise accumulate EVERY night's kills
+              // and the next LIVE dawn would announce the whole game's dead.
+              // Scoping it to the current night (like lastNightVictims) keeps
+              // the announcement to last night's victims only.
+              dayDiscussionPendingDeaths = [];
               // A fresh night starts the spectator feed over: the dead
               // watch THIS night's actions, not last night's.
               spectatorNightActions = [];
@@ -327,6 +353,9 @@
             currentNightRole = env.data.role || "";
             currentNightSubPhase = "act";
             nightTurnDeadlineMs = env.data.deadline || 0;
+            // The act window is the only sub-phase the server sizes with a
+            // duration (for the countdown bar's proportion); 0 if absent.
+            nightTurnTotalMs = env.data.duration || 0;
             if (!replaying) {
               startNightCountdown(nightTurnDeadlineMs);
             }
@@ -752,6 +781,14 @@
             }
             break;
           }
+          default:
+            // Forward-compatible by design: an unknown event tag (e.g. a
+            // newer server emitting an event type this client predates) is
+            // ignored rather than throwing, so a rolling deploy can't desync
+            // or crash an older client. We note it for dev visibility.
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn(`ignoring unknown event type: ${env.type}`);
+            }
         }
       }
 
@@ -913,8 +950,12 @@
           ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
           try { ws.close(); } catch {}
         }
+        // On a reconnect we carry our resume cursor so the server replies
+        // with only the events we missed. lastSeq is 0 on a page-load
+        // auto-rejoin (fresh JS state), which correctly requests a full
+        // snapshot.
         const params = creds
-          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
+          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}&since=${lastSeq}`
           : "";
         const url = `${location.origin.replace("http", "ws")}/ws/${code}${params}`;
         ws = new WebSocket(url);

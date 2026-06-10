@@ -88,15 +88,27 @@ func stampDeadline(evt game.Event, deadline int64) game.Event {
 }
 
 // broadcastToSubs projects the batch per viewer and writes it to each
-// subscriber's outbound channel. A subscriber whose channel is full
-// is treated as too slow and disconnected — better to drop one flaky
-// connection than block the whole room.
+// subscriber's outbound channel, stamping each event with its absolute
+// sequence (1-based index in the canonical log) so clients can track a
+// resume cursor. A subscriber whose channel is full is treated as too slow
+// and disconnected — better to drop one flaky connection than block the
+// whole room.
+//
+// The batch was just appended to r.events (by appendAndBroadcast) or IS the
+// freshly-rebaselined log (handleReset), so events[j] sits at absolute index
+// base+j where base = len(r.events) - len(events). We iterate with that index
+// and apply the per-event redaction via game.Visible, rather than
+// game.Project's slice form, so the index→event mapping survives the filter.
 func (r *Room) broadcastToSubs(events []game.Event) {
+	base := len(r.events) - len(events)
+	state := r.g.State()
 	for sub := range r.subs {
 		viewer := sub.PlayerID()
-		filtered := game.Project(viewer, events, r.g.State())
-		for _, e := range filtered {
-			if !r.sendOne(sub, OutEvent{Event: e}) {
+		for j, e := range events {
+			if !game.Visible(viewer, e, state) {
+				continue
+			}
+			if !r.sendOne(sub, OutEvent{Seq: base + j + 1, Event: e}) {
 				r.disconnectSlow(sub)
 				break
 			}

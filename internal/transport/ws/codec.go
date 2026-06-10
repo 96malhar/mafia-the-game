@@ -202,6 +202,7 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 			Secret:   m.Secret,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
+			LastSeq:  m.LastSeq,
 			Events:   evs,
 		})
 		return raw, true, err
@@ -216,6 +217,8 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 			Name:     m.Name,
 			RoomCode: m.RoomCode,
 			IsHost:   m.IsHost,
+			FromSeq:  m.FromSeq,
+			LastSeq:  m.LastSeq,
 			Events:   evs,
 		})
 		return raw, true, err
@@ -225,7 +228,7 @@ func encodeOutbound(msg room.Outbound) ([]byte, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
-		raw, err := marshalEnvelope(string(serverMsgEvent), serverEventData{Event: envev})
+		raw, err := marshalEnvelope(string(serverMsgEvent), serverEventData{Seq: m.Seq, Event: envev})
 		return raw, true, err
 
 	case room.OutError:

@@ -134,7 +134,7 @@ func TestRoomRecovery_SurvivesPanicInLobby(t *testing.T) {
 	// The room must still be alive: a fresh rejoin of player 0 succeeds and
 	// replays the same projected log (resync detached the old subscribers).
 	newSub := NewSubscriber()
-	require.NoError(t, r.SubmitRejoin(context.Background(), newSub, acks[0].PlayerID, acks[0].Secret))
+	require.NoError(t, r.SubmitRejoin(context.Background(), newSub, acks[0].PlayerID, acks[0].Secret, 0))
 	rej := recvType[OutRejoined](t, newSub)
 	require.Equal(t, acks[0].PlayerID, rej.PlayerID)
 	require.True(t, rej.IsHost, "player 0 was the host; the rebuild must preserve that")
@@ -198,7 +198,7 @@ func TestRoomRecovery_KeepsAdvancingAfterMidNightPanic(t *testing.T) {
 		// Old subscribers were detached by resync; rejoin the host to watch
 		// the rest of the night on a fresh stream.
 		host := NewSubscriber()
-		require.NoError(t, r.SubmitRejoin(context.Background(), host, acks[0].PlayerID, acks[0].Secret))
+		require.NoError(t, r.SubmitRejoin(context.Background(), host, acks[0].PlayerID, acks[0].Secret, 0))
 		_ = recvType[OutRejoined](t, host)
 
 		// The night must still auto-advance to DayDiscussion — proving the

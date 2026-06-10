@@ -50,6 +50,11 @@ type inRejoin struct {
 	From     *Subscriber
 	PlayerID game.PlayerID
 	Secret   string
+	// Since is the client's resume cursor: the highest event sequence it has
+	// already applied. The room replies with only the projected tail after
+	// this point (a delta); 0 — or a value past the current log, e.g. after a
+	// reset — yields the full projected log instead. See OutRejoined.
+	Since int
 }
 
 func (inRejoin) isInbound() {}

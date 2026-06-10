@@ -30,11 +30,22 @@ package game
 func Project(viewer PlayerID, events []Event, state *GameState) []Event {
 	out := make([]Event, 0, len(events))
 	for _, e := range events {
-		if canSee(viewer, e.Visibility(), state) {
+		if Visible(viewer, e, state) {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// Visible reports whether a single event is visible to the viewer — the
+// per-event form of Project. It exists so callers that need to pair each
+// event with out-of-band metadata (e.g. the room stamping a monotonic
+// sequence number onto each broadcast event by its log index) can apply the
+// SAME redaction rule without duplicating canSee or losing the index mapping
+// that Project's slice-in/slice-out form discards. It is a pure predicate,
+// the single source of redaction truth alongside Project.
+func Visible(viewer PlayerID, e Event, state *GameState) bool {
+	return canSee(viewer, e.Visibility(), state)
 }
 
 // canSee is the single decision function for visibility. Kept separate

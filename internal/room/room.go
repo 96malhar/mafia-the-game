@@ -165,8 +165,8 @@ func (r *Room) SubmitJoin(ctx context.Context, sub *Subscriber, name string) err
 // player slot using the rejoin secret. If auth fails the room sends an
 // OutError to the subscriber (and SubmitRejoin still returns nil — the
 // failure flows through the outbound channel, not the return value).
-func (r *Room) SubmitRejoin(ctx context.Context, sub *Subscriber, pid game.PlayerID, secret string) error {
-	return r.submit(ctx, inRejoin{From: sub, PlayerID: pid, Secret: secret})
+func (r *Room) SubmitRejoin(ctx context.Context, sub *Subscriber, pid game.PlayerID, secret string, since int) error {
+	return r.submit(ctx, inRejoin{From: sub, PlayerID: pid, Secret: secret, Since: since})
 }
 
 // SubmitLeave detaches a subscriber from its player slot. The player
@@ -421,7 +421,11 @@ func (r *Room) handleJoin(m inJoin) {
 		Secret:   secret,
 		RoomCode: r.code,
 		IsHost:   isHost,
-		Events:   priorEvents,
+		// High-water at join time: r.events has not yet grown by this join's
+		// own events (appended just below), so its length is the joiner's
+		// starting cursor.
+		LastSeq: len(r.events),
+		Events:  priorEvents,
 	})
 	r.appendAndBroadcast(events)
 	// appendAndBroadcast stamps deadlines in place, so `events` now holds the
@@ -459,12 +463,27 @@ func (r *Room) handleRejoin(m inRejoin) {
 	r.attachSubscriber(m.From)
 	m.From.setPlayerID(m.PlayerID)
 
+	// Cursor-driven resume: ship only the projected tail since the client's
+	// cursor. A cursor of 0, or one past the current log length (e.g. the
+	// client's pre-reset cursor after a GameReset rebaselined the log), falls
+	// back to the full projected log with FromSeq=0 so the client rebuilds
+	// from scratch.
+	total := len(r.events)
+	fromSeq := 0
+	tail := r.events
+	if m.Since > 0 && m.Since <= total {
+		fromSeq = m.Since
+		tail = r.events[m.Since:]
+	}
+
 	r.sendOne(m.From, OutRejoined{
 		PlayerID: m.PlayerID,
 		Name:     slot.name,
 		RoomCode: r.code,
 		IsHost:   m.PlayerID == r.host,
-		Events:   game.Project(m.PlayerID, r.events, r.g.State()),
+		FromSeq:  fromSeq,
+		LastSeq:  total,
+		Events:   game.Project(m.PlayerID, tail, r.g.State()),
 	})
 }
 

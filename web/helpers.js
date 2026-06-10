@@ -884,6 +884,13 @@
       // currentRoomCode is the room we're connected to (or reconnecting
       // to); creds for it live in credStore under storageKey(code).
       let currentRoomCode = null;
+      // lastSeq is the resume cursor: the highest event sequence we've
+      // applied this session. On an in-session reconnect we send it as
+      // ?since=N so the server replies with only the events we missed
+      // instead of the whole log. It is deliberately in-memory only — a
+      // full page reload clears the model, so it resets to 0 and does a
+      // full resync (a delta would have no base state to apply onto).
+      let lastSeq = 0;
       // reconnecting is true while the established-drop retry loop is
       // active. It distinguishes "lost an in-game connection, keep
       // retrying" from the page-load auto-rejoin (pendingRejoinCode),

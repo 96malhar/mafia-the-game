@@ -13,19 +13,30 @@
       // catch-up (we don't want a late joiner's / reconnecter's phone
       // re-announcing every event from earlier in the night). The joined
       // and rejoined cases wrap this with their own small deltas.
-      function enterRoomFromServer(d) {
+      // enterRoomFromServer applies the session-entry setup shared by a
+      // join and a rejoin. With {delta:true} (a cursor-resume rejoin that
+      // carries only the events we missed) it KEEPS the current model and
+      // applies the tail on top; otherwise it rebuilds from scratch
+      // (resetGameState) and replays the full projected log. Either way it
+      // adopts the server's high-water mark (d.lastSeq) as our cursor — this
+      // covers events filtered from our view (we never received them but
+      // must still advance past them) and the join backlog (whose events
+      // carry no per-event sequence).
+      function enterRoomFromServer(d, { delta = false } = {}) {
         myId = d.playerId;
         myIsHost = !!d.isHost;
         pendingRejoinCode = null;
         cancelReconnect();
         reconnectAttempts = 0;
         showReconnectingBanner(false);
-        resetGameState();
+        if (!delta) resetGameState();
         $("me").textContent = formatMe(d.name, d.playerId, d.isHost);
         showGame(d.roomCode);
         // (d.events || []) makes the presence guard universal: a rejoin
-        // always carries the projected log, a fresh join may omit it.
+        // always carries events (full log or delta tail), a fresh join may
+        // omit them.
         for (const env of (d.events || [])) handleEvent(env, { replaying: true });
+        if (typeof d.lastSeq === "number") lastSeq = d.lastSeq;
       }
 
       function handleServerMessage(msg) {
@@ -46,14 +57,19 @@
             break;
           }
           case "rejoined": {
-            // Reconnect (or page-load auto-rejoin) succeeded — the shared
-            // setup stops the retry loop, resets backoff, and replays our
-            // full state.
-            enterRoomFromServer(msg.data);
+            // Reconnect (or page-load auto-rejoin) succeeded. fromSeq>0 means
+            // the server sent only the tail since our cursor (a delta we
+            // apply onto the existing model); fromSeq===0 is a full snapshot
+            // we rebuild from scratch.
+            enterRoomFromServer(msg.data, { delta: msg.data.fromSeq > 0 });
             break;
           }
           case "event":
             handleEvent(msg.data.event);
+            // Advance the resume cursor. Set unconditionally (not max-ed):
+            // the WebSocket delivers events in order, and a gameReset
+            // rebaselines the log to a LOWER sequence that we must adopt.
+            if (typeof msg.data.seq === "number") lastSeq = msg.data.seq;
             break;
           case "error": {
             const code = msg.data && msg.data.code;
@@ -752,6 +768,14 @@
             }
             break;
           }
+          default:
+            // Forward-compatible by design: an unknown event tag (e.g. a
+            // newer server emitting an event type this client predates) is
+            // ignored rather than throwing, so a rolling deploy can't desync
+            // or crash an older client. We note it for dev visibility.
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn(`ignoring unknown event type: ${env.type}`);
+            }
         }
       }
 
@@ -913,8 +937,12 @@
           ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
           try { ws.close(); } catch {}
         }
+        // On a reconnect we carry our resume cursor so the server replies
+        // with only the events we missed. lastSeq is 0 on a page-load
+        // auto-rejoin (fresh JS state), which correctly requests a full
+        // snapshot.
         const params = creds
-          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}`
+          ? `?playerId=${encodeURIComponent(creds.playerId)}&secret=${encodeURIComponent(creds.secret)}&since=${lastSeq}`
           : "";
         const url = `${location.origin.replace("http", "ws")}/ws/${code}${params}`;
         ws = new WebSocket(url);

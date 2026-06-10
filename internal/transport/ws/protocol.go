@@ -160,21 +160,31 @@ type serverJoinedData struct {
 	Secret   string          `json:"secret"`
 	RoomCode string          `json:"roomCode"`
 	IsHost   bool            `json:"isHost"`
+	LastSeq  int             `json:"lastSeq"`
 	Events   []eventEnvelope `json:"events"`
 }
 
-// serverRejoinedData acknowledges a successful rejoin and includes the
-// full filtered event log so the client can rebuild its view.
+// serverRejoinedData acknowledges a successful rejoin. It is a cursor-driven
+// resume: fromSeq is the cursor the events tail starts after (0 ⇒ a full
+// rebuild-from-scratch snapshot; >0 ⇒ a delta to append to the existing
+// view), and lastSeq is the room's current high-water mark, which the client
+// adopts as its cursor after applying the batch.
 type serverRejoinedData struct {
 	PlayerID string          `json:"playerId"`
 	Name     string          `json:"name"`
 	RoomCode string          `json:"roomCode"`
 	IsHost   bool            `json:"isHost"`
+	FromSeq  int             `json:"fromSeq"`
+	LastSeq  int             `json:"lastSeq"`
 	Events   []eventEnvelope `json:"events"`
 }
 
-// serverEventData carries one engine event, post-projection.
+// serverEventData carries one engine event, post-projection. Seq is the
+// event's absolute position in the room's log (its resume cursor value); the
+// client tracks the highest Seq it has applied and replays from it on
+// reconnect via ?since=.
 type serverEventData struct {
+	Seq   int           `json:"seq"`
 	Event eventEnvelope `json:"event"`
 }
 

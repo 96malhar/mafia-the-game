@@ -130,12 +130,17 @@ test("a full rejoin (fromSeq 0) rebuilds the model from scratch", () => {
   assert.deepEqual(rosterNames(app), ["Alice"], "a full rejoin rebuilds from only the snapshot");
 });
 
-test("a rejoin mid-act-window restarts the actor's countdown instead of freezing it", () => {
-  // Regression: refreshing the tab during your turn to act left the countdown
-  // bar frozen full — the per-sub-phase handlers skip startNightCountdown
-  // while replaying, and nothing restarted it once the replay settled.
+test("a rejoin mid-act-window restarts the actor's countdown at the right proportion", () => {
+  // Two regressions in one: (1) refreshing mid-act left the countdown frozen
+  // (the per-sub-phase handlers skip startNightCountdown while replaying, and
+  // nothing restarted it after the replay settled); (2) once restarted, the
+  // bar always began full because the client sized it from the REMAINING time
+  // rather than the full window. The server now sends the act window's
+  // duration so the bar reflects the true proportion.
   const app = newApp();
-  const deadline = Date.now() + 30000;
+  // 10s left of a 60s window → the bar should read ~1/6 full, not 100%.
+  const totalMs = 60000;
+  const deadline = Date.now() + 10000;
   const events = [
     { type: "gameCreated", data: { minPlayers: 5, maxPlayers: 20, mafiaCount: 1 } },
     playerJoined("p1", "Alice"),
@@ -143,17 +148,19 @@ test("a rejoin mid-act-window restarts the actor's countdown instead of freezing
     playerJoined("p3", "Hannah"),
     { type: "roleAssigned", data: { playerId: "p3", role: "doctor" } },
     { type: "phaseChanged", data: { from: "lobby", to: "night", day: 0 } },
-    { type: "nightActionStarted", data: { role: "doctor", deadline } },
+    { type: "nightActionStarted", data: { role: "doctor", deadline, duration: totalMs } },
   ];
   // Rejoin as the doctor (p3) mid-act — a full snapshot, as a tab refresh does.
   rejoined(app, { playerId: "p3", isHost: false, fromSeq: 0, lastSeq: events.length, events });
 
-  // startNightCountdown renders one frame synchronously, so the banner shows
-  // the remaining seconds and the bar has a real width right away.
+  // The countdown is running (not frozen): the banner shows remaining seconds.
   assert.match(app.$("night-banner-countdown").textContent, /^\d+s$/,
     "the actor's countdown shows remaining seconds after a mid-act rejoin");
-  assert.match(app.$("night-banner-bar").style.width, /^\d/,
-    "the countdown bar has a non-empty width");
+
+  // And the bar is proportional to the FULL window, not restarted at 100%.
+  const pct = parseFloat(app.$("night-banner-bar").style.width);
+  assert.ok(pct > 5 && pct < 30,
+    `bar should be ~1/6 full (10s of 60s), got ${pct}%`);
 
   // Stop the interval so it doesn't leak into other tests.
   app.window.stopNightCountdown();

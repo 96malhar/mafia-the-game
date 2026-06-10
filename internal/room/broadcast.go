@@ -71,18 +71,18 @@ func (r *Room) stampNightDeadlines(events []game.Event) {
 			continue
 		}
 		deadline := now.Add(dur).UnixMilli()
-		events[i] = stampDeadline(events[i], deadline)
+		events[i] = stampTiming(events[i], deadline, dur.Milliseconds())
 	}
 }
 
-// stampDeadline returns a copy of evt with its Deadline field set to
-// the given unix-millis value. Non-night-sub-phase events (which carry
-// no Deadline) pass through unchanged. The copy-with-deadline lives on
-// the event itself (game.NightSubPhaseStarted.WithDeadline) so this
-// stays a single type assertion.
-func stampDeadline(evt game.Event, deadline int64) game.Event {
+// stampTiming returns a copy of evt with its Deadline (unix-millis) and
+// Duration (millis) stamped. Non-night-sub-phase events (which carry no
+// timing) pass through unchanged. The copy-with-timing lives on the event
+// itself (game.NightSubPhaseStarted.WithTiming) so this stays a single type
+// assertion.
+func stampTiming(evt game.Event, deadline, duration int64) game.Event {
 	if e, ok := evt.(game.NightSubPhaseStarted); ok {
-		return e.WithDeadline(deadline)
+		return e.WithTiming(deadline, duration)
 	}
 	return evt
 }

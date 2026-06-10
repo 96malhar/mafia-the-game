@@ -345,6 +345,9 @@
             currentNightRole = env.data.role || "";
             currentNightSubPhase = "act";
             nightTurnDeadlineMs = env.data.deadline || 0;
+            // The act window is the only sub-phase the server sizes with a
+            // duration (for the countdown bar's proportion); 0 if absent.
+            nightTurnTotalMs = env.data.duration || 0;
             if (!replaying) {
               startNightCountdown(nightTurnDeadlineMs);
             }

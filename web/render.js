@@ -44,6 +44,7 @@
         // Night turn state — engine-authoritative; replayed on join.
         currentNightRole = "";
         nightTurnDeadlineMs = 0;
+        nightTurnTotalMs = 0;
         currentNightSubPhase = "";
         currentNightTurnPhantom = false;
         iAmBlocked = false;

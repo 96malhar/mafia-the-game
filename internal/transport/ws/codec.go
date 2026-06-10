@@ -101,7 +101,15 @@ func encodeEvent(e game.Event) (eventEnvelope, error) {
 			data = roleSub(true)
 		case game.NightSubAct:
 			tag = wire.EventNightActionStarted
-			data = roleSub(false)
+			// Carry the sub-phase duration ONLY here: the act window is the one
+			// sub-phase that renders a countdown bar, and its length is a fixed,
+			// non-secret constant. (Phantom-ponder durations are randomized to
+			// hide why a turn was inert, so we deliberately don't expose them.)
+			// The client needs Duration to draw the bar at the correct
+			// proportion after a mid-window join/refresh.
+			actData := roleSub(false)
+			actData["duration"] = v.Duration
+			data = actData
 		case game.NightSubPonder:
 			tag = wire.EventNightPonderStarted
 			data = roleSub(true)

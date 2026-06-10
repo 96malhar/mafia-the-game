@@ -242,6 +242,10 @@ func TestRoom_StampNightDeadlines(t *testing.T) {
 	require.True(t, ok)
 	require.GreaterOrEqual(t, gotAct.Deadline, before.Add(DefaultActionDuration).UnixMilli())
 	require.LessOrEqual(t, gotAct.Deadline, after.Add(DefaultActionDuration).UnixMilli())
+	// Duration is the full sub-phase length, stamped alongside the deadline so
+	// a client can size the countdown bar's proportion after a mid-window join.
+	require.Equal(t, DefaultActionDuration.Milliseconds(), gotAct.Duration,
+		"the act sub-phase carries its full duration")
 
 	// Randomized phantom-ponder window: deadline lands in [min,max].
 	gotPonder, ok := batch[2].(game.NightSubPhaseStarted)

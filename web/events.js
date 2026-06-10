@@ -6,14 +6,6 @@
       }
 
       // enterRoomFromServer applies the session-entry setup shared by a
-      // successful join and rejoin: adopt our identity, stop any reconnect
-      // loop, reset to a clean model, paint the in-game view, and replay
-      // the server's projected event log. The replay is marked
-      // {replaying:true} so narration and one-shot toasts don't re-fire on
-      // catch-up (we don't want a late joiner's / reconnecter's phone
-      // re-announcing every event from earlier in the night). The joined
-      // and rejoined cases wrap this with their own small deltas.
-      // enterRoomFromServer applies the session-entry setup shared by a
       // join and a rejoin. With {delta:true} (a cursor-resume rejoin that
       // carries only the events we missed) it KEEPS the current model and
       // applies the tail on top; otherwise it rebuilds from scratch
@@ -37,6 +29,16 @@
         // omit them.
         for (const env of (d.events || [])) handleEvent(env, { replaying: true });
         if (typeof d.lastSeq === "number") lastSeq = d.lastSeq;
+        // Re-arm the act-window countdown after a replay. The per-sub-phase
+        // handlers skip startNightCountdown while replaying (so a reconnect
+        // doesn't restart it on every historical sub-phase) — but once the
+        // replay has settled the model on the CURRENT sub-phase, the actor's
+        // timer must keep draining. Without this, a refresh mid-act leaves the
+        // bar frozen full. startNightCountdown self-gates on
+        // viewerOwnsCurrentTimer (only the current actor, only during "act")
+        // and on a non-zero deadline, so it's a no-op for a fresh join, a
+        // non-actor, or any non-act sub-phase.
+        startNightCountdown(nightTurnDeadlineMs);
       }
 
       function handleServerMessage(msg) {

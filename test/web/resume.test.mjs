@@ -130,6 +130,35 @@ test("a full rejoin (fromSeq 0) rebuilds the model from scratch", () => {
   assert.deepEqual(rosterNames(app), ["Alice"], "a full rejoin rebuilds from only the snapshot");
 });
 
+test("a rejoin mid-act-window restarts the actor's countdown instead of freezing it", () => {
+  // Regression: refreshing the tab during your turn to act left the countdown
+  // bar frozen full — the per-sub-phase handlers skip startNightCountdown
+  // while replaying, and nothing restarted it once the replay settled.
+  const app = newApp();
+  const deadline = Date.now() + 30000;
+  const events = [
+    { type: "gameCreated", data: { minPlayers: 5, maxPlayers: 20, mafiaCount: 1 } },
+    playerJoined("p1", "Alice"),
+    playerJoined("p2", "Bob"),
+    playerJoined("p3", "Hannah"),
+    { type: "roleAssigned", data: { playerId: "p3", role: "doctor" } },
+    { type: "phaseChanged", data: { from: "lobby", to: "night", day: 0 } },
+    { type: "nightActionStarted", data: { role: "doctor", deadline } },
+  ];
+  // Rejoin as the doctor (p3) mid-act — a full snapshot, as a tab refresh does.
+  rejoined(app, { playerId: "p3", isHost: false, fromSeq: 0, lastSeq: events.length, events });
+
+  // startNightCountdown renders one frame synchronously, so the banner shows
+  // the remaining seconds and the bar has a real width right away.
+  assert.match(app.$("night-banner-countdown").textContent, /^\d+s$/,
+    "the actor's countdown shows remaining seconds after a mid-act rejoin");
+  assert.match(app.$("night-banner-bar").style.width, /^\d/,
+    "the countdown bar has a non-empty width");
+
+  // Stop the interval so it doesn't leak into other tests.
+  app.window.stopNightCountdown();
+});
+
 test("live-applied events and a delta rejoin converge to the same roster", () => {
   // App A receives every event live.
   const a = newApp();

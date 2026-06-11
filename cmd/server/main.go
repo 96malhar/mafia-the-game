@@ -61,6 +61,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Each WebSocket connection holds a file descriptor, so the soft
+	// RLIMIT_NOFILE caps how many players this instance can serve — and the
+	// container default (commonly ~1024) is well below what the VM's CPU/memory
+	// can handle. Raise the soft limit to the hard limit at startup so the box
+	// isn't artificially capped around 1k connections. Distroless has no shell,
+	// so a `ulimit` in an entrypoint isn't an option; do it in-process.
+	raiseFileLimit(logger)
+
 	// Build the room manager first so the WebSocket handler can reach
 	// it. The manager owns its own context which we cancel during
 	// shutdown so all rooms drain cleanly.
@@ -132,6 +140,37 @@ func main() {
 			logger.Error("manager shutdown failed", "err", err)
 		}
 	}
+}
+
+// raiseFileLimit lifts the process's soft open-file limit (RLIMIT_NOFILE) to
+// its hard ceiling, so the number of concurrent WebSocket connections is bound
+// by the machine's CPU/memory rather than a low inherited default. It is
+// best-effort: any failure is logged and the server continues on the inherited
+// limit (raising it is an optimization, not a correctness requirement).
+//
+// In a Linux container (production) the hard limit is a concrete large value
+// (e.g. ~1M), so the soft limit becomes that. On a macOS dev box the hard
+// limit is "unlimited"; setting the soft limit there is accepted but the real
+// ceiling stays the kernel's per-process max — harmless, since dev never
+// approaches it.
+func raiseFileLimit(logger *slog.Logger) {
+	var lim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+		logger.Warn("could not read RLIMIT_NOFILE", "err", err)
+		return
+	}
+	if lim.Cur >= lim.Max {
+		logger.Info("RLIMIT_NOFILE soft limit already at hard limit", "limit", lim.Cur)
+		return
+	}
+	before := lim.Cur
+	lim.Cur = lim.Max
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+		logger.Warn("could not raise RLIMIT_NOFILE soft limit; using inherited default",
+			"err", err, "soft", before, "hard", lim.Max)
+		return
+	}
+	logger.Info("raised RLIMIT_NOFILE soft limit", "from", before, "to", lim.Max)
 }
 
 // startMetricsServer runs a minimal HTTP server that serves only the

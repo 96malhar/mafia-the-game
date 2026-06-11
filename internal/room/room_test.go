@@ -886,6 +886,19 @@ func TestManager_CreateRoom_AtCapacity(t *testing.T) {
 	require.ErrorIs(t, err, ErrAtCapacity)
 }
 
+// TestManager_DefaultsToDefaultMaxRooms pins the DEFAULT cap value. The
+// boundary test above always overrides maxRooms via WithMaxRooms, so it would
+// still pass if the default were mis-wired to 0 (which the m.maxRooms > 0
+// guard in CreateRoom treats as UNLIMITED) — silently removing the global
+// room ceiling. Asserting the default directly is the cheap way to guarantee
+// the 1001st CreateRoom is refused, without materializing 1000 rooms (which
+// would start ~2000 goroutines and add no coverage over the boundary check).
+func TestManager_DefaultsToDefaultMaxRooms(t *testing.T) {
+	m := newTestManager(t) // no WithMaxRooms override
+	require.Equal(t, DefaultMaxRooms, m.maxRooms,
+		"a Manager with no override must enforce the DefaultMaxRooms cap")
+}
+
 // --- Rejected join/rejoin closes the subscriber channel -------------------
 
 // A failed join (here: duplicate name) must send the error AND

@@ -41,6 +41,25 @@ func (r *Room) appendAndBroadcast(events []game.Event) {
 	r.events = append(r.events, events...)
 	r.broadcastToSubs(events)
 	r.scheduleTimers(events)
+	r.recordGameLifecycle(events)
+}
+
+// recordGameLifecycle emits the game-lifecycle metrics for any GameStarted /
+// GameEnded events in the batch. It rides appendAndBroadcast — the single
+// chokepoint every engine-produced batch flows through — so each fires exactly
+// once per game: StartGame and the win-resolution both route here, while a
+// ResetGame rebaseline (handleReset broadcasts directly) and a panic-recovery
+// replay (replayJournal rebuilds the log without broadcasting) deliberately do
+// NOT, so neither double-counts.
+func (r *Room) recordGameLifecycle(events []game.Event) {
+	for _, e := range events {
+		switch ev := e.(type) {
+		case game.GameStarted:
+			recordGameStarted()
+		case game.GameEnded:
+			recordGameCompleted(string(ev.Winner))
+		}
+	}
 }
 
 // stampNightDeadlines rewrites the Deadline field on every Night

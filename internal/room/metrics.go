@@ -19,10 +19,12 @@ const meterName = "github.com/96malhar/mafia-the-game/internal/room"
 // in main() before any room exists, so the first call here registers
 // against it and the values surface at /metrics.
 var (
-	metricsOnce sync.Once
-	cmdRejected metric.Int64Counter
-	roomsActive metric.Int64UpDownCounter
-	roomPanics  metric.Int64Counter
+	metricsOnce    sync.Once
+	cmdRejected    metric.Int64Counter
+	roomsActive    metric.Int64UpDownCounter
+	roomPanics     metric.Int64Counter
+	gamesStarted   metric.Int64Counter
+	gamesCompleted metric.Int64Counter
 )
 
 func initMetrics() {
@@ -42,6 +44,16 @@ func initMetrics() {
 			"room.panic",
 			metric.WithDescription("Panics recovered in a room goroutine (each is a bug to investigate)"),
 			metric.WithUnit("{panic}"),
+		)
+		gamesStarted, _ = m.Int64Counter(
+			"game.started",
+			metric.WithDescription("Games started (StartGame applied), counted once per game"),
+			metric.WithUnit("{game}"),
+		)
+		gamesCompleted, _ = m.Int64Counter(
+			"game.completed",
+			metric.WithDescription("Games played to completion (reached a win), labelled by winning faction"),
+			metric.WithUnit("{game}"),
 		)
 	})
 }
@@ -64,6 +76,24 @@ func recordCommandRejected(code wire.ErrorCode) {
 func recordRoomPanic() {
 	initMetrics()
 	roomPanics.Add(context.Background(), 1)
+}
+
+// recordGameStarted counts a game beginning (one GameStarted event). Distinct
+// from room.active: a room can sit in the lobby and never start a game.
+func recordGameStarted() {
+	initMetrics()
+	gamesStarted.Add(context.Background(), 1)
+}
+
+// recordGameCompleted counts a game reaching a win (one GameEnded event),
+// labelled by the winning faction. Paired with game.started, the ratio is the
+// completion rate (games finished vs abandoned). winner is the bounded
+// faction string ("town"/"mafia").
+func recordGameCompleted(winner string) {
+	initMetrics()
+	gamesCompleted.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("winner", winner),
+	))
 }
 
 func recordRoomOpened() {

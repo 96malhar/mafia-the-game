@@ -56,8 +56,18 @@ func (r *Room) recordGameLifecycle(events []game.Event) {
 		switch ev := e.(type) {
 		case game.GameStarted:
 			recordGameStarted()
+			// Raise the live gauge, guarded by the bool so it moves exactly
+			// once per game (and so the teardown release stays consistent).
+			if !r.gameInProgress {
+				r.gameInProgress = true
+				recordGameInProgress(1)
+			}
 		case game.GameEnded:
 			recordGameCompleted(string(ev.Winner))
+			if r.gameInProgress {
+				r.gameInProgress = false
+				recordGameInProgress(-1)
+			}
 		}
 	}
 }

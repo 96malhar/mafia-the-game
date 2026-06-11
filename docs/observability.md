@@ -125,7 +125,7 @@ emitting package (e.g. `otel_scope_name="github.com/96malhar/mafia-the-game/inte
 
 ## Custom metrics catalog
 
-All seven custom instruments. Prometheus names (dots → underscores) are what
+All eight custom instruments. Prometheus names (dots → underscores) are what
 you query.
 
 | Prometheus name | OTel name | Type | Labels | Meaning | Emitted from |
@@ -135,6 +135,7 @@ you query.
 | `game_command_rejected_total` | `game.command.rejected` | Counter | `code` | Engine commands / joins rejected, by `wire.ErrorCode` (wrong phase, duplicate name, forbidden, lobby full, …). The single chokepoint counts every rejection so they need no log line. | `internal/room/errors.go` (`recordCommandRejected`, called from `errorFor`) |
 | `game_started_total` | `game.started` | Counter | — | A game began (one `GameStarted` event). Distinct from `room_active` — a room can sit in the lobby and never start. | `internal/room/broadcast.go` (`recordGameLifecycle` in `appendAndBroadcast`) |
 | `game_completed_total` | `game.completed` | Counter | `winner` | A game played to completion (one `GameEnded` event), by winning faction (`town`/`mafia`). Pair with `game_started_total` for the completion rate. Fires once per game; a `ResetGame` re-arms it and a panic-recovery replay does not re-fire it. | `internal/room/broadcast.go` (`recordGameLifecycle` in `appendAndBroadcast`) |
+| `game_in_progress` | `game.in_progress` | UpDownCounter (gauge) | — | The **live** count of games currently being played (started, not yet ended/abandoned) — the real "active games" number, vs `room_active` which also counts lobbies and finished-but-unreset rooms. +1 on `GameStarted`, −1 on `GameEnded` or on room teardown if abandoned mid-play. | `internal/room/broadcast.go` (`recordGameLifecycle`) + `room.go` (`Run` teardown defer) |
 | `ws_connections_active` | `ws.connections.active` | UpDownCounter (gauge) | — | Currently-open WebSocket connections. `+1` after a successful upgrade, `-1` (deferred) on full teardown — properly paired, so it tracks live connections. | `internal/transport/ws/handler.go` (`recordConnOpen` / `recordConnClose` in `Connect`) |
 | `ws_message_rejected_total` | `ws.message.rejected` | Counter | `reason` | Inbound WS frames rejected at the **transport** layer (bad frame, undecodable JSON, unknown type), by reason. The only server-side signal for malformed/abusive traffic, since these aren't logged. | `internal/transport/ws/pumps.go` (`recordMessageRejected`, from the read pump) |
 

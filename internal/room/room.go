@@ -51,6 +51,12 @@ type Room struct {
 	// stable, human-readable PlayerIDs like "p1", "p2".
 	nextSeq int
 
+	// gameInProgress tracks whether a game is currently being played
+	// (GameStarted seen, GameEnded not yet) so the game.in_progress gauge can
+	// be released exactly once — on GameEnded, or on room teardown if the
+	// game was abandoned mid-play. Set/cleared in recordGameLifecycle.
+	gameInProgress bool
+
 	// phaseTimer fires when the current phase's duration elapses,
 	// causing the run loop to synthesize an AdvancePhase command. nil
 	// when no phase-timeout is active (lobby, ended, or untimed phases).
@@ -277,6 +283,16 @@ func (r *Room) Run() {
 	defer close(r.done)
 	defer r.shutdownSubscribers()
 	defer r.stopPhaseTimer()
+	// Release the in-progress gauge if the room is torn down (reap, shutdown,
+	// crash-loop close) while a game is still being played — an abandoned
+	// game. A normal end already cleared gameInProgress on its GameEnded.
+	// Panic recovery does NOT return from Run (it resumes the loop), so this
+	// fires only on a real exit and can't double-count.
+	defer func() {
+		if r.gameInProgress {
+			recordGameInProgress(-1)
+		}
+	}()
 
 	for {
 		// The timer channel may be nil (timer inactive); a nil-channel

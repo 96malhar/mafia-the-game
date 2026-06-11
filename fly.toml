@@ -64,14 +64,17 @@ primary_region = "sjc"          # change to your nearest region
   # rather than requests. Since this app can't scale out (single in-memory
   # instance, no sticky-by-room routing), hard_limit is the absolute cap on
   # concurrent players — the proxy refuses new connections beyond it. Sized
-  # for shared-cpu-1x / 512 MB: ~500 players is ~65 MB and comfortable on the
-  # shared CPU at this game's low message rate; soft_limit sits below as a
-  # headroom band. Raise both (and DefaultMaxRooms) only after validating
-  # fly_instance_cpu under load, or move to a bigger VM.
+  # for shared-cpu-1x / 512 MB: ~1000 players is ~115 MB (well under
+  # GOMEMLIMIT) and only ~a few % of a core on average at this game's low
+  # message rate; soft_limit sits below as a headroom band. The in-process
+  # RLIMIT_NOFILE raise (see main.go) removes the ~1k fd-default wall, so this
+  # is bound by CPU/memory now. Going much past ~1000-1500 risks burst-latency
+  # jitter on the shared CPU — validate fly_instance_cpu under load first, or
+  # move to a performance VM. Keep DefaultMaxRooms in sync.
   [http_service.concurrency]
     type = "connections"
-    soft_limit = 400
-    hard_limit = 500
+    soft_limit = 800
+    hard_limit = 1000
 
   # Liveness/readiness probe against the built-in endpoint.
   [[http_service.checks]]

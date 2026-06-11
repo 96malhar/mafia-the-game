@@ -35,13 +35,13 @@ const DefaultSweepInterval = 60 * time.Second
 // exhaustion vector.
 //
 // Sized for the deployed single shared-cpu-1x / 512 MB instance: the Fly
-// edge caps concurrent connections at ~500 players (fly.toml hard_limit),
-// which is ~60 active games of ~8; 150 rooms is ~2.5x that, leaving slack
+// edge caps concurrent connections at ~1000 players (fly.toml hard_limit),
+// which is ~125 active games of ~8; 250 rooms is ~2x that, leaving slack
 // for lobbies, finished-but-unreset rooms, and games with disconnected
 // players, while still bounding mass-creation abuse and goroutine/memory
-// footprint. Raise it (together with the Fly hard_limit) if you move to a
-// bigger machine.
-const DefaultMaxRooms = 150
+// footprint. Keep this in sync with the Fly hard_limit; raise both if you
+// move to a bigger machine.
+const DefaultMaxRooms = 250
 
 // Sentinel errors returned by the room/manager API.
 var (

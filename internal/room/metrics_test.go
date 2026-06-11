@@ -124,6 +124,41 @@ func TestMetrics_GameInProgressStartEnd(t *testing.T) {
 	require.Equal(t, int64(0), metricValue(t, "game.in_progress")-before)
 }
 
+// TestMetrics_GameInProgressConsistentAcrossReset verifies the gauge stays
+// consistent when a second game is played in the SAME room after a reset: each
+// game contributes exactly one +1/-1, and the reset itself doesn't disturb the
+// count.
+//
+// A GameReset is the only reset-related event, and recordGameLifecycle ignores
+// it (it matches only GameStarted/GameEnded) — in fact the real handleReset
+// broadcasts via broadcastToSubs and never routes through recordGameLifecycle
+// at all, so a reset can't touch the gauge by construction. Feeding it here is
+// a belt-and-suspenders check that the switch leaves the gauge/bool untouched.
+func TestMetrics_GameInProgressConsistentAcrossReset(t *testing.T) {
+	before := metricValue(t, "game.in_progress")
+	r := minimalRoom()
+
+	// Game 1.
+	r.appendAndBroadcast([]game.Event{game.GameStarted{}})
+	require.Equal(t, int64(1), metricValue(t, "game.in_progress")-before)
+	r.appendAndBroadcast([]game.Event{game.GameEnded{Winner: game.FactionTown}})
+	require.False(t, r.gameInProgress)
+	require.Equal(t, int64(0), metricValue(t, "game.in_progress")-before)
+
+	// Reset: no effect on the gauge or the bool.
+	r.appendAndBroadcast([]game.Event{game.GameReset{}})
+	require.False(t, r.gameInProgress)
+	require.Equal(t, int64(0), metricValue(t, "game.in_progress")-before)
+
+	// Game 2 in the same room: raises and releases again, cleanly.
+	r.appendAndBroadcast([]game.Event{game.GameStarted{}})
+	require.True(t, r.gameInProgress)
+	require.Equal(t, int64(1), metricValue(t, "game.in_progress")-before)
+	r.appendAndBroadcast([]game.Event{game.GameEnded{Winner: game.FactionMafia}})
+	require.False(t, r.gameInProgress)
+	require.Equal(t, int64(0), metricValue(t, "game.in_progress")-before)
+}
+
 // TestMetrics_GameInProgressReleasedOnAbandon verifies the Run() teardown defer
 // releases the gauge when a room is shut down while a game is still being
 // played (an abandoned game) — exercising the real defer, not an inline copy.

@@ -32,9 +32,16 @@ const DefaultSweepInterval = 60 * time.Second
 // creation is unauthenticated (anyone can POST /api/rooms), and each
 // room holds two goroutines plus a growing event log for up to
 // MaxLifetime, so an uncapped registry is a trivial memory/goroutine
-// exhaustion vector. 1000 concurrent rooms is far beyond any plausible
-// real load for this game while still bounding worst-case footprint.
-const DefaultMaxRooms = 1000
+// exhaustion vector.
+//
+// Sized for the deployed single shared-cpu-1x / 512 MB instance: the Fly
+// edge caps concurrent connections at ~500 players (fly.toml hard_limit),
+// which is ~60 active games of ~8; 150 rooms is ~2.5x that, leaving slack
+// for lobbies, finished-but-unreset rooms, and games with disconnected
+// players, while still bounding mass-creation abuse and goroutine/memory
+// footprint. Raise it (together with the Fly hard_limit) if you move to a
+// bigger machine.
+const DefaultMaxRooms = 150
 
 // Sentinel errors returned by the room/manager API.
 var (

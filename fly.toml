@@ -29,6 +29,10 @@ primary_region = "sjc"          # change to your nearest region
   # Per-IP cap on POST /api/rooms so one client can't churn through the
   # server's room capacity.
   ROOM_CREATE_RPM = "30"
+  # Cap the Go heap below the 512 MB machine limit so the GC stays tight near
+  # the ceiling and the app DEGRADES (more frequent GC) instead of being
+  # OOM-killed by Fly. Critical for a single instance that can't scale out.
+  GOMEMLIMIT = "450MiB"
   # Origin checking is ON by default and same-origin (https://<app>.fly.dev)
   # already passes. Uncomment to allow additional origins (e.g. a custom
   # domain):
@@ -57,11 +61,17 @@ primary_region = "sjc"          # change to your nearest region
   min_machines_running = 1
 
   # WebSocket connections are long-lived, so meter by open connections
-  # rather than requests. Tune to the machine size you pick.
+  # rather than requests. Since this app can't scale out (single in-memory
+  # instance, no sticky-by-room routing), hard_limit is the absolute cap on
+  # concurrent players — the proxy refuses new connections beyond it. Sized
+  # for shared-cpu-1x / 512 MB: ~500 players is ~65 MB and comfortable on the
+  # shared CPU at this game's low message rate; soft_limit sits below as a
+  # headroom band. Raise both (and DefaultMaxRooms) only after validating
+  # fly_instance_cpu under load, or move to a bigger VM.
   [http_service.concurrency]
     type = "connections"
-    soft_limit = 200
-    hard_limit = 250
+    soft_limit = 400
+    hard_limit = 500
 
   # Liveness/readiness probe against the built-in endpoint.
   [[http_service.checks]]

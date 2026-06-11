@@ -19,12 +19,13 @@ const meterName = "github.com/96malhar/mafia-the-game/internal/room"
 // in main() before any room exists, so the first call here registers
 // against it and the values surface at /metrics.
 var (
-	metricsOnce    sync.Once
-	cmdRejected    metric.Int64Counter
-	roomsActive    metric.Int64UpDownCounter
-	roomPanics     metric.Int64Counter
-	gamesStarted   metric.Int64Counter
-	gamesCompleted metric.Int64Counter
+	metricsOnce     sync.Once
+	cmdRejected     metric.Int64Counter
+	roomsActive     metric.Int64UpDownCounter
+	roomPanics      metric.Int64Counter
+	gamesStarted    metric.Int64Counter
+	gamesCompleted  metric.Int64Counter
+	gamesInProgress metric.Int64UpDownCounter
 )
 
 func initMetrics() {
@@ -53,6 +54,11 @@ func initMetrics() {
 		gamesCompleted, _ = m.Int64Counter(
 			"game.completed",
 			metric.WithDescription("Games played to completion (reached a win), labelled by winning faction"),
+			metric.WithUnit("{game}"),
+		)
+		gamesInProgress, _ = m.Int64UpDownCounter(
+			"game.in_progress",
+			metric.WithDescription("Games currently being played (started, not yet ended or abandoned)"),
 			metric.WithUnit("{game}"),
 		)
 	})
@@ -94,6 +100,16 @@ func recordGameCompleted(winner string) {
 	gamesCompleted.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("winner", winner),
 	))
+}
+
+// recordGameInProgress moves the live "games being played" gauge by delta
+// (+1 when a game starts, -1 when it ends or is abandoned mid-play). Unlike
+// game.started/completed (cumulative counters), this is the current count of
+// active games — distinct from room.active, which also counts lobbies and
+// finished-but-unreset rooms.
+func recordGameInProgress(delta int64) {
+	initMetrics()
+	gamesInProgress.Add(context.Background(), delta)
 }
 
 func recordRoomOpened() {

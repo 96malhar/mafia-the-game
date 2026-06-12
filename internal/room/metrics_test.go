@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -183,6 +184,73 @@ func TestMetrics_GameInProgressReleasedOnAbandon(t *testing.T) {
 	require.NoError(t, r.Close(context.Background()))
 	require.Equal(t, int64(0), metricValue(t, "game.in_progress")-before,
 		"an abandoned game is released on teardown")
+}
+
+// histSnapshot is the subset of a float64 histogram data point the duration
+// tests assert on. count/sum are absolute (tests diff them); bounds proves the
+// custom boundaries took effect.
+type histSnapshot struct {
+	count  uint64
+	sum    float64
+	bounds []float64
+}
+
+// gameDurationHist reads the single (unlabelled) game.duration data point, or a
+// zero snapshot if the histogram hasn't been recorded into yet (lazy init means
+// it's absent from Collect until the first Record).
+func gameDurationHist(t *testing.T) histSnapshot {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, testMeterReader.Collect(context.Background(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "game.duration" {
+				continue
+			}
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			require.True(t, ok, "game.duration must be a float64 histogram")
+			require.Len(t, h.DataPoints, 1, "game.duration is unlabelled: exactly one data point")
+			dp := h.DataPoints[0]
+			return histSnapshot{count: dp.Count, sum: dp.Sum, bounds: dp.Bounds}
+		}
+	}
+	return histSnapshot{}
+}
+
+// TestMetrics_GameDurationHistogram asserts the histogram observes each recorded
+// duration (count + sum deltas) and that our explicit second-scale boundaries
+// — not the SDK's default millisecond-latency buckets — are in effect, since
+// the p25/p50/p99 resolution depends entirely on them.
+func TestMetrics_GameDurationHistogram(t *testing.T) {
+	before := gameDurationHist(t)
+
+	recordGameDuration(90 * time.Second)
+	recordGameDuration(20 * time.Minute)
+
+	after := gameDurationHist(t)
+	require.Equal(t, before.count+2, after.count, "two completed games observed")
+	require.InDelta(t, before.sum+90+1200, after.sum, 0.001, "sum tracks total seconds")
+	require.Equal(t, gameDurationBuckets, after.bounds,
+		"explicit bucket boundaries must take effect (not SDK defaults)")
+}
+
+// TestMetrics_GameDurationRecordedOnGameEnd drives the real chokepoint
+// (recordGameLifecycle via appendAndBroadcast): a GameEnded records exactly one
+// duration, and an in-progress game (GameStarted, no GameEnded) records none —
+// so the percentiles describe only games that actually finished.
+func TestMetrics_GameDurationRecordedOnGameEnd(t *testing.T) {
+	before := gameDurationHist(t)
+	r := minimalRoom()
+
+	r.appendAndBroadcast([]game.Event{game.GameStarted{}})
+	require.True(t, r.gameInProgress)
+	require.Equal(t, before.count, gameDurationHist(t).count,
+		"an in-progress game records no duration yet")
+
+	r.appendAndBroadcast([]game.Event{game.GameEnded{Winner: game.FactionTown}})
+	require.False(t, r.gameInProgress)
+	require.Equal(t, before.count+1, gameDurationHist(t).count,
+		"GameEnded records exactly one duration")
 }
 
 // minimalRoom builds a Room with just what appendAndBroadcast touches (no run

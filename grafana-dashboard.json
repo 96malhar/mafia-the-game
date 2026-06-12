@@ -303,6 +303,50 @@
       "targets": [
         { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (reason) (rate(ws_message_rejected_total[$__rate_interval]))", "legendFormat": "{{reason}}" }
       ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Game duration percentiles (p25 / p50 / p99)",
+      "description": "histogram_quantile over game_duration_seconds_bucket — wall-clock length of completed games (StartGame → win). Percentiles are derived from the histogram buckets, so resolution is bounded by the bucket boundaries (15s…2h). Only finished games count; abandoned games are absent.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 18, "x": 0, "y": 28 },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 8, "showPoints": "auto", "lineWidth": 2, "spanNulls": true }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.25, sum(rate(game_duration_seconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p25" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.50, sum(rate(game_duration_seconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p50" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.99, sum(rate(game_duration_seconds_bucket[$__rate_interval])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Median game duration (in range)",
+      "description": "p50 of completed-game duration over the dashboard range — histogram_quantile(0.5, ...[$__range]).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 28 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "color": { "mode": "fixed", "fixedColor": "purple" } },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.5, sum(rate(game_duration_seconds_bucket[$__range])) by (le))", "legendFormat": "p50" }
+      ]
     }
   ]
 }

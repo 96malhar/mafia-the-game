@@ -31,15 +31,28 @@ type Config struct {
 	// MaxLifetime is the hard upper bound on a room's wall-clock age.
 	// Once a room has existed for this long the manager's sweeper
 	// closes it unconditionally — no matter how many subscribers are
-	// connected, no matter whether the game has ended. This is the
-	// ONLY reap policy: rooms with active connections, idle lobbies,
-	// completed games, and abandoned-but-attached zombies all live
-	// up to this cap and then get cleared.
+	// connected, no matter whether the game has ended. It's the
+	// backstop: rooms with active connections, idle lobbies, completed
+	// games, and abandoned-but-attached zombies all live up to this cap
+	// and then get cleared. EmptyTTL reaps the common empty-room case
+	// much sooner; MaxLifetime catches everything else.
 	//
 	// Counts from CreateRoom. Default DefaultMaxLifetime. Zero or
 	// negative disables reaping (useful for tests / future
 	// deployments).
 	MaxLifetime time.Duration
+
+	// EmptyTTL reaps a room that has had ZERO connected subscribers
+	// continuously for this long — the common "everyone closed their
+	// tabs / left the call" case, which MaxLifetime alone would hold in
+	// memory for hours. The clock starts when the last subscriber
+	// detaches (or at creation for a room nobody ever joins) and resets
+	// the moment anyone (re)connects, so it must comfortably exceed a
+	// browser refresh / network blip — those reconnect within seconds.
+	//
+	// Default DefaultEmptyTTL. Zero or negative disables empty-room
+	// reaping, leaving MaxLifetime as the only policy.
+	EmptyTTL time.Duration
 
 	// Logger is used for room-lifetime events. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -123,6 +136,13 @@ const DefaultMafiaNarrateDay0 = 4 * time.Second
 // flavor: empty, full of zombies, ended) don't accumulate forever
 // on a long-running server.
 const DefaultMaxLifetime = 8 * time.Hour
+
+// DefaultEmptyTTL is how long a room may sit with zero connected
+// subscribers before the sweeper reaps it. Far longer than any
+// refresh/reconnect (seconds) or a quick "everyone steps away from the
+// call" lull, but short enough that genuinely abandoned rooms free their
+// memory and goroutine in minutes rather than waiting out MaxLifetime.
+const DefaultEmptyTTL = 30 * time.Minute
 
 // defaultSubPhaseDuration returns the built-in wall-clock duration for
 // a night sub-phase. These values are the single source of timing
@@ -210,6 +230,9 @@ func (c *Config) applyDefaults() {
 	// per-field wiring.
 	if c.MaxLifetime == 0 {
 		c.MaxLifetime = DefaultMaxLifetime
+	}
+	if c.EmptyTTL == 0 {
+		c.EmptyTTL = DefaultEmptyTTL
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()

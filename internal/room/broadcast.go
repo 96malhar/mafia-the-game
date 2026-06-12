@@ -213,11 +213,12 @@ func (r *Room) disconnectSlow(sub *Subscriber) {
 	r.detachSubscriber(sub)
 }
 
-// attachSubscriber adds a subscriber to r.subs. Helper exists for
-// symmetry with detachSubscriber and as the obvious extension point
-// if we ever bring back subscriber-based reap policies.
+// attachSubscriber adds a subscriber to r.subs and clears the
+// empty-room clock: any live connection means the room is occupied, so
+// the cfg.EmptyTTL reap shouldn't be counting (see handleLifetimeCheck).
 func (r *Room) attachSubscriber(sub *Subscriber) {
 	r.subs[sub] = struct{}{}
+	r.emptySince = time.Time{} // occupied
 }
 
 // detachSubscriber removes a subscriber from r.subs and closes its
@@ -234,6 +235,14 @@ func (r *Room) detachSubscriber(sub *Subscriber) {
 	}
 	delete(r.subs, sub) // no-op if never attached
 	close(sub.out)
+	// Start the empty-room clock when the LAST subscriber leaves. Guarded
+	// by IsZero so a never-attached reject (rejectUnjoined → detach on an
+	// already-empty room) can't keep pushing the clock forward — the
+	// stamp belongs to the occupied→empty transition only, and a room
+	// that's still occupied (len > 0) isn't empty at all.
+	if len(r.subs) == 0 && r.emptySince.IsZero() {
+		r.emptySince = time.Now()
+	}
 }
 
 // shutdownSubscribers closes every connected subscriber's channel on

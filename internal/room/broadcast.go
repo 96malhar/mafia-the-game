@@ -58,8 +58,11 @@ func (r *Room) recordGameLifecycle(events []game.Event) {
 			recordGameStarted()
 			// Raise the live gauge, guarded by the bool so it moves exactly
 			// once per game (and so the teardown release stays consistent).
+			// Stamp the start time inside the same guard so it pairs 1:1 with
+			// the GameEnded duration record below.
 			if !r.gameInProgress {
 				r.gameInProgress = true
+				r.gameStartedAt = time.Now()
 				recordGameInProgress(1)
 			}
 		case game.GameEnded:
@@ -67,6 +70,9 @@ func (r *Room) recordGameLifecycle(events []game.Event) {
 			if r.gameInProgress {
 				r.gameInProgress = false
 				recordGameInProgress(-1)
+				// Observe the completed game's length. The bool guard ensures a
+				// matching GameStarted set gameStartedAt, so this span is valid.
+				recordGameDuration(time.Since(r.gameStartedAt))
 			}
 		}
 	}

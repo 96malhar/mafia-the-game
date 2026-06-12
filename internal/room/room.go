@@ -57,6 +57,13 @@ type Room struct {
 	// game was abandoned mid-play. Set/cleared in recordGameLifecycle.
 	gameInProgress bool
 
+	// gameStartedAt is the wall-clock moment the current game's GameStarted
+	// flowed through recordGameLifecycle; the game.duration histogram is the
+	// span from here to GameEnded. Set alongside gameInProgress (so it's always
+	// valid while a game is in progress) and survives a panic recovery, which
+	// rebuilds the engine/log without resetting the Room struct.
+	gameStartedAt time.Time
+
 	// phaseTimer fires when the current phase's duration elapses,
 	// causing the run loop to synthesize an AdvancePhase command. nil
 	// when no phase-timeout is active (lobby, ended, or untimed phases).

@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,7 +27,19 @@ var (
 	gamesStarted    metric.Int64Counter
 	gamesCompleted  metric.Int64Counter
 	gamesInProgress metric.Int64UpDownCounter
+	gameDuration    metric.Float64Histogram
 )
+
+// gameDurationBuckets are the explicit histogram boundaries (in seconds) for
+// game.duration. Percentiles (p25/p50/p99) are computed query-side from the
+// bucket counts via Prometheus histogram_quantile, so resolution comes entirely
+// from these boundaries — they're placed densest across the range a real Mafia
+// game lands in (a few minutes to ~half an hour) and trail off toward a 2-hour
+// tail. 15s … 2h: a quick stomp, a typical session, and a marathon all fall in
+// distinct buckets.
+var gameDurationBuckets = []float64{
+	15, 30, 60, 120, 180, 300, 450, 600, 900, 1200, 1800, 2700, 3600, 5400, 7200,
+}
 
 func initMetrics() {
 	metricsOnce.Do(func() {
@@ -60,6 +73,12 @@ func initMetrics() {
 			"game.in_progress",
 			metric.WithDescription("Games currently being played (started, not yet ended or abandoned)"),
 			metric.WithUnit("{game}"),
+		)
+		gameDuration, _ = m.Float64Histogram(
+			"game.duration",
+			metric.WithDescription("Wall-clock duration of a completed game, from StartGame to the win"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(gameDurationBuckets...),
 		)
 	})
 }
@@ -110,6 +129,17 @@ func recordGameCompleted(winner string) {
 func recordGameInProgress(delta int64) {
 	initMetrics()
 	gamesInProgress.Add(context.Background(), delta)
+}
+
+// recordGameDuration records one completed game's wall-clock length (StartGame
+// → win) into the game.duration histogram, in seconds (Prometheus base unit).
+// Only completed games are observed — a game abandoned mid-play (room reaped /
+// shut down) never reaches GameEnded and is deliberately absent, so the
+// percentiles describe games that actually finished. The query-side
+// histogram_quantile over the _bucket series yields p25/p50/p99.
+func recordGameDuration(d time.Duration) {
+	initMetrics()
+	gameDuration.Record(context.Background(), d.Seconds())
 }
 
 func recordRoomOpened() {

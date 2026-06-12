@@ -79,6 +79,14 @@ type Room struct {
 	// reaps this room. Immutable after construction; read-only from
 	// any goroutine.
 	createdAt time.Time
+
+	// emptySince marks when the room last became empty (zero connected
+	// subscribers), driving the cfg.EmptyTTL reap. It's stamped at
+	// creation (a room nobody joins is empty from birth), re-stamped
+	// when the final subscriber detaches, and zeroed the moment anyone
+	// attaches. A zero value means "currently occupied". Run-loop-only,
+	// like every field below the divider.
+	emptySince time.Time
 }
 
 // playerSlot is the room-layer record of a player. It holds the rejoin
@@ -109,18 +117,22 @@ func newRoom(parent context.Context, code string, cfg Config) (*Room, error) {
 	}
 
 	ctx, cancel := context.WithCancel(parent)
+	// One clock read for both lifetime anchors: a brand-new room is empty
+	// from birth, so its EmptyTTL countdown starts at createdAt.
+	now := time.Now()
 	r := &Room{
-		code:      code,
-		cfg:       cfg,
-		log:       cfg.Logger.With("room", code),
-		inbox:     make(chan inbound, inboxCapacity),
-		ctx:       ctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		g:         game.New(),
-		players:   make(map[game.PlayerID]*playerSlot),
-		subs:      make(map[*Subscriber]struct{}),
-		createdAt: time.Now(),
+		code:       code,
+		cfg:        cfg,
+		log:        cfg.Logger.With("room", code),
+		inbox:      make(chan inbound, inboxCapacity),
+		ctx:        ctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		g:          game.New(),
+		players:    make(map[game.PlayerID]*playerSlot),
+		subs:       make(map[*Subscriber]struct{}),
+		createdAt:  now,
+		emptySince: now,
 	}
 
 	gid := cfg.GameID
@@ -517,29 +529,40 @@ func (r *Room) handleLeave(m inLeave) {
 	r.detachSubscriber(m.From)
 }
 
-// handleLifetimeCheck evaluates whether the room has exceeded its
-// hard lifetime cap and, if so, self-cancels (which causes Run to
-// exit and the manager's reapWhenDone goroutine to drop it from
-// the registry).
+// handleLifetimeCheck evaluates the room's reap policies and, if any
+// fires, self-cancels (which causes Run to exit and the manager's
+// reapWhenDone goroutine to drop it from the registry). Called on every
+// sweeper tick.
 //
-// Policy: time.Since(createdAt) > cfg.MaxLifetime. That is the only
-// criterion. Subscriber count and game phase are NOT consulted —
-// active games approaching the cap get force-closed too, which is a
-// deliberate tradeoff for predictable resource bounds.
+// Two policies, checked hard-cap first:
 //
-// MaxLifetime <= 0 disables reaping. Useful for tests and as a
-// future deployment knob.
+//   - MaxLifetime: time.Since(createdAt) >= cfg.MaxLifetime. The
+//     backstop — fires regardless of subscriber count or game phase, so
+//     an active game brushing the cap gets force-closed too (a
+//     deliberate tradeoff for predictable resource bounds).
+//   - EmptyTTL: the room has had zero connected subscribers for at least
+//     cfg.EmptyTTL (see emptySince). Reaps the common "everyone left"
+//     case long before MaxLifetime would. len(r.subs)==0 is the
+//     authoritative emptiness test; emptySince only dates it.
+//
+// Either knob <= 0 disables that policy (handy for tests / future
+// deployment tuning); both <= 0 leaves the room uncapped.
 func (r *Room) handleLifetimeCheck() {
-	if r.cfg.MaxLifetime <= 0 {
+	if r.cfg.MaxLifetime > 0 && time.Since(r.createdAt) >= r.cfg.MaxLifetime {
+		r.log.Info("reaping room past max lifetime",
+			"created_at", r.createdAt,
+			"max_lifetime", r.cfg.MaxLifetime)
+		r.cancel()
 		return
 	}
-	if time.Since(r.createdAt) < r.cfg.MaxLifetime {
+	if r.cfg.EmptyTTL > 0 && len(r.subs) == 0 &&
+		time.Since(r.emptySince) >= r.cfg.EmptyTTL {
+		r.log.Info("reaping empty room",
+			"empty_since", r.emptySince,
+			"empty_ttl", r.cfg.EmptyTTL)
+		r.cancel()
 		return
 	}
-	r.log.Info("reaping room past max lifetime",
-		"created_at", r.createdAt,
-		"max_lifetime", r.cfg.MaxLifetime)
-	r.cancel()
 }
 
 // handleJoinability answers a pre-join probe (inJoinability) with the

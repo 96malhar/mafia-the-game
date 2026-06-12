@@ -829,6 +829,66 @@ func TestRoom_LifetimeReaperDisabledByZero(t *testing.T) {
 	require.NoError(t, err, "MaxLifetime<=0 must disable reaping")
 }
 
+// TestRoom_EmptyReaperClosesEmptyRoom verifies the headline empty-room
+// case: a room that has had zero subscribers for longer than EmptyTTL is
+// reaped on the next sweep, well before its (here, hour-long) MaxLifetime.
+// A room nobody ever joins is empty from birth, so the clock runs from
+// creation.
+func TestRoom_EmptyReaperClosesEmptyRoom(t *testing.T) {
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		EmptyTTL:    50 * time.Millisecond,
+		MaxLifetime: time.Hour, // ensure it's EmptyTTL, not the hard cap, reaping
+	})
+	require.NoError(t, err)
+	waitGone(t, m, r.Code(), time.Second)
+}
+
+// TestRoom_EmptyReaperKeepsOccupiedRoomThenReapsOnLeave verifies the
+// clock is gated on occupancy: while a subscriber is connected the room
+// survives indefinitely (even with a tiny EmptyTTL), and only once the
+// LAST subscriber leaves does the empty clock start and the room get
+// reaped.
+func TestRoom_EmptyReaperKeepsOccupiedRoomThenReapsOnLeave(t *testing.T) {
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		EmptyTTL:    50 * time.Millisecond,
+		MaxLifetime: time.Hour,
+	})
+	require.NoError(t, err)
+
+	subA, _ := connect(t, r, "Alice")
+	_ = drain(subA, 30*time.Millisecond)
+
+	// Occupied: many EmptyTTL windows pass, but the room must stay.
+	time.Sleep(200 * time.Millisecond)
+	_, err = m.Get(r.Code())
+	require.NoError(t, err, "an occupied room must not be empty-reaped")
+
+	// Last subscriber leaves → empty clock starts → reaped on a later sweep.
+	require.NoError(t, r.submit(context.Background(), inLeave{From: subA}))
+	waitGone(t, m, r.Code(), time.Second)
+}
+
+// TestRoom_EmptyReaperDisabledByZero verifies EmptyTTL<=0 disables the
+// empty-room policy (MaxLifetime then governs alone).
+func TestRoom_EmptyReaperDisabledByZero(t *testing.T) {
+	m := newTestManager(t, WithSweepInterval(20*time.Millisecond))
+	r, err := m.CreateRoom(Config{
+		Logger:      silentLogger(),
+		EmptyTTL:    -1,
+		MaxLifetime: time.Hour,
+	})
+	require.NoError(t, err)
+
+	// No subscribers, several sweeps: must survive since empty-reap is off.
+	time.Sleep(200 * time.Millisecond)
+	_, err = m.Get(r.Code())
+	require.NoError(t, err, "EmptyTTL<=0 must disable empty-room reaping")
+}
+
 // --- Projection: RoleAssigned is private --------------------------------
 
 func TestRoom_RoleAssignedOnlyVisibleToSubject(t *testing.T) {

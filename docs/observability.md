@@ -181,6 +181,11 @@ other code changes.
 - **Metrics:** scraped automatically via the `[metrics]` block in `fly.toml`
   (`port = 9091`, `path = "/metrics"`). View in Fly's hosted Grafana at
   [fly-metrics.net](https://fly-metrics.net) (or `fly dashboard metrics`).
+- **Dashboard:** a prebuilt Grafana dashboard for the custom metrics lives at
+  [`grafana-dashboard.json`](../grafana-dashboard.json) (repo root). Import it
+  via Grafana → Dashboards → Import → upload the file, keep the UID
+  `mafia-app-metrics` (so a re-import overwrites in place rather than
+  duplicating), and select your Prometheus data source.
 - **Health:** `GET /healthz` on the public port returns a static `200` — note
   it does **not** reflect internal health (manager/room-goroutine liveness); a
   green check does not guarantee rooms are advancing. Treat it as a liveness

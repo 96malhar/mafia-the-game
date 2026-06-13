@@ -99,9 +99,9 @@ Every series carries (via `target_info`): `service.name=mafia`,
 
 ### Naming: OTel → Prometheus
 
-Instruments are named in OTel dotted style (`ws.connections.active`); the
+Instruments are named in OTel dotted style (`players.connected`); the
 Prometheus exporter rewrites dots to underscores, so you query
-**`ws_connections_active`**. Both forms are listed in the catalog below.
+**`players_connected`**. Both forms are listed in the catalog below.
 Counters additionally get a **`_total`** suffix (`game.command.rejected` →
 `game_command_rejected_total`); gauges (UpDownCounters) keep the bare name.
 Every series also carries an **`otel_scope_name`** label identifying the
@@ -109,8 +109,8 @@ emitting package (e.g. `otel_scope_name="github.com/96malhar/mafia-the-game/inte
 
 > ⚠️ **Lazy-registration gotcha.** Because instruments are created on first
 > use, a series does **not** appear in `/metrics` until the code path that
-> emits it runs at least once since boot. e.g. `ws_connections_active` is
-> absent until the first WebSocket connection opens. In PromQL, "absent" then
+> emits it runs at least once since boot. e.g. `players_connected` is
+> absent until the first player joins a room. In PromQL, "absent" then
 > means "never happened yet," not `0` — guard dashboards/alerts with
 > `... or vector(0)` where a zero baseline matters.
 
@@ -137,7 +137,7 @@ you query.
 | `game_completed_total` | `game.completed` | Counter | `winner` | A game played to completion (one `GameEnded` event), by winning faction (`town`/`mafia`). Pair with `game_started_total` for the completion rate. Fires once per game; a `ResetGame` re-arms it and a panic-recovery replay does not re-fire it. | `internal/room/broadcast.go` (`recordGameLifecycle` in `appendAndBroadcast`) |
 | `game_in_progress` | `game.in_progress` | UpDownCounter (gauge) | — | The **live** count of games currently being played (started, not yet ended/abandoned) — the real "active games" number, vs `room_active` which also counts lobbies and finished-but-unreset rooms. +1 on `GameStarted`, −1 on `GameEnded` or on room teardown if abandoned mid-play. | `internal/room/broadcast.go` (`recordGameLifecycle`) + `room.go` (`Run` teardown defer) |
 | `game_duration_seconds` | `game.duration` | Histogram | — | Wall-clock length of a **completed** game (`StartGame` → win), in seconds. Only finished games are observed — an abandoned game never reaches `GameEnded`. Explicit buckets (15s…2h) drive percentiles via `histogram_quantile` over `game_duration_seconds_bucket` — e.g. p50: `histogram_quantile(0.5, sum(rate(game_duration_seconds_bucket[$__rate_interval])) by (le))`. | `internal/room/broadcast.go` (`recordGameLifecycle` in `appendAndBroadcast`) |
-| `ws_connections_active` | `ws.connections.active` | UpDownCounter (gauge) | — | Currently-open WebSocket connections. `+1` after a successful upgrade, `-1` (deferred) on full teardown — properly paired, so it tracks live connections. | `internal/transport/ws/handler.go` (`recordConnOpen` / `recordConnClose` in `Connect`) |
+| `players_connected` | `players.connected` | UpDownCounter (gauge) | — | The accurate **active-players** count: players currently connected and seated in a room (one per attached subscriber). Unlike a raw connection count it ignores never-joined sockets and doesn't blip on a refresh — the room evicts the old subscriber and attaches the new one to the same seat on one goroutine, so the count holds steady. `+1` on attach, `-1` on detach (leave / slow-drop / rejoin eviction / teardown). | `internal/room/broadcast.go` (`recordPlayerAttached` / `recordPlayerDetached` in `attachSubscriber` / `detachSubscriber`) |
 | `ws_message_rejected_total` | `ws.message.rejected` | Counter | `reason` | Inbound WS frames rejected at the **transport** layer (bad frame, undecodable JSON, unknown type), by reason. The only server-side signal for malformed/abusive traffic, since these aren't logged. | `internal/transport/ws/pumps.go` (`recordMessageRejected`, from the read pump) |
 
 > Prometheus appends `_total` to counter series exported from OTel; gauges

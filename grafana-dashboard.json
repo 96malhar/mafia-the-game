@@ -44,8 +44,8 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Active players (live connections)",
-      "description": "ws_connections_active — current open WebSocket connections. Thresholds reflect the soft_limit (800) and hard_limit (1000) connection caps.",
+      "title": "Active players",
+      "description": "players_connected — players currently connected and seated in a room (one per attached seat). Ignores never-joined sockets and is refresh-stable, unlike a raw connection count. Thresholds track the ~800/1000 connection caps (≈ one connection per player).",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "options": {
@@ -65,7 +65,7 @@
         "overrides": []
       },
       "targets": [
-        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(ws_connections_active)", "legendFormat": "players" }
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(players_connected)", "legendFormat": "players" }
       ]
     },
     {
@@ -161,7 +161,7 @@
         "overrides": []
       },
       "targets": [
-        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(ws_connections_active)", "legendFormat": "players (connections)" },
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(players_connected)", "legendFormat": "players" },
         { "refId": "B", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(game_in_progress)", "legendFormat": "games in progress" },
         { "refId": "C", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(room_active)", "legendFormat": "active rooms" }
       ]

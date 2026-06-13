@@ -18,36 +18,25 @@ const meterName = "github.com/96malhar/mafia-the-game/internal/transport/ws"
 // Lazily initialised; the global (Prometheus-backed) MeterProvider is set
 // by obs.Setup before any connection is served, so these surface at
 // /metrics.
+// Live player count is NOT tracked here: a WebSocket connection is a poor
+// proxy for an active player (a never-joined socket counts, a refresh
+// transiently double-counts, two tabs read as two). That gauge lives in the
+// room layer as players.connected, keyed on attached player seats. This
+// package only owns transport-level frame rejections.
 var (
 	metricsOnce sync.Once
-	wsActive    metric.Int64UpDownCounter
 	msgRejected metric.Int64Counter
 )
 
 func initMetrics() {
 	metricsOnce.Do(func() {
 		m := otel.Meter(meterName)
-		wsActive, _ = m.Int64UpDownCounter(
-			"ws.connections.active",
-			metric.WithDescription("Currently open WebSocket connections"),
-			metric.WithUnit("{connection}"),
-		)
 		msgRejected, _ = m.Int64Counter(
 			"ws.message.rejected",
 			metric.WithDescription("Inbound WS frames rejected at the transport layer, by reason"),
 			metric.WithUnit("{message}"),
 		)
 	})
-}
-
-func recordConnOpen() {
-	initMetrics()
-	wsActive.Add(context.Background(), 1)
-}
-
-func recordConnClose() {
-	initMetrics()
-	wsActive.Add(context.Background(), -1)
 }
 
 // recordMessageRejected counts a transport-level rejection (bad frame,

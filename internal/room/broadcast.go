@@ -222,9 +222,12 @@ func (r *Room) disconnectSlow(sub *Subscriber) {
 // attachSubscriber adds a subscriber to r.subs and clears the
 // empty-room clock: any live connection means the room is occupied, so
 // the cfg.EmptyTTL reap shouldn't be counting (see handleLifetimeCheck).
+// It also raises the players.connected gauge — attaching is always a fresh
+// add (a join or rejoin presents a new subscriber), so this is unconditional.
 func (r *Room) attachSubscriber(sub *Subscriber) {
 	r.subs[sub] = struct{}{}
 	r.emptySince = time.Time{} // occupied
+	recordPlayerAttached()
 }
 
 // detachSubscriber removes a subscriber from r.subs and closes its
@@ -239,7 +242,14 @@ func (r *Room) detachSubscriber(sub *Subscriber) {
 	if sub.closed.Swap(true) {
 		return // already closed
 	}
-	delete(r.subs, sub) // no-op if never attached
+	// Only an attached subscriber lowers players.connected. A never-attached
+	// reject (rejectUnjoined) was never counted, so gating the -1 on actual
+	// membership keeps the gauge paired with attachSubscriber's +1 and stops
+	// it drifting negative.
+	if _, attached := r.subs[sub]; attached {
+		delete(r.subs, sub)
+		recordPlayerDetached()
+	}
 	close(sub.out)
 	// Start the empty-room clock when the LAST subscriber leaves. Guarded
 	// by IsZero so a never-attached reject (rejectUnjoined → detach on an

@@ -253,6 +253,62 @@ func TestMetrics_GameDurationRecordedOnGameEnd(t *testing.T) {
 		"GameEnded records exactly one duration")
 }
 
+// TestMetrics_PlayersConnectedGauge asserts the players.connected instrument
+// emits with the right name/type and moves +1/-1 on attach/detach.
+func TestMetrics_PlayersConnectedGauge(t *testing.T) {
+	before := metricValue(t, "players.connected")
+	recordPlayerAttached()
+	recordPlayerAttached()
+	recordPlayerAttached()
+	recordPlayerDetached()
+	require.Equal(t, int64(2), metricValue(t, "players.connected")-before)
+}
+
+// TestMetrics_PlayersConnectedTracksSeats drives the real attach/detach
+// chokepoints end to end: joins raise the gauge, a refresh (rejoin) is net-zero
+// because the old subscriber is evicted as the new one takes the same seat, a
+// rejected join never moves it (the never-attached -1 is gated out), a leave
+// lowers it, and room teardown releases every remaining seat.
+func TestMetrics_PlayersConnectedTracksSeats(t *testing.T) {
+	before := metricValue(t, "players.connected")
+	r, err := newRoom(context.Background(), "SEAT", Config{Logger: silentLogger()})
+	require.NoError(t, err)
+	go r.Run()
+
+	subs := make([]*Subscriber, 3)
+	acks := make([]OutJoined, 3)
+	for i := range subs {
+		subs[i], acks[i] = connect(t, r, string(rune('A'+i)))
+	}
+	onLoop(t, r, func(*Room) {})
+	require.Equal(t, int64(3), metricValue(t, "players.connected")-before, "three joins → +3")
+
+	// Refresh of player A: evict-then-attach to the SAME seat → net-zero.
+	subA2 := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(), inRejoin{
+		From: subA2, PlayerID: acks[0].PlayerID, Secret: acks[0].Secret,
+	}))
+	onLoop(t, r, func(*Room) {})
+	require.Equal(t, int64(3), metricValue(t, "players.connected")-before, "a refresh/rejoin is net-zero")
+
+	// Rejected rejoin (bad secret): never attaches → gauge must not move.
+	bad := NewSubscriber()
+	require.NoError(t, r.submit(context.Background(), inRejoin{
+		From: bad, PlayerID: acks[1].PlayerID, Secret: "wrong",
+	}))
+	onLoop(t, r, func(*Room) {})
+	require.Equal(t, int64(3), metricValue(t, "players.connected")-before, "a rejected join must not move the gauge")
+
+	// Player C closes their tab (leave) → -1.
+	require.NoError(t, r.submit(context.Background(), inLeave{From: subs[2]}))
+	onLoop(t, r, func(*Room) {})
+	require.Equal(t, int64(2), metricValue(t, "players.connected")-before, "a leave → -1")
+
+	// Teardown detaches the remaining seats → back to baseline.
+	require.NoError(t, r.Close(context.Background()))
+	require.Equal(t, int64(0), metricValue(t, "players.connected")-before, "teardown releases every seat")
+}
+
 // minimalRoom builds a Room with just what appendAndBroadcast touches (no run
 // loop, no subscribers), mirroring TestRoom_DisconnectSlowSubscriber.
 func minimalRoom() *Room {

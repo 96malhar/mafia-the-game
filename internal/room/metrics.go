@@ -20,14 +20,15 @@ const meterName = "github.com/96malhar/mafia-the-game/internal/room"
 // in main() before any room exists, so the first call here registers
 // against it and the values surface at /metrics.
 var (
-	metricsOnce     sync.Once
-	cmdRejected     metric.Int64Counter
-	roomsActive     metric.Int64UpDownCounter
-	roomPanics      metric.Int64Counter
-	gamesStarted    metric.Int64Counter
-	gamesCompleted  metric.Int64Counter
-	gamesInProgress metric.Int64UpDownCounter
-	gameDuration    metric.Float64Histogram
+	metricsOnce      sync.Once
+	cmdRejected      metric.Int64Counter
+	roomsActive      metric.Int64UpDownCounter
+	roomPanics       metric.Int64Counter
+	gamesStarted     metric.Int64Counter
+	gamesCompleted   metric.Int64Counter
+	gamesInProgress  metric.Int64UpDownCounter
+	gameDuration     metric.Float64Histogram
+	playersConnected metric.Int64UpDownCounter
 )
 
 // gameDurationBuckets are the explicit histogram boundaries (in seconds) for
@@ -79,6 +80,11 @@ func initMetrics() {
 			metric.WithDescription("Wall-clock duration of a completed game, from StartGame to the win"),
 			metric.WithUnit("s"),
 			metric.WithExplicitBucketBoundaries(gameDurationBuckets...),
+		)
+		playersConnected, _ = m.Int64UpDownCounter(
+			"players.connected",
+			metric.WithDescription("Players currently connected and seated in a room (one per attached subscriber)"),
+			metric.WithUnit("{player}"),
 		)
 	})
 }
@@ -140,6 +146,23 @@ func recordGameInProgress(delta int64) {
 func recordGameDuration(d time.Duration) {
 	initMetrics()
 	gameDuration.Record(context.Background(), d.Seconds())
+}
+
+// recordPlayerAttached / recordPlayerDetached move the live players.connected
+// gauge as subscribers attach to / detach from a room's seat. They're the
+// accurate "active players" signal: keyed on attached player seats, they ignore
+// never-joined sockets and don't blip on a refresh (the room evicts the old
+// subscriber and attaches the new one to the same seat on one goroutine, so the
+// count holds steady). Called only from attachSubscriber / detachSubscriber, the
+// single chokepoints for r.subs membership, so every +1 pairs with one -1.
+func recordPlayerAttached() {
+	initMetrics()
+	playersConnected.Add(context.Background(), 1)
+}
+
+func recordPlayerDetached() {
+	initMetrics()
+	playersConnected.Add(context.Background(), -1)
 }
 
 func recordRoomOpened() {

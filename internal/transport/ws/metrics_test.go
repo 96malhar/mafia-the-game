@@ -18,8 +18,8 @@ import (
 // type, value, and labels. Like internal/room/metrics_test.go: TestMain installs
 // one ManualReader provider before any test runs (the lazy sync.Once binds to
 // it once — no mid-suite reset, no race), and assertions use BEFORE/AFTER deltas
-// so they're robust against the connection lifecycle in the handler tests, which
-// also moves ws.connections.active / ws.message.rejected.
+// so they're robust against unrelated emissions from the handler tests, which
+// also move ws.message.rejected.
 
 var testMeterReader sdkmetric.Reader
 
@@ -60,15 +60,6 @@ func attrsMatch(set attribute.Set, want []attribute.KeyValue) bool {
 		}
 	}
 	return true
-}
-
-func TestMetrics_WSConnectionsActiveGauge(t *testing.T) {
-	before := metricValue(t, "ws.connections.active")
-	recordConnOpen()
-	recordConnOpen()
-	recordConnOpen()
-	recordConnClose()
-	require.Equal(t, int64(2), metricValue(t, "ws.connections.active")-before)
 }
 
 func TestMetrics_WSMessageRejectedLabelled(t *testing.T) {

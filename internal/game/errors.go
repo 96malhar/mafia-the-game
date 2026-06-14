@@ -44,11 +44,22 @@ var (
 	// context that forbids it (e.g. detective investigating self).
 	ErrSelfTarget = errors.New("game: cannot target self")
 
-	// ErrRosterMismatch is returned by StartGame when the current
-	// player count is outside [minPlayers, maxPlayers] or the mafia
-	// count cannot produce a valid composition (i.e. not in
-	// [1, playerCount - 3] once Det + Doc + ≥1 Villager are reserved).
+	// ErrRosterMismatch is returned by StartGame / SetMafiaCount when the
+	// roster is structurally invalid: the player count is outside
+	// [minPlayers, maxPlayers], the mafia count is < 1, or the mafia count
+	// plus the reserved town core (Det + Doc) plus every enabled optional
+	// role exceeds the available seats (the composition can't be built).
+	// Zero plain villagers is allowed — only a NEGATIVE villager slot count
+	// (roles over-subscribing the seats) is rejected here.
 	ErrRosterMismatch = errors.New("game: roster (player count or mafia count) is not valid for starting the game")
+
+	// ErrTownNotMajority is returned by StartGame when the town faction
+	// would not hold a strict majority of the seats — i.e. the mafia-aligned
+	// players (Mafia + Yakuza + Consort) make up half or more of the roster.
+	// Such a board opens effectively decided for the mafia, so we refuse to
+	// deal it; the host fixes it by lowering the mafia count or disabling a
+	// mafia-aligned optional role.
+	ErrTownNotMajority = errors.New("game: town faction must hold more than half the seats")
 
 	// ErrLobbyFull is returned by AddPlayer when the lobby has already
 	// reached MaxPlayers and cannot accept another joiner.

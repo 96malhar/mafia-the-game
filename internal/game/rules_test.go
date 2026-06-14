@@ -131,7 +131,7 @@ func TestCreateGame(t *testing.T) {
 			GameID:     "g1",
 			MinPlayers: 5,
 			MaxPlayers: 5,
-			MafiaCount: 3, // > 5 - 2 - 1 = 2
+			MafiaCount: 4, // > 5 - reservedTownRoles = 3
 		})
 		require.Error(t, err)
 	})
@@ -315,16 +315,16 @@ func TestSetMafiaCount(t *testing.T) {
 
 	t.Run("out of range is rejected with ErrRosterMismatch", func(t *testing.T) {
 		// Below the lower bound (must be ≥ 1) and above the upper
-		// bound (MaxPlayers - reservedTownRoles - 1) both surface
-		// the same sentinel as the equivalent rejection in
-		// applyStartGame. We assert ErrorIs (not just Error) so a
-		// future change that drops the wrapper would fail loudly
-		// rather than silently downgrading these to ErrCodeInternal
-		// on the wire.
-		g := newGame(t) // MaxPlayers=20, so max mafia = 20-2-1 = 17
+		// bound (MaxPlayers - reservedTownRoles, since zero villagers
+		// is allowed) both surface the same sentinel as the equivalent
+		// rejection in applyStartGame. We assert ErrorIs (not just
+		// Error) so a future change that drops the wrapper would fail
+		// loudly rather than silently downgrading these to
+		// ErrCodeInternal on the wire.
+		g := newGame(t) // MaxPlayers=20, so max mafia = 20-2 = 18
 		_, err := g.Apply(game.SetMafiaCount{Count: 0})
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
-		_, err = g.Apply(game.SetMafiaCount{Count: 18})
+		_, err = g.Apply(game.SetMafiaCount{Count: 19})
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
@@ -526,8 +526,10 @@ func TestStartGame(t *testing.T) {
 		require.ErrorIs(t, err, game.ErrRosterMismatch)
 	})
 
-	t.Run("rejects when mafia count would leave no villagers", func(t *testing.T) {
-		// 5 players, 3 mafia → only Det + Doc + 0 villagers left. Reject.
+	t.Run("rejects when the mafia faction is not out-numbered by town", func(t *testing.T) {
+		// 5 players, 3 mafia → town (det + doc) = 2 vs mafia 3. Town is not a
+		// strict majority, so StartGame refuses with ErrTownNotMajority (rule 2)
+		// rather than the generic roster error.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 3,
@@ -535,15 +537,32 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
-		require.ErrorIs(t, err, game.ErrRosterMismatch)
+		require.ErrorIs(t, err, game.ErrTownNotMajority)
 	})
 
-	t.Run("rejects when optional roles would leave no villagers", func(t *testing.T) {
-		// 5 players, 1 mafia, consort + vigilante → 5 - 1 - 2 - 2 = 0
-		// villager slots. Every roster must keep at least one plain
-		// villager, so StartGame rejects it. The mafia, parity, and
-		// player-count bounds all pass here — only the ≥1-villager rule
-		// fails, isolating it.
+	t.Run("rejects when mafia-aligned optionals tip town below a majority", func(t *testing.T) {
+		// 6 players, 2 mafia, consort → mafia-aligned = 3 (2 mafia + the
+		// Consort) vs town = 3 (det + doc + 1 villager). That's parity, not a
+		// strict town majority, so it's refused — the Consort counts toward the
+		// mafia side. This was allowed under the old (looser) rule.
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
+		})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetConsort{Enabled: true})
+		require.NoError(t, err)
+		addPlayers(t, g, "a", "b", "c", "d", "e", "f")
+		_, err = g.Apply(game.StartGame{})
+		require.ErrorIs(t, err, game.ErrTownNotMajority)
+	})
+
+	t.Run("allows a roster with zero plain villagers", func(t *testing.T) {
+		// 5 players, 1 mafia, consort + vigilante → composition is
+		// [Mafia, Detective, Doctor, Consort, Vigilante] with ZERO villagers.
+		// Town (det + doc + vigilante = 3) still out-numbers the mafia-aligned
+		// (mafia + consort = 2), so a villager-less roster is a legal game
+		// (rule 3) — this was rejected under the old ≥1-villager rule.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1,
@@ -552,6 +571,27 @@ func TestStartGame(t *testing.T) {
 		_, err = g.Apply(game.SetConsort{Enabled: true})
 		require.NoError(t, err)
 		_, err = g.Apply(game.SetVigilante{Enabled: true})
+		require.NoError(t, err)
+		addPlayers(t, g, "a", "b", "c", "d", "e")
+		_, err = g.Apply(game.StartGame{})
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects when roles over-subscribe the seats", func(t *testing.T) {
+		// 5 players, 1 mafia, consort + vigilante + tracker → villager slots =
+		// 5 - 1 - 2 - 3 = -1: more roles than seats. Town still holds a majority
+		// (town 3 vs mafia-aligned 2), so this isolates the composition-fit
+		// check, which rejects with ErrRosterMismatch (rule 3's lower bound).
+		g := game.New()
+		_, err := g.Apply(game.CreateGame{
+			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 1,
+		})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetConsort{Enabled: true})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetVigilante{Enabled: true})
+		require.NoError(t, err)
+		_, err = g.Apply(game.SetTracker{Enabled: true})
 		require.NoError(t, err)
 		addPlayers(t, g, "a", "b", "c", "d", "e")
 		_, err = g.Apply(game.StartGame{})
@@ -575,16 +615,12 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("rejects a roster that opens at strict-mafia parity", func(t *testing.T) {
-		// 7 players, 3 mafia, consort enabled → strict mafia = 3 vs
-		// town = 3 (det + doc + 1 villager; the consort takes one of the
-		// villager slots). This PASSES the villager-fit check (one villager
-		// remains: 7 - 3 - 2 - 1 = 1) so it isolates the parity gate. The
-		// gate is a deliberately conservative guardrail: checkWin no longer
-		// ends at exact parity (it needs strictMafia > town), but a board
-		// where the mafia already match the town — and a hidden Consort
-		// pushes mafia-aligned to a voting majority — is effectively lost
-		// for the town, so StartGame refuses to deal it.
+	t.Run("rejects a roster where mafia-aligned reach parity with town", func(t *testing.T) {
+		// 7 players, 3 mafia, consort enabled → mafia-aligned = 4 (3 mafia +
+		// the Consort) vs town = 3 (det + doc + 1 villager). The composition
+		// fits (1 villager: 7 - 3 - 2 - 1 = 1), so this isolates the town-
+		// majority gate: at parity-or-worse the board is effectively lost for
+		// the town, so StartGame refuses it with ErrTownNotMajority.
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 3,
@@ -594,7 +630,7 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 		addPlayers(t, g, "a", "b", "c", "d", "e", "f", "g")
 		_, err = g.Apply(game.StartGame{})
-		require.ErrorIs(t, err, game.ErrRosterMismatch)
+		require.ErrorIs(t, err, game.ErrTownNotMajority)
 	})
 
 	t.Run("allows a consort roster that stays below parity", func(t *testing.T) {
@@ -612,11 +648,11 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("allows two mafia plus a consort when the town can still out-number them", func(t *testing.T) {
-		// 6 players, 2 mafia, consort enabled → strict mafia = 2 vs
-		// town = 3 (det + doc + villager). The consort no longer pads the
-		// mafia's parity count, so this opens below parity and is a legal
-		// game — it was rejected under the old mafia-aligned rule.
+	t.Run("allows two mafia plus a consort when town out-numbers them", func(t *testing.T) {
+		// 7 players, 2 mafia, consort enabled → mafia-aligned = 3 (2 mafia +
+		// Consort) vs town = 4 (det + doc + 2 villagers). Town holds a strict
+		// majority (4 > 3), so it's a legal game. At 6 players this same config
+		// is parity and rejected (see the mafia-aligned-tip case above).
 		g := game.New()
 		_, err := g.Apply(game.CreateGame{
 			GameID: "g1", MinPlayers: 5, MaxPlayers: 20, MafiaCount: 2,
@@ -624,7 +660,7 @@ func TestStartGame(t *testing.T) {
 		require.NoError(t, err)
 		_, err = g.Apply(game.SetConsort{Enabled: true})
 		require.NoError(t, err)
-		addPlayers(t, g, "a", "b", "c", "d", "e", "f")
+		addPlayers(t, g, "a", "b", "c", "d", "e", "f", "g")
 		_, err = g.Apply(game.StartGame{})
 		require.NoError(t, err)
 	})
@@ -662,6 +698,7 @@ func TestSentinelsAreDistinct(t *testing.T) {
 		game.ErrNotYourAction,
 		game.ErrSelfTarget,
 		game.ErrRosterMismatch,
+		game.ErrTownNotMajority,
 		game.ErrLobbyFull,
 		game.ErrGameEnded,
 		game.ErrNoChange,

@@ -626,6 +626,7 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 		{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
 		{game.ErrSelfTarget, wire.ErrCodeSelfTarget},
 		{game.ErrRosterMismatch, wire.ErrCodeRosterMismatch},
+		{game.ErrTownNotMajority, wire.ErrCodeTownNotMajority},
 		{game.ErrLobbyFull, wire.ErrCodeLobbyFull},
 		{game.ErrGameEnded, wire.ErrCodeGameEnded},
 		{game.ErrNoChange, wire.ErrCodeNoChange},
@@ -646,6 +647,42 @@ func TestRoom_ErrorForMapsAllSentinels(t *testing.T) {
 			require.Equal(t, tc.code, got.Code)
 		})
 	}
+}
+
+// TestRoom_StartGameTownNotMajorityMessage verifies that a StartGame rejected
+// for the town-majority rule reaches the host as the typed code PLUS the
+// player-facing, actionable message (startErrorFor) — not the raw engine
+// sentinel — so the host knows to lower the mafia or drop a mafia-aligned role.
+func TestRoom_StartGameTownNotMajorityMessage(t *testing.T) {
+	_, r := newTestRoom(t)
+
+	subs := make([]*Subscriber, 5)
+	for i := range subs {
+		subs[i], _ = connect(t, r, string(rune('A'+i)))
+	}
+	for _, s := range subs {
+		_ = drain(s, 50*time.Millisecond)
+	}
+
+	// Host (subs[0]) cranks mafia to 3: with 5 players that leaves town
+	// (det + doc) = 2, a minority. SetMafiaCount is accepted (it's within the
+	// coarse pre-tune bound); the town-majority rule fires at StartGame.
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: subs[0], Cmd: game.SetMafiaCount{Count: 3},
+	}))
+	for _, s := range subs {
+		_ = drain(s, 50*time.Millisecond)
+	}
+
+	require.NoError(t, r.submit(context.Background(), inCommand{
+		From: subs[0], Cmd: game.StartGame{},
+	}))
+
+	oe := recvType[OutError](t, subs[0])
+	require.Equal(t, wire.ErrCodeTownNotMajority, oe.Code)
+	require.Contains(t, oe.Message, "more than half")
+	require.Contains(t, oe.Message, "Yakuza or Consort",
+		"message must prompt the host toward the actual levers")
 }
 
 // Genuinely unknown errors (e.g. an unwrapped fmt.Errorf from

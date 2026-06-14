@@ -42,6 +42,7 @@ const (
 	ErrCodeNotYourTurn      ErrorCode = "not_your_turn"
 	ErrCodeSelfTarget       ErrorCode = "self_target"
 	ErrCodeRosterMismatch   ErrorCode = "roster_mismatch"
+	ErrCodeTownNotMajority  ErrorCode = "town_not_majority"
 	ErrCodeLobbyFull        ErrorCode = "lobby_full"
 	ErrCodeGameEnded        ErrorCode = "game_ended"
 	ErrCodeNoChange         ErrorCode = "no_change"
@@ -99,6 +100,7 @@ var ErrorCodes = []ErrorCode{
 	ErrCodeNotYourTurn,
 	ErrCodeSelfTarget,
 	ErrCodeRosterMismatch,
+	ErrCodeTownNotMajority,
 	ErrCodeLobbyFull,
 	ErrCodeGameEnded,
 	ErrCodeNoChange,

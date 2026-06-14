@@ -635,7 +635,13 @@ func (r *Room) handleCommand(m inCommand) {
 	cmd := rewriteActor(m.Cmd, pid)
 	events, err := r.g.Apply(cmd)
 	if err != nil {
-		r.sendOne(m.From, errorFor(err))
+		// StartGame roster rejections get a player-facing, actionable message
+		// (which lever to adjust); every other command uses the generic map.
+		if _, isStart := m.Cmd.(game.StartGame); isStart {
+			r.sendOne(m.From, startErrorFor(err))
+		} else {
+			r.sendOne(m.From, errorFor(err))
+		}
 		return
 	}
 	r.appendAndBroadcast(events)

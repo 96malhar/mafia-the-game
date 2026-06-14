@@ -81,7 +81,7 @@ func fixedRosterWithYakuzaAndVigilante(t *testing.T) *game.Game {
 	})
 }
 
-// fixedRosterWithYakuzaAndConsort builds a deterministic 6-player game with
+// fixedRosterWithYakuzaAndConsort builds a deterministic 7-player game with
 // BOTH the Yakuza and the Consort enabled:
 //
 //	mafia1 -> RoleMafia
@@ -90,13 +90,18 @@ func fixedRosterWithYakuzaAndVigilante(t *testing.T) *game.Game {
 //	det    -> RoleDetective
 //	doc    -> RoleDoctor
 //	town1  -> RoleVillager
+//	town2  -> RoleVillager
+//
+// Seven players (not six) so the town faction (det + doc + 2 villagers = 4)
+// holds a strict majority over the three mafia-aligned (Mafia + Yakuza +
+// Consort); at six players that's parity, which StartGame now refuses.
 //
 // Night order: Mafia -> Consort -> Detective -> Doctor. On return the game
 // sits on the MAFIA's act window.
 func fixedRosterWithYakuzaAndConsort(t *testing.T) *game.Game {
 	t.Helper()
 	return fixedRosterMatching(t, rosterDeal{
-		ids: []game.PlayerID{"mafia1", "yak", "cons", "det", "doc", "town1"},
+		ids: []game.PlayerID{"mafia1", "yak", "cons", "det", "doc", "town1", "town2"},
 		wanted: map[game.PlayerID]game.Role{
 			"mafia1": game.RoleMafia,
 			"yak":    game.RoleYakuza,
@@ -104,11 +109,12 @@ func fixedRosterWithYakuzaAndConsort(t *testing.T) *game.Game {
 			"det":    game.RoleDetective,
 			"doc":    game.RoleDoctor,
 			"town1":  game.RoleVillager,
+			"town2":  game.RoleVillager,
 		},
 		mafiaCount: 1,
 		yakuza:     true,
 		consort:    true,
-		maxSeeds:   8000,
+		maxSeeds:   60000,
 	})
 }
 

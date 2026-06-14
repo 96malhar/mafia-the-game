@@ -30,6 +30,7 @@ var sentinelCodes = []struct {
 	{game.ErrNotYourTurn, wire.ErrCodeNotYourTurn},
 	{game.ErrSelfTarget, wire.ErrCodeSelfTarget},
 	{game.ErrRosterMismatch, wire.ErrCodeRosterMismatch},
+	{game.ErrTownNotMajority, wire.ErrCodeTownNotMajority},
 	{game.ErrLobbyFull, wire.ErrCodeLobbyFull},
 	{game.ErrGameEnded, wire.ErrCodeGameEnded},
 	{game.ErrNoChange, wire.ErrCodeNoChange},
@@ -93,6 +94,33 @@ func errorWithMsg(err error, msg string) OutError {
 	out := errorFor(err)
 	out.Message = msg
 	return out
+}
+
+// startErrorFor is errorFor specialized for the StartGame command. It keeps
+// the machine-readable Code (and the rejection metric) but rewrites the
+// Message for roster failures into player-facing English that points the host
+// at the lever to adjust — mirroring joinErrorFor for the join handshake.
+// Client code renders OutError.Message as-is, so all "what does this mean to
+// the host?" knowledge stays server-side.
+func startErrorFor(err error) OutError {
+	out := errorFor(err)
+	out.Message = startBlockMessage(out.Code, out.Message)
+	return out
+}
+
+// startBlockMessage maps a StartGame rejection code to player-facing English,
+// falling back to the raw sentinel text for any code that isn't roster-shaped.
+// It's the single source of "why can't this roster start?" — kept in sync with
+// the client's pre-start hint in web/actions.js (which gates the Start button).
+func startBlockMessage(code wire.ErrorCode, fallback string) string {
+	switch code {
+	case wire.ErrCodeTownNotMajority:
+		return "The town must hold more than half the seats. Reduce the number of mafia, or turn off a mafia-aligned role like the Yakuza or Consort."
+	case wire.ErrCodeRosterMismatch:
+		return "This roster can't start. Check the player count, and make sure the mafia plus special roles don't outnumber the seats."
+	default:
+		return fallback
+	}
 }
 
 // joinErrorFor is errorFor specialized for the first-time join

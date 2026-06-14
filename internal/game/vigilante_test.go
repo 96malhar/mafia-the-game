@@ -148,15 +148,19 @@ func TestVigilante_RosterComposition(t *testing.T) {
 func TestVigilante_StackedOptionalRolesRejectedWhenNoVillagerSlot(t *testing.T) {
 	g := game.New()
 	_, err := g.Apply(game.CreateGame{
-		GameID: "g1", MinPlayers: 6, MaxPlayers: 6, MafiaCount: 3, Seed: 0,
+		GameID: "g1", MinPlayers: 5, MaxPlayers: 6, MafiaCount: 1, Seed: 0,
 	})
 	require.NoError(t, err)
 	_, err = g.Apply(game.SetConsort{Enabled: true})
 	require.NoError(t, err)
 	_, err = g.Apply(game.SetVigilante{Enabled: true})
 	require.NoError(t, err)
-	addPlayers(t, g, "a", "b", "c", "d", "e", "f")
-	// 6 - 3 mafia - 2 reserved - 2 optional = -1 villager slots.
+	_, err = g.Apply(game.SetTracker{Enabled: true})
+	require.NoError(t, err)
+	addPlayers(t, g, "a", "b", "c", "d", "e")
+	// 5 - 1 mafia - 2 reserved - 3 optional = -1 villager slots: the optional
+	// roles over-subscribe the seats. Town still out-numbers the mafia-aligned
+	// (3 vs 2), so this isolates the composition-fit failure: ErrRosterMismatch.
 	_, err = g.Apply(game.StartGame{})
 	require.ErrorIs(t, err, game.ErrRosterMismatch,
 		"stacked optional roles can't overflow the roster")

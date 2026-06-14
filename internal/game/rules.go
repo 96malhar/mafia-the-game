@@ -45,8 +45,9 @@ func defaultMafiaCount(minPlayers int) int {
 //     for at least one Mafia + Detective + Doctor + Villager (i.e.
 //     MinPlayers ≥ 4) and MinPlayers ≤ MaxPlayers.
 //   - MafiaCount, if non-zero, must satisfy 1 ≤ MafiaCount ≤
-//     MaxPlayers - reservedTownRoles - 1. If zero, a sensible default is
-//     chosen.
+//     MaxPlayers - reservedTownRoles (zero villagers is allowed). If zero, a
+//     sensible default is chosen. This is a coarse lobby-config bound; the
+//     precise town-majority gate is applied at StartGame.
 //
 // Zero values for MinPlayers / MaxPlayers fall back to package defaults
 // so callers that don't care can pass `CreateGame{GameID: id, Seed: s}`.
@@ -73,7 +74,7 @@ func (g *Game) applyCreateGame(c CreateGame) ([]Event, error) {
 	if maxP < minP {
 		return nil, fmt.Errorf("game: MaxPlayers (%d) must be ≥ MinPlayers (%d)", maxP, minP)
 	}
-	maxMafia := maxP - (reservedTownRoles + 1)
+	maxMafia := maxP - reservedTownRoles
 
 	mafia := c.MafiaCount
 	if mafia == 0 {
@@ -175,7 +176,13 @@ func (g *Game) applySetMafiaCount(c SetMafiaCount) ([]Event, error) {
 	if err := g.requireLobbyOpen(); err != nil {
 		return nil, err
 	}
-	maxMafia := g.state.maxPlayers - (reservedTownRoles + 1)
+	// Coarse pre-tune envelope only: reserve the town core (Det + Doc) but
+	// NOT a villager — a zero-villager roster is allowed (rule 3). This is a
+	// loose maxPlayers-based bound so the host can dial mafia before everyone
+	// has joined; the precise town-majority check lives in applyStartGame, so
+	// a too-high count set here is caught (with the actionable message) at
+	// start, not at set time.
+	maxMafia := g.state.maxPlayers - reservedTownRoles
 	if c.Count < 1 || c.Count > maxMafia {
 		// Wrap ErrRosterMismatch so room.errorFor maps this to
 		// wire.ErrCodeRosterMismatch (consistent with the matching
@@ -231,23 +238,19 @@ func (g *Game) applySetTracker(c SetTracker) ([]Event, error) {
 // PhaseLobby until the host issues BeginNight.
 //
 // Validation:
-//   - Game must exist and be in PhaseLobby.
+//   - Game must exist and be in PhaseLobby (and roles not already dealt —
+//     a second StartGame is rejected by requireLobbyOpen).
 //   - PlayerCount must be in [MinPlayers, MaxPlayers].
-//   - MafiaCount must leave room for the reserved town core, i.e.
-//     mafiaCount ≤ playerCount - reservedTownRoles - 1.
-//   - At least one plain Villager must remain after the mafia, the
-//     reserved town core, and every enabled optional role, i.e.
-//     playerCount - mafiaCount - reservedTownRoles - #optionals ≥ 1.
-//   - The dealt roster must not open at strict-mafia parity or worse, i.e.
-//     we require 2*mafiaCount + mafiaAlignedOptionals < playerCount (town
-//     is playerCount - mafiaCount - mafiaAlignedOptionals; a Consort takes
-//     a villager slot but isn't town, and only the Consort is mafia-
-//     aligned). This is INTENTIONALLY stricter than checkWin, which now
-//     ends a mafia win only at strictMafia > town (plus the 1-vs-1
-//     endgame): see the inline comment for why a parity open is still an
-//     unfair, effectively-decided board we refuse to deal.
-//   - StartGame is rejected if roles have already been dealt (we detect
-//     this by checking whether the first player has a non-empty role).
+//   - MafiaCount ≥ 1 (rule 1).
+//   - The town faction must hold a STRICT majority of the seats (rule 2):
+//     2*(mafiaCount + mafiaAlignedOptionals) < playerCount, where the
+//     mafia-aligned optionals are the Yakuza and Consort. A parity-or-worse
+//     board is refused with ErrTownNotMajority so the host can lower the
+//     mafia count or turn off a mafia-aligned role.
+//   - The composition must fit the seats (rule 3): mafiaCount +
+//     reservedTownRoles + #optionals ≤ playerCount, i.e. villager slots ≥ 0.
+//     Zero plain villagers is allowed; only a negative count is rejected
+//     (ErrRosterMismatch) — it would over-subscribe the seats.
 //
 // Composition: with N players and M mafia, the dealt roles are
 //
@@ -267,45 +270,40 @@ func (g *Game) applyStartGame(_ StartGame) ([]Event, error) {
 	if n < g.state.minPlayers || n > g.state.maxPlayers {
 		return nil, ErrRosterMismatch
 	}
-	maxMafia := n - reservedTownRoles - 1
-	if g.state.mafiaCount < 1 || g.state.mafiaCount > maxMafia {
-		return nil, ErrRosterMismatch
-	}
-	// Each optional role (Consort, Vigilante, …) takes the slot of a
-	// villager. Require at least ONE plain villager to remain after the
-	// mafia, the reserved town core, and every enabled optional role. A
-	// zero-villager roster is degenerate (every town player has a special
-	// power, removing the "vanilla" majority the social game leans on),
-	// and when the optionals are over-stacked it would also leave
-	// composeRoster short of n roles and panic the per-player assignment
-	// loop. So the villager slots left must be >= 1.
-	optionals := g.state.enabledOptionalRoles()
-	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 1 {
+	// Rule 1: at least one mafia. (The upper bound on mafia falls out of the
+	// town-majority rule below, so there's no separate maxMafia check.)
+	if g.state.mafiaCount < 1 {
 		return nil, ErrRosterMismatch
 	}
 
-	// Refuse to deal a roster that opens at strict-mafia parity or worse
-	// (strictMafia >= town). This is a deliberately CONSERVATIVE guardrail,
-	// stricter than checkWin: checkWin no longer ends the game at exact
-	// parity (it ends a mafia win at strictMafia > town, plus the
-	// 1-mafia-vs-1-town endgame), so a parity board would technically play
-	// on. We still reject it because such an opening is effectively decided
-	// for the mafia: the >=1-villager + reserved-core (det+doc) rules force
-	// town >= 3, so parity means strictMafia >= 3 — either a mafia-aligned
-	// voting majority (with a Consort the town can never lynch) or a board
-	// where the first night kill alone pushes it to strictMafia > town. We
-	// don't make players sit through a lost game. At deal time the strict
-	// mafia count is mafiaCount and the town faction is everyone who is
-	// neither mafia nor a mafia-aligned optional (the Consort), i.e.
-	// town = n - mafiaCount - mafiaAlignedOptionals. "Below parity" is
-	// mafiaCount < town, i.e. 2*mafiaCount + mafiaAlignedOptionals < n.
-	mafiaAlignedOptionals := 0
+	optionals := g.state.enabledOptionalRoles()
+
+	// Rule 2: the TOWN faction must hold a strict majority of the seats.
+	// The non-town seats are the mafia-aligned players — the mafia count plus
+	// every enabled mafia-aligned optional (Yakuza is FactionMafia, Consort is
+	// FactionConsort; both are MafiaAligned). Town is everyone else, and we
+	// require town > n/2, i.e. nonTown < n/2, i.e. 2*nonTown < n. A board at
+	// parity-or-worse opens effectively decided for the mafia, so we refuse it
+	// and (via ErrTownNotMajority) point the host at the levers: lower the
+	// mafia count or turn off a mafia-aligned role. This is checked BEFORE the
+	// composition-fit check so an over-strong mafia gets the actionable
+	// town-majority message rather than the generic roster error.
+	mafiaAligned := g.state.mafiaCount
 	for _, r := range optionals {
 		if r.Faction().MafiaAligned() {
-			mafiaAlignedOptionals++
+			mafiaAligned++
 		}
 	}
-	if 2*g.state.mafiaCount+mafiaAlignedOptionals >= n {
+	if 2*mafiaAligned >= n {
+		return nil, ErrTownNotMajority
+	}
+
+	// Rule 3: zero plain villagers is allowed. The composition must still FIT
+	// the seats, though: the mafia, the reserved town core (Det + Doc), and
+	// every enabled optional must leave a villager slot count >= 0. A negative
+	// count means the enabled roles over-subscribe the seats, which would also
+	// leave composeRoster short of n roles and panic the assignment loop.
+	if n-g.state.mafiaCount-reservedTownRoles-len(optionals) < 0 {
 		return nil, ErrRosterMismatch
 	}
 

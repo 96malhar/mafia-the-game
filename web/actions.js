@@ -33,6 +33,15 @@
         dayEl.textContent = phase === "lobby" || phase === "ended" ? "" : `Day ${day}`;
         extras.innerHTML = "";
 
+        // phase-hint is a single element shared across every phase, so reset it
+        // to the neutral base each render — otherwise a red lobby error could
+        // bleed into a later phase's hint. The lobby branches below re-color it:
+        // rose for a blocking roster problem, emerald for "ready to start".
+        const HINT_NEUTRAL = "mt-1 text-sm opacity-80";
+        const HINT_ERROR = "mt-1 text-sm text-rose-400";
+        const HINT_OK = "mt-1 text-sm text-emerald-400";
+        hint.className = HINT_NEUTRAL;
+
         const me = players.get(myId);
         const iAmAlive = !!(me && me.alive);
         const total = players.size;
@@ -147,35 +156,31 @@
               lobbyMinPlayers !== null && lobbyMaxPlayers !== null && mafiaCount !== null;
 
             const minMafia = 1;
-            // Each enabled optional role (Consort, Vigilante) takes a
-            // villager slot, so it tightens the mafia cap once more than
-            // one is on. The engine enforces these bounds (see
-            // applyStartGame in internal/game/rules.go — keep them in sync):
-            //   mafia <= total - 3 - (#optional roles)   (Det + Doc +
-            //       every optional + ≥1 plain villager; each optional takes
-            //       a villager slot and the roster must keep one villager)
-            //   2*mafia + (#mafia-aligned optionals) < total
-            //       (don't OPEN at the mafia parity win — checkWin ends the
-            //        game for the mafia at strictMafia >= town, where town ==
-            //        total - mafia - #mafia-aligned optionals; a roster that
-            //        opens at parity would hand the mafia an instant Night-1
-            //        win. Only the Consort is a mafia-aligned optional.)
+            // Mirror applyStartGame's roster rules (internal/game/rules.go —
+            // keep in sync). Two caps bound the mafia count:
+            //   townCap:  the TOWN faction must hold a strict majority, i.e.
+            //       2*(mafia + #mafia-aligned optionals) < total  (town ==
+            //       total - mafia - #mafia-aligned optionals; the Yakuza and
+            //       Consort are the mafia-aligned optionals). A parity-or-worse
+            //       board opens decided for the mafia, so it's refused.
+            //   slotCap:  the composition must fit the seats, i.e.
+            //       mafia <= total - 2 - (#optional roles)  (Det + Doc + every
+            //       optional). Zero plain villagers is allowed.
             const optionalRoles =
               (consortEnabled ? 1 : 0) +
               (vigilanteEnabled ? 1 : 0) +
               (yakuzaEnabled ? 1 : 0) +
               (trackerEnabled ? 1 : 0);
             // The Consort and the Yakuza are the mafia-aligned optionals (the
-            // Vigilante and Tracker are town), so they shrink the town count in
-            // the parity test. Keep in sync with applyStartGame's parity guard.
+            // Vigilante and Tracker are town), so each shrinks the town count.
             const mafiaAlignedOptionals =
               (consortEnabled ? 1 : 0) + (yakuzaEnabled ? 1 : 0);
-            // Det + Doc + every optional + at least one plain villager.
-            const slotCap = total - 3 - optionalRoles;
-            // 2*mafia + mafiaAlignedOptionals < total
-            //   ⇒ mafia <= floor((total - mafiaAlignedOptionals - 1) / 2)
-            const parityCap = Math.floor((total - mafiaAlignedOptionals - 1) / 2);
-            const maxMafiaNow = Math.max(0, Math.min(slotCap, parityCap));
+            // Det + Doc + every optional (villagers may be 0).
+            const slotCap = total - 2 - optionalRoles;
+            // 2*(mafia + mafiaAlignedOptionals) < total
+            //   ⇒ mafia <= floor((total - 2*mafiaAlignedOptionals - 1) / 2)
+            const townCap = Math.floor((total - 2 * mafiaAlignedOptionals - 1) / 2);
+            const maxMafiaNow = Math.max(0, Math.min(slotCap, townCap));
             const tooFew = configReady && total < lobbyMinPlayers;
             const tooMany = configReady && total > lobbyMaxPlayers;
             const mafiaOK = configReady && mafiaCount >= minMafia && mafiaCount <= maxMafiaNow;
@@ -192,19 +197,31 @@
                 `(min ${lobbyMinPlayers}, currently ${total}).`;
             } else if (tooMany) {
               hint.textContent = `Too many players (${total} > ${lobbyMaxPlayers}).`;
-            } else if (maxMafiaNow < minMafia) {
-              // The valid mafia range is empty: the enabled roles already
-              // claim every seat (no mafia count works). Don't blame the
-              // mafia picker — point at the real lever.
+              hint.className = HINT_ERROR;
+            } else if (mafiaCount > townCap || townCap < minMafia) {
+              // Town wouldn't hold a strict majority — the mafia faction is
+              // too strong. Matches the server's town_not_majority message
+              // (startBlockMessage in internal/room/errors.go).
+              hint.textContent =
+                "The town must hold more than half the seats. Reduce the " +
+                "number of mafia, or turn off a mafia-aligned role like the " +
+                "Yakuza or Consort.";
+              hint.className = HINT_ERROR;
+            } else if (mafiaCount > slotCap || slotCap < minMafia) {
+              // The enabled roles over-subscribe the seats. Point at the role
+              // toggles / player count rather than the mafia picker.
               hint.textContent =
                 `Too many special roles for ${total} players. ` +
                 `Turn off an optional role or add more players.`;
+              hint.className = HINT_ERROR;
             } else if (!mafiaOK) {
               hint.textContent =
                 `Mafia count ${mafiaCount} is invalid for ${total} players ` +
                 `— must be between ${minMafia} and ${maxMafiaNow}.`;
+              hint.className = HINT_ERROR;
             } else {
               hint.textContent = "Ready to start.";
+              hint.className = HINT_OK;
             }
 
             // Mafia-count picker: host-only, lobby-only, AND only
@@ -215,6 +232,12 @@
             // composeRoster has already committed. Hide it the
             // moment that boundary is crossed.
             if (!rolesDealt) {
+              // A live, faction-grouped readout of the exact roster these
+              // settings will deal — including the always-present Detective +
+              // Doctor — so the host sees the full composition (and villager
+              // count) without the fixed town core needing a fake "toggle".
+              const summary = renderRosterSummary(total);
+              if (summary) extras.appendChild(summary);
               const mafiaPicker = renderMafiaPicker();
               if (mafiaPicker) extras.appendChild(mafiaPicker);
               extras.appendChild(renderConsortToggle());
@@ -662,7 +685,10 @@
         }
 
         const minMafia = 1;
-        const maxMafia = Math.max(1, lobbyMaxPlayers - 3);
+        // Coarse pre-tune cap (Det + Doc reserved; villagers may be 0), matching
+        // applySetMafiaCount's maxPlayers-based envelope. The precise town-
+        // majority gate is applied at Start, not here.
+        const maxMafia = Math.max(1, lobbyMaxPlayers - 2);
 
         // Stepper buttons need real tap targets. Square 36px buttons
         // line up visually with the label and read clearly on phones.
@@ -725,6 +751,49 @@
         );
         wrapper.appendChild(btn);
         return wrapper;
+      }
+
+      // renderRosterSummary builds the read-only "this is what you'll deal"
+      // line for the lobby: the mafia-aligned side, then the town side, with
+      // the ALWAYS-present Detective + Doctor and the resulting villager count
+      // derived live from the mafia count + optional toggles. Plain text (not a
+      // chip), so it can't be mistaken for a control, and it signals the fixed
+      // town core as part of the whole composition.
+      //
+      // Returns null before the lobby config has arrived, or when the enabled
+      // roles over-subscribe the seats (villagers < 0) — that case is already
+      // explained by the red start hint, and a "-1 Villagers" readout would be
+      // nonsense. Zero villagers is valid and simply omitted from the list.
+      function renderRosterSummary(total) {
+        if (mafiaCount === null || lobbyMaxPlayers === null) return null;
+        const optionalCount =
+          (consortEnabled ? 1 : 0) +
+          (vigilanteEnabled ? 1 : 0) +
+          (yakuzaEnabled ? 1 : 0) +
+          (trackerEnabled ? 1 : 0);
+        // 2 = the reserved town core (Detective + Doctor), per reservedTownRoles
+        // in internal/game/rules.go.
+        const villagers = total - mafiaCount - 2 - optionalCount;
+        if (villagers < 0) return null;
+
+        const mafiaSide = [`${mafiaCount} Mafia`];
+        if (yakuzaEnabled) mafiaSide.push("Yakuza");
+        if (consortEnabled) mafiaSide.push("Consort");
+
+        const townSide = ["Detective", "Doctor"];
+        if (vigilanteEnabled) townSide.push("Vigilante");
+        if (trackerEnabled) townSide.push("Tracker");
+        if (villagers > 0) {
+          townSide.push(`${villagers} Villager${villagers === 1 ? "" : "s"}`);
+        }
+
+        const el = document.createElement("p");
+        // Calm informational cyan — distinct from the emerald "ready" / rose
+        // "error" hint above and the muted lobby text around it.
+        el.className = "w-full text-xs text-sky-300";
+        // "·" divides the mafia-aligned side from the town side; commas within.
+        el.textContent = `Roster: ${mafiaSide.join(", ")} · ${townSide.join(", ")}`;
+        return el;
       }
 
       function renderConsortToggle() {
